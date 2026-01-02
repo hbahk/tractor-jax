@@ -1032,4 +1032,4 @@ class NormalizedPsf(object):
 
 class NormalizedPixelizedPsf(NormalizedPsf, PixelizedPSF):
     def __str__(self):
-        return 'NormalizedPixelizedPSF'
+        return 'NormalizedPixelizedPsf'

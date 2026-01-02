@@ -21,8 +21,7 @@ from tractor import mixture_profiles as mp
 from tractor.tractortime import TAITime
 from tractor.psf import (PixelizedPSF, GaussianMixturePSF,
                          GaussianMixtureEllipsePSF, NCircularGaussianPSF)
-from tractor.wcs import (NullWCS, WcslibWcs, ConstantFitsWcs, TanWcs,
-                         PixPos, RaDecPos)
+from tractor.wcs import (NullWCS, PixPos, RaDecPos)
 from tractor.sky import NullSky, ConstantSky
 from tractor.brightness import (Mag, Flux, Mags, Fluxes, NanoMaggies,
                                 FluxesPhotoCal, MagsPhotoCal, NullPhotoCal,

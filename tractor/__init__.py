@@ -3,8 +3,6 @@ from .ducks import *
 from .basics import *
 from .psf import (NCircularGaussianPSF, GaussianMixturePSF, PixelizedPSF,
                   HybridPSF, HybridPixelizedPSF, GaussianMixtureEllipsePSF)
-from .motion import *
-from .psfex import *
 from .ellipses import *
 from .imageutils import *
 from .galaxy import *
@@ -17,7 +15,7 @@ except:
 
 __all__ = [
     # modules
-    'sdss', 'fitpsf', 'emfit', 'galaxy', 'sersic', 'sfd',
+    'emfit', 'galaxy', 'sersic',
     # ducks
     'Params', 'Sky', 'Source', 'Position', 'Brightness', 'PhotoCal',
     'PSF',
@@ -31,7 +29,6 @@ __all__ = [
     'PixPos', 'RaDecPos',
     'NullPhotoCal', 'LinearPhotoCal', 'FluxesPhotoCal',
     'WCS', 'NullWCS',
-    'TanWcs', 'WcslibWcs', 'ConstantFitsWcs',
     'NCircularGaussianPSF', 'GaussianMixturePSF', 'PixelizedPSF',
     'HybridPSF', 'HybridPixelizedPSF',
     'GaussianMixtureEllipsePSF',
@@ -41,8 +38,6 @@ __all__ = [
     # engine
     'Patch', 'ModelMask', 'Image', 'Images',
     'Catalog', 'Tractor',
-    # psfex
-    'VaryingGaussianPSF', 'PsfEx',
     # ellipses
     'EllipseE', 'EllipseESoft',
     # imageutils

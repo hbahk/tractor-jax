@@ -9,7 +9,7 @@ if __name__ == '__main__':
 import math
 import numpy as np
 
-from tractor import ParamList
+from tractor.utils import ParamList
 
 
 class EllipseE(ParamList):
