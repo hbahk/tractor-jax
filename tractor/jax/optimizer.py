@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import jax.numpy.fft as jfft
 from jax import jit, value_and_grad, vmap
 import numpy as np
+from functools import partial
 
 from tractor.engine import Tractor
 from tractor.pointsource import PointSource
@@ -24,27 +25,18 @@ from tractor.jax.rendering import (
 )
 
 
-def extract_model_data(tractor_obj):
+def extract_model_data(tractor_obj, oversample_psf=False):
     """
     Extracts all necessary data from a Tractor object for JAX optimization,
     grouping sources into batches (PointSource, Galaxy) for vectorized rendering.
 
+    Args:
+        tractor_obj: Tractor object.
+        oversample_psf: If True, handles oversampled PixelizedPSF by rendering at high resolution.
+
     Returns:
         images_data: list of dicts (data, invvar, psf_data, shape, ...)
-        batches: dict containing batched source data:
-            {
-                'PointSource': {
-                    'flux_idx': (N_ps,),
-                    'pos_pix': (N_ps, N_img, 2),
-                },
-                'Galaxy': {
-                    'flux_idx': (N_gal,),
-                    'pos_pix': (N_gal, N_img, 2),
-                    'wcs_cd_inv': (N_gal, N_img, 2, 2),
-                    'shapes': (N_gal, 3),
-                    'profile': { 'amp': ..., 'mean': ..., 'var': ... }
-                }
-            }
+        batches: dict containing batched source data.
         initial_fluxes: JAX array of all fluxes.
     """
     images = tractor_obj.images
@@ -66,24 +58,65 @@ def extract_model_data(tractor_obj):
             psf_data["type_code"] = jnp.array(0, dtype=jnp.int32)  # 0 for pixelized
             psf_data["img"] = jnp.array(psf.img)
 
-            # Precompute FFT for full image size (for FFT convolution)
-            ph, pw = psf.img.shape
-            pad_img = jnp.zeros((h, w))
-            # Place PSF in center
-            cy, cx = h // 2, w // 2
-            y0 = cy - ph // 2
-            x0 = cx - pw // 2
-            pad_img = pad_img.at[y0 : y0 + ph, x0 : x0 + pw].set(jnp.array(psf.img))
-            # Shift to (0,0) for FFT
-            pad_img = jnp.fft.ifftshift(pad_img)
-            psf_data["fft"] = jfft.rfft2(pad_img)
+            # Determine sampling
+            sampling = getattr(psf, "sampling", 1.0)
+
+            # Handle Oversampling option
+            if oversample_psf and sampling != 1.0:
+                # Store sampling factor (python float for static use)
+                psf_data["sampling"] = float(sampling)
+
+                # Calculate high-res grid size
+                # Assuming integer oversampling roughly
+                factor = int(round(1.0 / sampling))
+                H_hr = h * factor
+                W_hr = w * factor
+
+                # Pad in high-res grid
+                ph, pw = psf.img.shape
+                pad_img = jnp.zeros((H_hr, W_hr))
+
+                # Place PSF in center
+                cy, cx = H_hr // 2, W_hr // 2
+                y0 = cy - ph // 2
+                x0 = cx - pw // 2
+
+                # Ensure bounds
+                # If PSF is larger than padded image (unlikely for oversampled?), crop?
+                # Assuming PSF stamp is smaller than full image.
+
+                pad_img = pad_img.at[y0 : y0 + ph, x0 : x0 + pw].set(jnp.array(psf.img))
+
+                # Shift to (0,0) for FFT
+                pad_img = jnp.fft.ifftshift(pad_img)
+                psf_data["fft"] = jfft.rfft2(pad_img)
+
+            else:
+                # Standard path (sampling=1 or ignored)
+                psf_data["sampling"] = 1.0
+
+                # Precompute FFT for full image size (for FFT convolution)
+                ph, pw = psf.img.shape
+                pad_img = jnp.zeros((h, w))
+                # Place PSF in center
+                cy, cx = h // 2, w // 2
+                y0 = cy - ph // 2
+                x0 = cx - pw // 2
+                pad_img = pad_img.at[y0 : y0 + ph, x0 : x0 + pw].set(jnp.array(psf.img))
+                # Shift to (0,0) for FFT
+                pad_img = jnp.fft.ifftshift(pad_img)
+                psf_data["fft"] = jfft.rfft2(pad_img)
 
         elif isinstance(psf, GaussianMixturePSF):
             psf_data["type_code"] = jnp.array(1, dtype=jnp.int32)  # 1 for mog
+            psf_data["sampling"] = 1.0
             mog = psf.mog
             psf_data["amp"] = jnp.array(mog.amp)
             psf_data["mean"] = jnp.array(mog.mean)
             psf_data["var"] = jnp.array(mog.var)
+        else:
+             # Unknown PSF
+             psf_data["sampling"] = 1.0
 
         images_data.append(
             {
@@ -242,19 +275,8 @@ def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape):
     """
     Renders a batch of Point Sources.
     """
-    # Use encoded type
-    if "type_code" in psf_data:
-        type_code = psf_data["type_code"]
-        # We need to use lax.cond if we want to support dynamic switching,
-        # but usually structure is static.
-        # However, for now let's assume if 'fft' exists it is pixelized, else mog.
-        # But for robust vmap, we should use the code.
-        # But JAX control flow with different shapes/computation paths is tricky.
-        # If the batch has uniform PSF type, we can check the value of type_code (if it's concrete).
-        # Inside JIT, it's abstract.
-        pass
+    sampling = psf_data.get("sampling", 1.0)
 
-    # Simple check based on keys presence which works if keys are consistent
     if "fft" in psf_data:
         psf_fft = psf_data["fft"]
 
@@ -263,7 +285,8 @@ def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape):
         # pos_pix: (N_ps, 2)
         # psf_fft: (H, W) -> broadcasted or passed as is (not mapped)
 
-        render_fn = vmap(render_point_source_fft, in_axes=(0, 0, None, None))
+        # Use partial to bind psf_sampling
+        render_fn = vmap(partial(render_point_source_fft, psf_sampling=sampling), in_axes=(0, 0, None, None))
 
         stamps = render_fn(fluxes, pos_pix, psf_fft, img_shape)
         # Sum over sources
@@ -289,6 +312,8 @@ def render_batch_galaxies(
     """
     Renders a batch of Galaxies.
     """
+    sampling = psf_data.get("sampling", 1.0)
+
     if "fft" in psf_data:
         psf_fft = psf_data["fft"]
 
@@ -297,11 +322,7 @@ def render_batch_galaxies(
         gal_mix = (profiles["amp"], profiles["mean"], profiles["var"])
 
         # Vmap over sources
-        # render_galaxy_fft(galaxy_mix, psf_fft, shape_params, wcs_cd_inv, subpixel_offset, image_shape)
-
-        # render_galaxy_fft does not take flux argument, so we multiply by flux after.
-        # But wait, render_galaxy_fft is expensive.
-        # vmap over: gal_mix components, shapes, wcs_cd_inv, pos_pix
+        # render_galaxy_fft(galaxy_mix, psf_fft, shape_params, wcs_cd_inv, subpixel_offset, image_shape, psf_sampling)
 
         # in_axes:
         # gal_mix: (0, 0, 0)
@@ -311,7 +332,8 @@ def render_batch_galaxies(
         # pos_pix: 0
         # image_shape: None
 
-        render_fn = vmap(render_galaxy_fft, in_axes=((0, 0, 0), None, 0, 0, 0, None))
+        # We bind psf_sampling using partial
+        render_fn = vmap(partial(render_galaxy_fft, psf_sampling=sampling), in_axes=((0, 0, 0), None, 0, 0, 0, None))
 
         stamps = render_fn(gal_mix, psf_fft, shapes, wcs_cd_inv, pos_pix, img_shape)
 
@@ -346,10 +368,6 @@ def render_scene(fluxes, images_data, batches):
         # Determine output shape
         # If 'data' is available, use its shape.
         if "data" in img_dat:
-            # img_dat['data'] might be a JAX array (H, W).
-            # If batched, it might be (B, H, W) or (H, W) if mapped by vmap.
-            # Inside render_scene (called by solve_fluxes_core), arguments are unbatched (H, W).
-            # So img_dat['data'].shape is (H, W).
             H, W = img_dat["data"].shape
         elif "shape" in img_dat:
             H, W = img_dat["shape"]
@@ -438,18 +456,19 @@ def solve_fluxes_core(initial_fluxes, images_data, batches):
     return optimized_fluxes
 
 
-def optimize_fluxes(tractor_obj):
+def optimize_fluxes(tractor_obj, oversample_psf=False):
     """
     Optimizes fluxes for forced photometry using JAX.
 
     Args:
         tractor_obj: Tractor object with images and catalog.
+        oversample_psf: bool, if True use oversampled rendering for PixelizedPSF with sampling != 1.
 
     Returns:
         New Tractor object with optimized fluxes.
     """
     # 1. Precompute/Extract data
-    images_data, batches, initial_fluxes = extract_model_data(tractor_obj)
+    images_data, batches, initial_fluxes = extract_model_data(tractor_obj, oversample_psf=oversample_psf)
 
     # 2. Run JAX Optimization Core
     # We use the pure function here.

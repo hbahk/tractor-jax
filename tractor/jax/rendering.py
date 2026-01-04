@@ -212,33 +212,71 @@ def render_pixelized_psf(psf_img, dx, dy):
     return outimg[0]
 
 
+def downsample_image(img, factor):
+    """
+    Downsamples image by integer factor using sum (flux conservation).
+    img: (H*factor, W*factor)
+    Returns: (H, W)
+    """
+    H_hr, W_hr = img.shape
+    H = H_hr // factor
+    W = W_hr // factor
+    # Reshape and sum
+    # (H, factor, W, factor) -> sum axis 1, 3
+    return img.reshape(H, factor, W, factor).sum(axis=(1, 3))
+
+
 def render_galaxy_fft(
-    galaxy_mix, psf_fft, shape_params, wcs_cd_inv, subpixel_offset, image_shape
+    galaxy_mix,
+    psf_fft,
+    shape_params,
+    wcs_cd_inv,
+    subpixel_offset,
+    image_shape,
+    psf_sampling=1.0,
 ):
     """
     Renders a galaxy using FFT convolution.
 
     Args:
         galaxy_mix: (amp, mean, var) of the galaxy profile (normalized, unsheared).
-        psf_fft: (H, W) Complex Fourier Transform of the PSF (padded to image_shape).
+        psf_fft: (H, W) Complex Fourier Transform of the PSF.
+                 If psf_sampling != 1, this should be the FFT of the oversampled PSF.
         shape_params: (re, ab, phi)
         wcs_cd_inv: (2, 2) Inverse CD matrix
-        subpixel_offset: (dx, dy)
-        image_shape: (H, W)
+        subpixel_offset: (x, y)
+        image_shape: (H, W) target image shape (data pixels)
+        psf_sampling: float. If < 1, indicates oversampling.
 
     Returns:
         Rendered image (H, W)
     """
     amp, mean, var = galaxy_mix
     re, ab, phi = shape_params
-    # subpixel_offset is actually full position (x,y) if we assume galaxy_fft is centered at 0
-    # and we want to shift it to position.
-    # Or is it (dx, dy)?
-    # The signature in optimizer calls it `pos_pix`.
-    # So it is (x, y).
-
     pos_x, pos_y = subpixel_offset
     H, W = image_shape
+
+    # Handle Oversampling
+    if psf_sampling < 1.0:
+        factor = int(round(1.0 / psf_sampling))
+        # Ensure factor is valid (assuming integer oversampling for now)
+        H_fft = H * factor
+        W_fft = W * factor
+
+        # Scale inputs to high-res
+        # CD inv: degrees -> pixels. High res has 'factor' times more pixels per degree.
+        wcs_cd_inv = wcs_cd_inv / psf_sampling
+
+        # Position: data pixels -> high res pixels
+        # Add offset to align pixel centers.
+        # Low res pixel 0 center maps to High res pixel center of the first block.
+        # Center of first block (0..F-1) is (F-1)/2.0.
+        # pos_hr = pos_lr * factor + (factor - 1) / 2.0
+        pos_x = pos_x / psf_sampling + (factor - 1) / 2.0
+        pos_y = pos_y / psf_sampling + (factor - 1) / 2.0
+    else:
+        H_fft = H
+        W_fft = W
 
     # 1. Compute shear matrix
     G = get_galaxy_shape_matrix(re, ab, phi)
@@ -251,87 +289,29 @@ def render_galaxy_fft(
     sheared_mean = jnp.zeros_like(mean)
 
     # 3. Compute FFT of galaxy profile
-    freq_x = jfft.rfftfreq(W)
-    freq_y = jfft.fftfreq(H)
+    freq_x = jfft.rfftfreq(W_fft)
+    freq_y = jfft.fftfreq(H_fft)
 
     # Meshgrid frequencies
-    # v (x freq) varies along last axis
-    # w (y freq) varies along second last axis
     v_grid, w_grid = jnp.meshgrid(freq_x, freq_y)
 
     # Galaxy is centered at (0,0).
     # We want to shift it to (pos_x, pos_y).
-    # We can do this by adding phase shift in Fourier domain.
-    # Shift theorem: F(f(x-x0)) = F(f(x)) * exp(-2pi i k x0)
-    # Here k is frequency.
-
-    # But wait. `gaussian_fourier_transform` handles mean (position).
-    # We can just set the mean of the Gaussian to (pos_x, pos_y).
-    # BUT: (0,0) in FFT corresponds to index (0,0).
-    # If we want to place it at (pos_x, pos_y) in image coordinates,
-    # we should check coordinate system convention.
-    # Usually index (0,0) is top-left.
-    # The gaussian_fourier_transform formula uses exp(-2pi i (mx*v + my*w)).
-    # This corresponds to shifting the function centered at 0 to mean (mx, my).
-    # So if we set mean = (pos_x, pos_y), the inverse FFT will have the gaussian at (pos_x, pos_y).
-
-    # Note: sheared_mean is (K, 2). It is 0.
-    # We add pos to it.
     shifted_mean = sheared_mean + jnp.array([pos_x, pos_y])
 
     gal_fft = gaussian_fourier_transform(amp, sheared_var, shifted_mean, v_grid, w_grid)
 
     # 4. Multiply with PSF FFT
-    # psf_fft should be rfft2 format
+    # psf_fft should be rfft2 format matching (H_fft, W_fft)
     convolved_fft = gal_fft * psf_fft
 
     # 5. Inverse FFT
-    # irfft2
-    img = jfft.irfft2(convolved_fft, s=(H, W))
+    img = jfft.irfft2(convolved_fft, s=(H_fft, W_fft))
 
-    # 6. Lanczos shift by subpixel offset
-    # No need if we used phase shift for full position!
-    # Unless we want to split integer and fractional part.
-    # Using phase shift for integer part is exact.
-    # Using phase shift for fractional part is also exact (sinc interpolation equivalent).
-    # But Lanczos is local and avoids ringing?
-    # Actually phase shift is perfect reconstruction for bandlimited signals.
-    # Gaussians are not bandlimited but quickly decaying.
-    # FFT based shift is fine.
-
-    # So we don't need render_pixelized_psf here if we use phase shift.
-
-    # However, if we wanted to replicate Tractor exactly:
-    # Tractor computes galaxy on grid, then convolves.
-    # Or computes galaxy FFT, multiplies PSF FFT.
-    # Tractor centers the patch.
-
-    # Our `optimizer.py` implementation pads PSF to full image and centers at 0 (via ifftshift).
-    # This implies the PSF kernel is centered at (0,0).
-    # So convolution does not introduce shift.
-    # The galaxy shift determines final position.
-
-    # Important: `irfft2` result has origin at (0,0).
-    # But standard image display assumes (0,0) is center of top-left pixel?
-    # Or corner?
-    # We want result to be on grid.
-
-    # Also, we need to take Real part because of numerical noise.
-    # irfft2 returns real.
-
-    # FFT normalization?
-    # jax.numpy.fft.rfft2 is unnormalized.
-    # jax.numpy.fft.irfft2 has 1/N normalization?
-    # Docs say: "The inverse of rfft2 is irfft2."
-    # Standard: forward sum, backward 1/N sum.
-    # If we do F_gal * F_psf, and invert.
-    # F_gal is from gaussian_fourier_transform which is analytic FT formula.
-    # Analytic FT is integral.
-    # Discrete FT (DFT) approximates integral but with scaling.
-    # DFT(x) ~ Sum x.
-    # FT(x) ~ Integral x.
-    # If dx=1 (pixels), then DFT(x) ~ FT(x).
-    # So scaling should be fine.
+    # 6. Downsample if needed
+    if psf_sampling < 1.0:
+        factor = int(round(1.0 / psf_sampling))
+        img = downsample_image(img, factor)
 
     return img
 
@@ -353,7 +333,7 @@ def render_point_source_pixelized(flux, subpixel_offset, psf_image):
     return flux * shifted_psf
 
 
-def render_point_source_fft(flux, pos, psf_fft, image_shape):
+def render_point_source_fft(flux, pos, psf_fft, image_shape, psf_sampling=1.0):
     """
     Renders a point source using FFT convolution (phase shift).
 
@@ -362,23 +342,33 @@ def render_point_source_fft(flux, pos, psf_fft, image_shape):
         pos: (x, y) Position.
         psf_fft: (H, W) FFT of PSF (centered at 0 frequency).
         image_shape: (H, W).
+        psf_sampling: float.
 
     Returns:
         Rendered image (H, W).
     """
     H, W = image_shape
 
+    if psf_sampling < 1.0:
+        factor = int(round(1.0 / psf_sampling))
+        H_fft = H * factor
+        W_fft = W * factor
+        # Shift position for alignment
+        pos_fft = pos / psf_sampling + (factor - 1) / 2.0
+    else:
+        H_fft = H
+        W_fft = W
+        pos_fft = pos
+
     # Frequencies
-    freq_x = jfft.rfftfreq(W)
-    freq_y = jfft.fftfreq(H)
+    freq_x = jfft.rfftfreq(W_fft)
+    freq_y = jfft.fftfreq(H_fft)
 
     v, w = jnp.meshgrid(freq_x, freq_y)
 
-    # Phase shift for position pos=(x, y)
+    # Phase shift for position
     # exp(-2pi * i * (x*v + y*w))
-    # Note: v corresponds to x (last axis), w to y (second last axis).
-
-    phase = -2.0 * jnp.pi * 1j * (pos[0] * v + pos[1] * w)
+    phase = -2.0 * jnp.pi * 1j * (pos_fft[0] * v + pos_fft[1] * w)
     shift_fft = jnp.exp(phase)
 
     # Convolve: Multiply FFTs
@@ -386,7 +376,12 @@ def render_point_source_fft(flux, pos, psf_fft, image_shape):
     model_fft = flux * shift_fft * psf_fft
 
     # Inverse FFT
-    img = jfft.irfft2(model_fft, s=(H, W))
+    img = jfft.irfft2(model_fft, s=(H_fft, W_fft))
+
+    # Downsample
+    if psf_sampling < 1.0:
+        factor = int(round(1.0 / psf_sampling))
+        img = downsample_image(img, factor)
 
     return img
 
