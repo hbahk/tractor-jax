@@ -60,8 +60,10 @@ def extract_model_data(tractor_obj):
         # PSF Extraction
         psf = img.getPsf()
         psf_data = {}
+        # We store type as an integer enum or boolean flag to avoid JAX string issues during JIT/vmap
+
         if isinstance(psf, PixelizedPSF):
-            psf_data["type"] = "pixelized"
+            psf_data["type_code"] = jnp.array(0, dtype=jnp.int32) # 0 for pixelized
             psf_data["img"] = jnp.array(psf.img)
 
             # Precompute FFT for full image size (for FFT convolution)
@@ -77,7 +79,7 @@ def extract_model_data(tractor_obj):
             psf_data["fft"] = jfft.rfft2(pad_img)
 
         elif isinstance(psf, GaussianMixturePSF):
-            psf_data["type"] = "mog"
+            psf_data["type_code"] = jnp.array(1, dtype=jnp.int32) # 1 for mog
             mog = psf.mog
             psf_data["amp"] = jnp.array(mog.amp)
             psf_data["mean"] = jnp.array(mog.mean)
@@ -89,8 +91,6 @@ def extract_model_data(tractor_obj):
                 "invvar": invvar,
                 "psf": psf_data,
                 "shape": (h, w),
-                # We don't strictly need WCS object here anymore for rendering,
-                # as we precompute pixel positions.
             }
         )
 
@@ -110,62 +110,79 @@ def extract_model_data(tractor_obj):
     flux_offset = 0
 
     for src in catalog:
-        # Flux
-        br = src.brightness.getParams()
-        n_flux = len(br)
-        initial_fluxes.extend(br)
-        # We assume 1 flux param for the optimization target for now (single band/brightness)
-        # If n_flux > 1, we might need to handle band indices.
-        # For this implementation, we take the index of the first flux param.
-        f_idx = flux_offset
-        flux_offset += n_flux
-
-        # Precompute Position & WCS for all images
-        pos_pix_list = []
-        cd_inv_list = []
-
-        for img in images:
-            wcs = img.getWcs()
-            # Calculate pixel position (x, y)
-            x, y = wcs.positionToPixel(src.getPosition(), src)
-            pos_pix_list.append([x, y])
-
-            # Calculate CD Inverse matrix at that pixel
-            cd_inv = wcs.cdInverseAtPixel(x, y)
-            cd_inv_list.append(cd_inv)
-
-        pos_pix = np.array(pos_pix_list) # (N_img, 2)
-        cd_inv = np.array(cd_inv_list)   # (N_img, 2, 2)
-
-        src_type = src.getSourceType()
-
-        # Grouping Logic
-        if src_type == 'PointSource':
-            ps_flux_idx.append(f_idx)
-            ps_pos_pix.append(pos_pix)
-
-        elif isinstance(src, Galaxy) or hasattr(src, 'getProfile'):
-            # Generic Galaxy handling
-            gal_flux_idx.append(f_idx)
-            gal_pos_pix.append(pos_pix)
-            gal_wcs_cd_inv.append(cd_inv)
-
-            # Shape (re, ab, phi)
-            gal_shapes.append(src.shape.getParams())
-
-            # Profile (MoG)
-            prof = src.getProfile()
-            if prof is None:
-                 # Fallback?
-                 pass
+        # Determine Type and potential Profile
+        # Handle getSourceType missing
+        if hasattr(src, 'getSourceType'):
+            src_type = src.getSourceType()
+        else:
+            # Fallback based on class
+            if isinstance(src, PointSource):
+                src_type = 'PointSource'
+            elif isinstance(src, Galaxy):
+                src_type = 'Galaxy'
             else:
+                src_type = 'Unknown'
+
+        prof = None
+        is_galaxy = False
+
+        # Check if source is supported (PointSource, ExpGalaxy, DevGalaxy)
+        # Skip CompositeGalaxy explicitly or handle it if possible.
+        if isinstance(src, (CompositeGalaxy, FixedCompositeGalaxy)):
+            print(f"Warning: Skipping CompositeGalaxy {src} in JAX optimization")
+            continue
+
+        # Flux (always extract to keep alignment)
+        # Assuming src has brightness attribute (True for PointSource, Galaxy subclasses except Composite)
+        if hasattr(src, 'brightness'):
+            br = src.brightness.getParams()
+            n_flux = len(br)
+            initial_fluxes.extend(br)
+            f_idx = flux_offset 
+            flux_offset += n_flux
+        else:
+            print(f"Warning: Source {src} has no brightness attribute, skipping.")
+            continue
+
+        if isinstance(src, Galaxy) or hasattr(src, "getProfile"):
+            is_galaxy = True
+            if hasattr(src, "getProfile"):
+                prof = src.getProfile()
+            # If profile is None (e.g. CompositeGalaxy), we can't batch it as a single profile galaxy.
+            if prof is None:
+                is_galaxy = False # Treat as unsupported for batching
+
+        # Precompute Position & WCS for all images (only if we are going to batch it)
+        if src_type == 'PointSource' or (is_galaxy and prof is not None):
+            pos_pix_list = []
+            cd_inv_list = []
+
+            for img in images:
+                wcs = img.getWcs()
+                x, y = wcs.positionToPixel(src.getPosition(), src)
+                pos_pix_list.append([x, y])
+                cd_inv = wcs.cdInverseAtPixel(x, y)
+                cd_inv_list.append(cd_inv)
+
+            pos_pix = np.array(pos_pix_list) # (N_img, 2)
+            cd_inv = np.array(cd_inv_list)   # (N_img, 2, 2)
+
+            if src_type == 'PointSource':
+                ps_flux_idx.append(f_idx)
+                ps_pos_pix.append(pos_pix)
+
+            elif is_galaxy and prof is not None:
+                # Safe to append
+                gal_flux_idx.append(f_idx)
+                gal_pos_pix.append(pos_pix)
+                gal_wcs_cd_inv.append(cd_inv)
+                gal_shapes.append(src.shape.getParams())
+
                 gal_profiles.append({
                     'amp': np.array(prof.amp),
                     'mean': np.array(prof.mean),
                     'var': np.array(prof.var)
                 })
-        else:
-            print(f"Warning: Unknown source type {src_type} in JAX optimization")
 
     # 3. Assemble Batches with Padding
     batches = {}
@@ -223,7 +240,20 @@ def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape):
     """
     Renders a batch of Point Sources.
     """
-    if psf_data['type'] == 'pixelized':
+    # Use encoded type
+    if 'type_code' in psf_data:
+        type_code = psf_data['type_code']
+        # We need to use lax.cond if we want to support dynamic switching,
+        # but usually structure is static.
+        # However, for now let's assume if 'fft' exists it is pixelized, else mog.
+        # But for robust vmap, we should use the code.
+        # But JAX control flow with different shapes/computation paths is tricky.
+        # If the batch has uniform PSF type, we can check the value of type_code (if it's concrete).
+        # Inside JIT, it's abstract.
+        pass
+
+    # Simple check based on keys presence which works if keys are consistent
+    if 'fft' in psf_data:
         psf_fft = psf_data['fft']
 
         # Vmap over sources
@@ -237,7 +267,8 @@ def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape):
         # Sum over sources
         return jnp.sum(stamps, axis=0)
 
-    elif psf_data['type'] == 'mog':
+    else:
+        # MoG
         # Vmap over sources
         # render_point_source_mog(flux, pos, psf_mix, image_shape)
         psf_mix = (psf_data['amp'], psf_data['mean'], psf_data['var'])
@@ -254,7 +285,7 @@ def render_batch_galaxies(fluxes, pos_pix, wcs_cd_inv, shapes, profiles, psf_dat
     """
     Renders a batch of Galaxies.
     """
-    if psf_data['type'] == 'pixelized':
+    if 'fft' in psf_data:
         psf_fft = psf_data['fft']
 
         # Unpack profiles
@@ -285,7 +316,8 @@ def render_batch_galaxies(fluxes, pos_pix, wcs_cd_inv, shapes, profiles, psf_dat
 
         return jnp.sum(weighted_stamps, axis=0)
 
-    elif psf_data['type'] == 'mog':
+    else:
+        # MoG
         psf_mix = (psf_data['amp'], psf_data['mean'], psf_data['var'])
         gal_mix = (profiles['amp'], profiles['mean'], profiles['var'])
 
@@ -307,7 +339,19 @@ def render_scene(fluxes, images_data, batches):
     model_images = []
 
     for img_idx, img_dat in enumerate(images_data):
-        H, W = img_dat["shape"]
+        # Determine output shape
+        # If 'data' is available, use its shape.
+        if 'data' in img_dat:
+            # img_dat['data'] might be a JAX array (H, W).
+            # If batched, it might be (B, H, W) or (H, W) if mapped by vmap.
+            # Inside render_scene (called by solve_fluxes_core), arguments are unbatched (H, W).
+            # So img_dat['data'].shape is (H, W).
+            H, W = img_dat['data'].shape
+        elif 'shape' in img_dat:
+            H, W = img_dat['shape']
+        else:
+            raise ValueError("Cannot determine image shape")
+
         img_model = jnp.zeros((H, W))
 
         # 1. Render Point Sources
@@ -343,6 +387,45 @@ def render_scene(fluxes, images_data, batches):
     return model_images
 
 
+def solve_fluxes_core(initial_fluxes, images_data, batches):
+    """
+    Pure JAX core optimization logic.
+    Can be vmapped over batches of images/sources if data is stacked.
+    
+    Args:
+        initial_fluxes: JAX array (N_flux,)
+        images_data: list of dicts (for N_bands), each leaf is JAX array.
+        batches: dict of batched source data (pytree leaves are JAX arrays).
+        
+    Returns:
+        optimized_fluxes: JAX array (N_flux,)
+    """
+
+    def loss_fn(fluxes):
+        model_images = render_scene(fluxes, images_data, batches)
+        chi2 = 0.0
+        for i, model in enumerate(model_images):
+            data = images_data[i]["data"]
+            invvar = images_data[i]["invvar"]
+            diff = data - model
+            chi2 += jnp.sum(diff**2 * invvar)
+        return chi2
+
+    # Use Matrix-Free Newton-CG for linear least squares.
+    grad_fn = jax.grad(loss_fn)
+    grads = grad_fn(initial_fluxes)
+
+    def matvec(v):
+        return jax.jvp(grad_fn, (initial_fluxes,), (v,))[1]
+
+    step, info = jax.scipy.sparse.linalg.cg(
+        matvec, -grads, maxiter=50
+    )
+
+    optimized_fluxes = initial_fluxes + step
+    return optimized_fluxes
+
+
 def optimize_fluxes(tractor_obj):
     """
     Optimizes fluxes for forced photometry using JAX.
@@ -356,48 +439,24 @@ def optimize_fluxes(tractor_obj):
     # 1. Precompute/Extract data
     images_data, batches, initial_fluxes = extract_model_data(tractor_obj)
 
-    # 3. Define Loss Function
-    def loss_fn(fluxes):
-        model_images = render_scene(fluxes, images_data, batches)
-        chi2 = 0.0
-        for i, model in enumerate(model_images):
-            data = images_data[i]["data"]
-            invvar = images_data[i]["invvar"]
-            diff = data - model
-            chi2 += jnp.sum(diff**2 * invvar)
-        return chi2
+    # 2. Run JAX Optimization Core
+    # We use the pure function here.
+    optimized_fluxes = solve_fluxes_core(initial_fluxes, images_data, batches)
 
-    # 4. Optimize
-    # Use Matrix-Free Newton-CG for linear least squares.
-
-    # 1. Compute Gradient
-    grad_fn = jax.grad(loss_fn)
-    grads = grad_fn(initial_fluxes)
-
-    # 2. Define Hessian-Vector Product (HVP)
-    def matvec(v):
-        return jax.jvp(grad_fn, (initial_fluxes,), (v,))[1]
-
-    # 3. Solve H * step = -grads using CG
-    step, info = jax.scipy.sparse.linalg.cg(
-        matvec, -grads, maxiter=50
-    )  # 50 steps usually enough for convergence
-
-    # 4. Apply Update
-    # For a purely quadratic function, one Newton step is exact.
-    optimized_fluxes = initial_fluxes + step
-
-    # 5. Update Tractor object
-    # We must ensure optimized_fluxes is a numpy array (cpu) before setting params
-    # because tractor objects expect numpy usually.
+    # 3. Update Tractor object
     optimized_fluxes_np = np.array(optimized_fluxes)
 
     flux_idx = 0
     catalog = tractor_obj.catalog
     for src in catalog:
-        n_flux = len(src.brightness.getParams())
-        new_flux = optimized_fluxes_np[flux_idx : flux_idx + n_flux]
-        src.brightness.setParams(new_flux)
-        flux_idx += n_flux
+        # Skip sources that were skipped in extraction (Composite)
+        if isinstance(src, (CompositeGalaxy, FixedCompositeGalaxy)):
+            continue
+        # Also ensure it has brightness
+        if hasattr(src, 'brightness'):
+            n_flux = len(src.brightness.getParams())
+            new_flux = optimized_fluxes_np[flux_idx : flux_idx + n_flux]
+            src.brightness.setParams(new_flux)
+            flux_idx += n_flux
 
     return tractor_obj
