@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 import jax.numpy.fft as jfft
-from jax import jit, value_and_grad
+from jax import jit, value_and_grad, vmap
 import numpy as np
 
 from tractor.engine import Tractor
@@ -24,308 +24,321 @@ from tractor.jax.rendering import (
 )
 
 
-# Helper to extract data from Tractor objects
 def extract_model_data(tractor_obj):
     """
-    Extracts all necessary data from a Tractor object for JAX optimization.
+    Extracts all necessary data from a Tractor object for JAX optimization,
+    grouping sources into batches (PointSource, Galaxy) for vectorized rendering.
 
     Returns:
-        images_data: list of dicts (data, invvar, wcs_cd, psf_data)
-        sources_data: list of dicts (type, params, profile_mix)
-        param_mapping: list of (source_idx, param_name, slice)
+        images_data: list of dicts (data, invvar, psf_data, shape, ...)
+        batches: dict containing batched source data:
+            {
+                'PointSource': {
+                    'flux_idx': (N_ps,),
+                    'pos_pix': (N_ps, N_img, 2),
+                },
+                'Galaxy': {
+                    'flux_idx': (N_gal,),
+                    'pos_pix': (N_gal, N_img, 2),
+                    'wcs_cd_inv': (N_gal, N_img, 2, 2),
+                    'shapes': (N_gal, 3),
+                    'profile': { 'amp': ..., 'mean': ..., 'var': ... }
+                }
+            }
+        initial_fluxes: JAX array of all fluxes.
     """
     images = tractor_obj.images
     catalog = tractor_obj.catalog
 
-    # Extract Image Data
+    # 1. Extract Image Data & Precompute PSF FFTs
     images_data = []
     for img in images:
         h, w = img.shape
         data = jnp.array(img.getImage())
         invvar = jnp.array(img.getInvError()) ** 2
 
-        # WCS (assuming simple CD matrix for now, usually at center or per source)
-        # For small regions, one CD at center is enough. For large, we need more.
-        # Here we will assume we evaluate CD at source position during rendering
-        # but since we want to vectorize, maybe we precompute CD per source per image.
-        # But `extract_model_data` prepares static data.
-        # Let's store the WCS object wrapper or sufficient info.
-        # For this implementation, let's assume constant WCS across the stamp/image
-        # or that we can get CD at any pixel.
-        # But JAX needs arrays.
-        # Let's assume we optimize on small stamps (ROIs).
-        # Or if full image, we might need a map of CD.
-        # For simplicity, we assume we extract ROI for each source or group of sources.
-        # BUT the user said "forced photometry... fixed positions".
-        # So CD at source position is constant.
-
-        wcs = img.getWcs()
-
+        # PSF Extraction
         psf = img.getPsf()
         psf_data = {}
         if isinstance(psf, PixelizedPSF):
             psf_data["type"] = "pixelized"
-            psf_data["img"] = jnp.array(psf.img)  # The kernel
-            # PixelizedPSF usually has `sampling` etc. but `img` is the kernel.
-            # We need the FFT of the PSF for Galaxy rendering.
-            # We can precompute it if image size is fixed.
-            # But image size depends on source/ROI.
-            # Let's store raw image and compute FFT on fly or cache.
+            psf_data["img"] = jnp.array(psf.img)
+
+            # Precompute FFT for full image size (for FFT convolution)
+            ph, pw = psf.img.shape
+            pad_img = jnp.zeros((h, w))
+            # Place PSF in center
+            cy, cx = h // 2, w // 2
+            y0 = cy - ph // 2
+            x0 = cx - pw // 2
+            pad_img = pad_img.at[y0 : y0 + ph, x0 : x0 + pw].set(jnp.array(psf.img))
+            # Shift to (0,0) for FFT
+            pad_img = jnp.fft.ifftshift(pad_img)
+            psf_data["fft"] = jfft.rfft2(pad_img)
+
         elif isinstance(psf, GaussianMixturePSF):
             psf_data["type"] = "mog"
-            # (amp, mean, var)
-            # Tractor MoG: amp (K), mean (K,2), var (K,2,2)
             mog = psf.mog
             psf_data["amp"] = jnp.array(mog.amp)
             psf_data["mean"] = jnp.array(mog.mean)
             psf_data["var"] = jnp.array(mog.var)
-            # print("EXTRACTED MOG PSF")
 
         images_data.append(
             {
                 "data": data,
                 "invvar": invvar,
-                "wcs": wcs,  # Keep python object to query CD
                 "psf": psf_data,
                 "shape": (h, w),
+                # We don't strictly need WCS object here anymore for rendering,
+                # as we precompute pixel positions.
             }
         )
 
-    # Extract Source Data
-    sources_data = []
+    # 2. Extract Source Data & Group into Batches
     initial_fluxes = []
 
-    for i, src in enumerate(catalog):
-        src_info = {}
-        src_type = src.getSourceType()
-        src_info["type"] = src_type
+    # Collectors
+    ps_flux_idx = []
+    ps_pos_pix = [] # (N_ps, N_img, 2)
 
-        # Position
-        pos = src.pos.getParams()
-        src_info["pos"] = jnp.array(pos)
+    gal_flux_idx = []
+    gal_pos_pix = []
+    gal_wcs_cd_inv = [] # (N_gal, N_img, 2, 2)
+    gal_shapes = []
+    gal_profiles = [] # List of dicts
 
-        # Brightness (Flux)
-        # Assuming single band or handled by brightness object.
-        # For forced photometry, we want to optimize this.
-        # src.brightness.getParams() returns array of fluxes (one per band usually?)
-        # Or just one value for PointSource/SimpleGalaxy.
+    flux_offset = 0
+
+    for src in catalog:
+        # Flux
         br = src.brightness.getParams()
-        src_info["flux_idx"] = len(initial_fluxes)
+        n_flux = len(br)
         initial_fluxes.extend(br)
-        src_info["n_flux"] = len(br)
+        # We assume 1 flux param for the optimization target for now (single band/brightness)
+        # If n_flux > 1, we might need to handle band indices.
+        # For this implementation, we take the index of the first flux param.
+        f_idx = flux_offset
+        flux_offset += n_flux
 
-        # Shapes & Profiles
-        if isinstance(src, Galaxy):
-            # Exp, Dev, Composite
-            shape = src.shape.getParams()  # re, ab, phi
-            src_info["shape"] = jnp.array(shape)
-            # print(f"DEBUG: Source {i} type {src_type} shape {shape}")
+        # Precompute Position & WCS for all images
+        pos_pix_list = []
+        cd_inv_list = []
 
-            if isinstance(src, (ExpGalaxy, DevGalaxy)):
-                # Get mixture
-                # src.getProfile() returns MoG
-                profile = src.getProfile()
-                src_info["profile"] = {
-                    "amp": jnp.array(profile.amp),
-                    "mean": jnp.array(profile.mean),
-                    "var": jnp.array(profile.var),
-                }
-            # Handle other subclasses that are effectively SingleProfileSource
-            elif hasattr(src, "getProfile") and src.getProfile() is not None:
-                profile = src.getProfile()
-                src_info["profile"] = {
-                    "amp": jnp.array(profile.amp),
-                    "mean": jnp.array(profile.mean),
-                    "var": jnp.array(profile.var),
-                }
-                # print(f"Added profile for {src_type}")
-                # Treat as ProfileGalaxy/ExpGalaxy equivalent for rendering
-                if src_type not in ["ExpGalaxy", "DevGalaxy"]:
-                    # Map to generic handling in render loop
-                    # Or rely on src_type check.
-                    pass
-            elif isinstance(src, CompositeGalaxy):
-                # Handle composite...
-                pass
+        for img in images:
+            wcs = img.getWcs()
+            # Calculate pixel position (x, y)
+            x, y = wcs.positionToPixel(src.getPosition(), src)
+            pos_pix_list.append([x, y])
 
-        sources_data.append(src_info)
+            # Calculate CD Inverse matrix at that pixel
+            cd_inv = wcs.cdInverseAtPixel(x, y)
+            cd_inv_list.append(cd_inv)
 
-    return images_data, sources_data, jnp.array(initial_fluxes)
+        pos_pix = np.array(pos_pix_list) # (N_img, 2)
+        cd_inv = np.array(cd_inv_list)   # (N_img, 2, 2)
+
+        src_type = src.getSourceType()
+
+        # Grouping Logic
+        if src_type == 'PointSource':
+            ps_flux_idx.append(f_idx)
+            ps_pos_pix.append(pos_pix)
+
+        elif isinstance(src, Galaxy) or hasattr(src, 'getProfile'):
+            # Generic Galaxy handling
+            gal_flux_idx.append(f_idx)
+            gal_pos_pix.append(pos_pix)
+            gal_wcs_cd_inv.append(cd_inv)
+
+            # Shape (re, ab, phi)
+            gal_shapes.append(src.shape.getParams())
+
+            # Profile (MoG)
+            prof = src.getProfile()
+            if prof is None:
+                 # Fallback?
+                 pass
+            else:
+                gal_profiles.append({
+                    'amp': np.array(prof.amp),
+                    'mean': np.array(prof.mean),
+                    'var': np.array(prof.var)
+                })
+        else:
+            print(f"Warning: Unknown source type {src_type} in JAX optimization")
+
+    # 3. Assemble Batches with Padding
+    batches = {}
+
+    # -- Point Sources --
+    if ps_flux_idx:
+        batches['PointSource'] = {
+            'flux_idx': jnp.array(ps_flux_idx, dtype=jnp.int32),
+            'pos_pix': jnp.array(np.stack(ps_pos_pix), dtype=jnp.float32),
+        }
+
+    # -- Galaxies --
+    if gal_flux_idx:
+        # Zero Padding for MoG profiles
+        max_K = 0
+        for p in gal_profiles:
+            max_K = max(max_K, len(p['amp']))
+
+        amp_list, mean_list, var_list = [], [], []
+
+        for p in gal_profiles:
+            K = len(p['amp'])
+            pad_len = max_K - K
+
+            amp = p['amp']
+            mean = p['mean']
+            var = p['var']
+
+            if pad_len > 0:
+                amp = np.pad(amp, (0, pad_len), constant_values=0)
+                mean = np.pad(mean, ((0, pad_len), (0, 0)), constant_values=0)
+                # Pad var with identity (1.0) to avoid potential singularities in linear algebra if used
+                var = np.pad(var, ((0, pad_len), (0, 0), (0, 0)), constant_values=1.0)
+
+            amp_list.append(amp)
+            mean_list.append(mean)
+            var_list.append(var)
+
+        batches['Galaxy'] = {
+            'flux_idx': jnp.array(gal_flux_idx, dtype=jnp.int32),
+            'pos_pix': jnp.array(np.stack(gal_pos_pix), dtype=jnp.float32),
+            'wcs_cd_inv': jnp.array(np.stack(gal_wcs_cd_inv), dtype=jnp.float32),
+            'shapes': jnp.array(np.stack(gal_shapes), dtype=jnp.float32),
+            'profile': {
+                'amp': jnp.array(np.stack(amp_list), dtype=jnp.float32),
+                'mean': jnp.array(np.stack(mean_list), dtype=jnp.float32),
+                'var': jnp.array(np.stack(var_list), dtype=jnp.float32),
+            }
+        }
+
+    return images_data, batches, jnp.array(initial_fluxes, dtype=jnp.float32)
 
 
-def render_scene(fluxes, images_data, sources_data):
+def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape):
     """
-    Renders the scene for all images.
+    Renders a batch of Point Sources.
+    """
+    if psf_data['type'] == 'pixelized':
+        psf_fft = psf_data['fft']
 
-    Args:
-        fluxes: JAX array of all source fluxes.
-        images_data: Static data for images.
-        sources_data: Static data for sources (positions, shapes, profiles).
+        # Vmap over sources
+        # fluxes: (N_ps,)
+        # pos_pix: (N_ps, 2)
+        # psf_fft: (H, W) -> broadcasted or passed as is (not mapped)
 
-    Returns:
-        List of model images (one per image_data).
+        render_fn = vmap(render_point_source_fft, in_axes=(0, 0, None, None))
+
+        stamps = render_fn(fluxes, pos_pix, psf_fft, img_shape)
+        # Sum over sources
+        return jnp.sum(stamps, axis=0)
+
+    elif psf_data['type'] == 'mog':
+        # Vmap over sources
+        # render_point_source_mog(flux, pos, psf_mix, image_shape)
+        psf_mix = (psf_data['amp'], psf_data['mean'], psf_data['var'])
+
+        render_fn = vmap(render_point_source_mog, in_axes=(0, 0, None, None))
+
+        stamps = render_fn(fluxes, pos_pix, psf_mix, img_shape)
+        return jnp.sum(stamps, axis=0)
+
+    return jnp.zeros(img_shape)
+
+
+def render_batch_galaxies(fluxes, pos_pix, wcs_cd_inv, shapes, profiles, psf_data, img_shape):
+    """
+    Renders a batch of Galaxies.
+    """
+    if psf_data['type'] == 'pixelized':
+        psf_fft = psf_data['fft']
+
+        # Unpack profiles
+        # profiles is dict of (N_gal, ...)
+        gal_mix = (profiles['amp'], profiles['mean'], profiles['var'])
+
+        # Vmap over sources
+        # render_galaxy_fft(galaxy_mix, psf_fft, shape_params, wcs_cd_inv, subpixel_offset, image_shape)
+
+        # render_galaxy_fft does not take flux argument, so we multiply by flux after.
+        # But wait, render_galaxy_fft is expensive.
+        # vmap over: gal_mix components, shapes, wcs_cd_inv, pos_pix
+
+        # in_axes:
+        # gal_mix: (0, 0, 0)
+        # psf_fft: None
+        # shape_params: 0
+        # wcs_cd_inv: 0
+        # pos_pix: 0
+        # image_shape: None
+
+        render_fn = vmap(render_galaxy_fft, in_axes=((0, 0, 0), None, 0, 0, 0, None))
+
+        stamps = render_fn(gal_mix, psf_fft, shapes, wcs_cd_inv, pos_pix, img_shape)
+
+        # Multiply by fluxes (N_gal, 1, 1) broadcast
+        weighted_stamps = stamps * fluxes[:, jnp.newaxis, jnp.newaxis]
+
+        return jnp.sum(weighted_stamps, axis=0)
+
+    elif psf_data['type'] == 'mog':
+        psf_mix = (psf_data['amp'], psf_data['mean'], psf_data['var'])
+        gal_mix = (profiles['amp'], profiles['mean'], profiles['var'])
+
+        render_fn = vmap(render_galaxy_mog, in_axes=((0, 0, 0), None, 0, 0, 0, None))
+
+        stamps = render_fn(gal_mix, psf_mix, shapes, wcs_cd_inv, pos_pix, img_shape)
+
+        weighted_stamps = stamps * fluxes[:, jnp.newaxis, jnp.newaxis]
+
+        return jnp.sum(weighted_stamps, axis=0)
+
+    return jnp.zeros(img_shape)
+
+
+def render_scene(fluxes, images_data, batches):
+    """
+    Renders the scene for all images using batched processing.
     """
     model_images = []
 
     for img_idx, img_dat in enumerate(images_data):
         H, W = img_dat["shape"]
-        model = jnp.zeros((H, W))
+        img_model = jnp.zeros((H, W))
 
-        # Loop over sources
-        # (This loop is python unrolled, which is fine for moderate N sources)
-        for src in sources_data:
-            # Get flux for this source
-            f_idx = src["flux_idx"]
-            # Assuming 1 flux per source for simplicity here,
-            # or we need to map image band to flux index.
-            # In simple Tractor usage, brightness params align with bands if MultiParams.
-            # But let's assume single band for this demo or just take first flux.
-            flux = fluxes[f_idx]
+        # 1. Render Point Sources
+        if 'PointSource' in batches:
+            batch = batches['PointSource']
+            # Get data for this image
+            # pos_pix: (N_ps, N_img, 2) -> select img_idx
+            pos_pix = batch['pos_pix'][:, img_idx, :]
 
-            # WCS at source position
-            # We need to call wcs object. This breaks JIT if WCS is complex.
-            # For this task, we can assume we extracted CD matrix beforehand if we want JIT.
-            # BUT: We are inside JAX function now. We cannot call python `img_dat['wcs'].cdAtPixel`.
-            # We must pre-compute CD for all sources in `extract_model_data` or pass it in `sources_data`.
+            # Fluxes
+            f_idx = batch['flux_idx']
+            batch_fluxes = fluxes[f_idx]
 
-            # Let's fix this by computing CD in `extract_model_data` and storing in `sources_data` per image.
-            # See implementation below.
+            ps_model = render_batch_point_sources(batch_fluxes, pos_pix, img_dat['psf'], (H, W))
+            img_model = img_model + ps_model
 
-            wcs_cd_inv = src["wcs_cd_inv"][img_idx]
-            pos_pix = src["pos_pix"][img_idx]  # (x, y) on this image
+        # 2. Render Galaxies
+        if 'Galaxy' in batches:
+            batch = batches['Galaxy']
+            pos_pix = batch['pos_pix'][:, img_idx, :]
+            wcs_cd_inv = batch['wcs_cd_inv'][:, img_idx, :, :]
+            shapes = batch['shapes']
+            profiles = batch['profile']
 
-            # Subpixel offset
-            # pos_pix is float.
-            # We render centered at integer pixel?
-            # The rendering functions take full offset or subpixel?
-            # `render_pixelized_psf` takes (dx, dy) and shifts.
-            # `render_galaxy` centers at 0 and adds `pos`.
+            f_idx = batch['flux_idx']
+            batch_fluxes = fluxes[f_idx]
 
-            # Wait, `render_pixelized_psf` shifts an image.
-            # The image should be placed at the integer pixel location.
-            # But JAX arrays are fixed size. We cannot "place" a small stamp into a large image efficiently
-            # without `jax.lax.dynamic_update_slice`.
-            # And `render_galaxy` returns full image? No, that would be wasteful.
+            gal_model = render_batch_galaxies(batch_fluxes, pos_pix, wcs_cd_inv, shapes, profiles, img_dat['psf'], (H, W))
+            img_model = img_model + gal_model
 
-            # Optimization strategy:
-            # 1. We render a stamp centered on the source.
-            # 2. We add this stamp to the full model image.
-
-            # But `render_galaxy_fft` does IFFT on full image size?
-            # "psf_fft: (H, W) Complex Fourier Transform of the PSF (padded to image_shape)."
-            # Yes, standard FFT convolution requires padding to image size (or at least stamp size).
-
-            # If we do full image FFT, it's slow for many sources.
-            # Usually we do stamps.
-
-            # For this JAX implementation, let's assume we render into full image for simplicity,
-            # or assume the "image" passed in is actually a cutout (ROI) around the source.
-
-            # The user provided `jax_optimize.py` rendered into `image_data_shape`.
-
-            # Let's implement full image rendering for now (simple correctness).
-
-            src_type = src["type"]
-
-            if src_type == "PointSource":
-                if img_dat["psf"]["type"] == "pixelized":
-                    # We assume psf_img is centered.
-                    # We need to shift it to pos_pix.
-                    # pos_pix = (x, y).
-                    # Center of PSF image is at (pH//2, pW//2).
-                    # We want center at (x, y).
-                    # Shift = (x - pH//2, y - pW//2)?
-
-                    # No, `render_pixelized_psf` takes `dx, dy` (subpixel) and returns shifted PSF kernel.
-                    # Then we need to place it.
-
-                    # Actually `render_pixelized_psf` shifts the array elements.
-                    # If we pass the FULL size PSF image (padded), we can shift it to position.
-                    # But usually we have a small PSF stamp.
-
-                    # For JAX, maybe it's better to implement `add_at` (scatter_add).
-
-                    psf_img = img_dat["psf"]["img"]
-                    pH, pW = psf_img.shape
-
-                    # To render into full model image (H, W):
-                    # 1. Pad PSF kernel to (H, W).
-                    # 2. Shift to pos_pix.
-
-                    # Create padded PSF image centered at (pH//2, pW//2) inside (H, W) or at (0,0)?
-                    # render_pixelized_psf shifts an input image by (dx, dy).
-                    # If we input an image with PSF at some location (sx, sy), output has PSF at (sx+dx, sy+dy).
-
-                    # We want final PSF at pos_pix = (x, y).
-                    # Let's put PSF at (0, 0) (top-left) or center of image?
-                    # Using fftshift convention might be confusing with lanczos.
-
-                    # Let's start with PSF at center of kernel: (pH//2, pW//2).
-                    # We place this kernel into a large zero image at a reference position.
-                    # Say reference position (cx, cy) = (pH//2, pW//2).
-                    # We want to shift to (x, y).
-                    # Shift = (x - cx, y - cy).
-
-                    # Use FFT based rendering with phase shift for exact positioning globally
-                    psf_fft = img_dat["psf_fft_full"]
-                    stamp = render_point_source_fft(flux, pos_pix, psf_fft, (H, W))
-                    model = model + stamp
-                elif img_dat["psf"]["type"] == "mog":
-                    # MoG rendering
-                    stamp = render_point_source_mog(
-                        flux,
-                        pos_pix,
-                        (
-                            img_dat["psf"]["amp"],
-                            img_dat["psf"]["mean"],
-                            img_dat["psf"]["var"],
-                        ),
-                        (H, W),
-                    )
-                    model = model + stamp
-
-            elif (
-                src_type
-                in ["Galaxy", "ExpGalaxy", "DevGalaxy", "HoggGalaxy", "ProfileGalaxy"]
-                or "profile" in src
-            ):
-                shape = src["shape"]
-                # if 'profile' not in src, skip?
-                if "profile" not in src:
-                    continue
-                profile = src["profile"]  # (amp, mean, var)
-
-                # Check for ProfileGalaxy subclass?
-                # extract_model_data puts 'profile' in src info only if instance is ExpGalaxy/DevGalaxy
-                # In test we use ExpGalaxy.
-
-                if img_dat["psf"]["type"] == "pixelized":
-                    # FFT convolution
-                    psf_fft = img_dat["psf_fft_full"]
-
-                    gal_mix = (profile["amp"], profile["mean"], profile["var"])
-
-                    stamp = render_galaxy_fft(
-                        gal_mix, psf_fft, shape, wcs_cd_inv, pos_pix, (H, W)
-                    )
-                    model = model + flux * stamp
-
-                elif img_dat["psf"]["type"] == "mog":
-                    gal_mix = (profile["amp"], profile["mean"], profile["var"])
-                    psf_mix = (
-                        img_dat["psf"]["amp"],
-                        img_dat["psf"]["mean"],
-                        img_dat["psf"]["var"],
-                    )
-
-                    # print(f"Rendering Galaxy MoG: Flux {flux} Pos {pos_pix}")
-                    stamp = render_galaxy_mog(
-                        gal_mix, psf_mix, shape, wcs_cd_inv, pos_pix, (H, W)
-                    )
-                    # print(f"Stamp Sum: {jnp.sum(stamp)}")
-                    model = model + flux * stamp
-
-        model_images.append(model)
+        model_images.append(img_model)
 
     return model_images
 
@@ -341,100 +354,11 @@ def optimize_fluxes(tractor_obj):
         New Tractor object with optimized fluxes.
     """
     # 1. Precompute/Extract data
-    images_data, sources_data, initial_fluxes = extract_model_data(tractor_obj)
-
-    # 2. Add Precomputations (WCS CD, PSF FFT)
-    for i, img_dat in enumerate(images_data):
-        wcs = img_dat["wcs"]
-        H, W = img_dat["shape"]
-
-        # Precompute PSF FFT if needed
-        if img_dat["psf"]["type"] == "pixelized":
-            psf_img = img_dat["psf"]["img"]
-            # Pad PSF to image size
-            # Assuming PSF is small odd kernel.
-            # We place it at (0,0) (top-left) for FFT, handling wrap-around?
-            # Or centered?
-            # Standard FFT convolution: Pad kernels to size (H, W).
-            # If PSF is centered at its own center, we should shift it to (0,0) before FFT to avoid phase shift?
-            # Or just handle phase shift later.
-
-            # Simple approach: Pad to (H, W), keeping center at center.
-            # Then fftshift before fft?
-            # `np.fft.rfft2` expects (0,0) at index (0,0).
-            # So we should `ifftshift` the centered PSF.
-
-            ph, pw = psf_img.shape
-            pad_img = jnp.zeros((H, W))
-            # Place at center
-            cy, cx = H // 2, W // 2
-            y0 = cy - ph // 2
-            x0 = cx - pw // 2
-            pad_img = pad_img.at[y0 : y0 + ph, x0 : x0 + pw].set(psf_img)
-
-            # Shift so center is at (0,0)
-            pad_img = jnp.fft.ifftshift(pad_img)
-
-            psf_fft = jfft.rfft2(pad_img)
-            img_dat["psf_fft_full"] = psf_fft
-
-        # Precompute per-source data on this image
-        for src in sources_data:
-            # Position on this image
-            if "pos_pix" not in src:
-                src["pos_pix"] = []
-                src["wcs_cd_inv"] = []
-
-            # We need to call WCS methods which might not be JAX-traceable if inside JIT.
-            # But we are in python here.
-            # src['pos'] is JAX array, but we can convert to numpy for WCS call.
-            ra, dec = src["pos"]  # Tractor pos is usually RaDecPos
-            # Tractor `pos.getParams()` returns `(ra, dec)`.
-
-            # Map (ra, dec) to (x, y)
-            # We need the `src` object from catalog to pass to positionToPixel?
-            # Wait, `extract_model_data` lost the objects.
-            # But `tractor_obj.catalog` is available.
-            # `sources_data` aligns with `catalog`.
-
-            # We can use `wcs.positionToPixel(src_obj.getPosition())`
-            # But we already extracted params.
-
-            # Let's assume RaDecPos.
-            # `img.getWcs().positionToPixel(pos, src)`
-            # We need to perform this mapping.
-            # Since `optimize_fluxes` is the entry point (Python), we can do this loop.
-
-            # But wait, `src['pos']` is a JAX array from `extract_model_data`.
-            # We should probably do this IN `extract_model_data` where we have the objects.
-            pass
-
-    # Re-do extraction with more detail
-    images = tractor_obj.images
-    catalog = tractor_obj.catalog
-
-    # Update sources_data with WCS info
-    for i, src_info in enumerate(sources_data):
-        src_obj = catalog[i]
-        src_info["pos_pix"] = []
-        src_info["wcs_cd_inv"] = []
-
-        for img in images:
-            wcs = img.getWcs()
-            # Pos
-            x, y = wcs.positionToPixel(src_obj.getPosition(), src_obj)
-            src_info["pos_pix"].append(jnp.array([x, y]))
-
-            # CD Inv
-            cdinv = wcs.cdInverseAtPixel(x, y)
-            src_info["wcs_cd_inv"].append(jnp.array(cdinv))
-
-        src_info["pos_pix"] = jnp.stack(src_info["pos_pix"])  # (N_img, 2)
-        src_info["wcs_cd_inv"] = jnp.stack(src_info["wcs_cd_inv"])  # (N_img, 2, 2)
+    images_data, batches, initial_fluxes = extract_model_data(tractor_obj)
 
     # 3. Define Loss Function
     def loss_fn(fluxes):
-        model_images = render_scene(fluxes, images_data, sources_data)
+        model_images = render_scene(fluxes, images_data, batches)
         chi2 = 0.0
         for i, model in enumerate(model_images):
             data = images_data[i]["data"]
@@ -445,37 +369,16 @@ def optimize_fluxes(tractor_obj):
 
     # 4. Optimize
     # Use Matrix-Free Newton-CG for linear least squares.
-    # Since the problem is linear in fluxes, the loss is quadratic.
-    # We solve H * delta_x = -grad using CG.
 
     # 1. Compute Gradient
     grad_fn = jax.grad(loss_fn)
     grads = grad_fn(initial_fluxes)
 
     # 2. Define Hessian-Vector Product (HVP)
-    # The Hessian of f(x) is the Jacobian of grad(f)(x).
-    # HVP(v) = J(grad_f)(x) * v
-    # In JAX, we can use jvp to compute forward-mode derivatives.
-    # jvp(fun, primals, tangents) -> (primals_out, tangents_out)
-    # where tangents_out is Jacobian * tangents.
-
     def matvec(v):
-        # We compute H*v at the initial point (any point works for quadratic/linear problem)
-        # return jax.jvp(grad_fn, (initial_fluxes,), (v,))[1]
-
-        # Alternatively, for linear least squares specifically:
-        # Loss = ||Ax - b||^2
-        # Grad = 2 A^T (Ax - b)
-        # Hessian = 2 A^T A
-        # H*v = 2 A^T (A * v)
-        # We can implement this using jvp on the residual function if we exposed it.
-        # But jvp on grad is generic and works.
         return jax.jvp(grad_fn, (initial_fluxes,), (v,))[1]
 
     # 3. Solve H * step = -grads using CG
-    # jax.scipy.sparse.linalg.cg(A, b, x0=None, tol=1e-05, atol=0.0, maxiter=None, M=None)
-    # A can be a function.
-
     step, info = jax.scipy.sparse.linalg.cg(
         matvec, -grads, maxiter=50
     )  # 50 steps usually enough for convergence
@@ -485,14 +388,12 @@ def optimize_fluxes(tractor_obj):
     optimized_fluxes = initial_fluxes + step
 
     # 5. Update Tractor object
-    # Copy tractor object?
-    # Or update in place.
-
     # We must ensure optimized_fluxes is a numpy array (cpu) before setting params
     # because tractor objects expect numpy usually.
     optimized_fluxes_np = np.array(optimized_fluxes)
 
     flux_idx = 0
+    catalog = tractor_obj.catalog
     for src in catalog:
         n_flux = len(src.brightness.getParams())
         new_flux = optimized_fluxes_np[flux_idx : flux_idx + n_flux]
