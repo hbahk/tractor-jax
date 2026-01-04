@@ -25,7 +25,9 @@ def lanczos_filter(order, x):
     val = jnp.where(jnp.abs(x) >= order, 0.0, val)
     return val
 
-@jit
+from functools import partial
+
+@partial(jit, static_argnames=['axis', 'mode'])
 def batch_correlate1d(a, b, axis=1, mode='constant'):
     # a: (z, m, n)
     # b: (y, x)
