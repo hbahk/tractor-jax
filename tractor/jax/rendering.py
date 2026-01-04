@@ -5,6 +5,7 @@ from jax import vmap
 
 from tractor.miscutils import lanczos_filter, batch_correlate1d
 
+
 def get_galaxy_shape_matrix(re, ab, phi):
     """
     Computes the transformation matrix G that takes unit vectors (in re)
@@ -21,10 +22,10 @@ def get_galaxy_shape_matrix(re, ab, phi):
     # Phi is E of N.
     # 0 = N (Dec increasing)
     # 90 = E (RA increasing)
-    phi_rad = jnp.deg2rad(90. - phi)
+    phi_rad = jnp.deg2rad(90.0 - phi)
     # HACK -- bring up to a minimum size to prevent singular matrix inversions
     # Matching tractor/galaxy.py logic
-    re_deg = jnp.maximum(1. / 30., re) / 3600.
+    re_deg = jnp.maximum(1.0 / 30.0, re) / 3600.0
 
     c = jnp.cos(phi_rad)
     s = jnp.sin(phi_rad)
@@ -42,10 +43,11 @@ def get_galaxy_shape_matrix(re, ab, phi):
 
     row1 = jnp.stack([c, s * ab], axis=-1)
     row2 = jnp.stack([-s, c * ab], axis=-1)
-    mat = jnp.stack([row1, row2], axis=-2) # (..., 2, 2)
+    mat = jnp.stack([row1, row2], axis=-2)  # (..., 2, 2)
 
     G = re_deg[..., jnp.newaxis, jnp.newaxis] * mat
     return G
+
 
 def get_shear_matrix(cd_inv, G):
     """
@@ -60,6 +62,7 @@ def get_shear_matrix(cd_inv, G):
     """
     # Matrix multiplication
     return jnp.matmul(cd_inv, G)
+
 
 def apply_shear_to_cov(cov, Tinv):
     """
@@ -88,6 +91,7 @@ def apply_shear_to_cov(cov, Tinv):
 
     new_cov = jnp.matmul(res, Tinv_T)
     return new_cov
+
 
 def gaussian_fourier_transform(amp, var, mu, v, w):
     """
@@ -137,7 +141,7 @@ def gaussian_fourier_transform(amp, var, mu, v, w):
 
     # Exponential argument (real part)
     # -2 * pi^2 * (a*v^2 + d*w^2 + 2*b*v*w)
-    arg_real = -2. * (jnp.pi**2) * (a * vv + d * ww + 2 * b * vw)
+    arg_real = -2.0 * (jnp.pi**2) * (a * vv + d * ww + 2 * b * vw)
 
     F = jnp.exp(arg_real)
 
@@ -147,13 +151,14 @@ def gaussian_fourier_transform(amp, var, mu, v, w):
 
         # Exponential argument (imaginary part)
         # -2 * pi * i * (mx*v + my*w)
-        arg_imag = -2. * jnp.pi * 1j * (mx * v_grid + my * w_grid)
+        arg_imag = -2.0 * jnp.pi * 1j * (mx * v_grid + my * w_grid)
         F = F * jnp.exp(arg_imag)
 
     # Sum over K components
-    Fsum = jnp.sum(amp * F, axis=-3) # Sum over K axis (which is -3 now: ..., K, H, W)
+    Fsum = jnp.sum(amp * F, axis=-3)  # Sum over K axis (which is -3 now: ..., K, H, W)
 
     return Fsum
+
 
 def render_pixelized_psf(psf_img, dx, dy):
     """
@@ -186,7 +191,7 @@ def render_pixelized_psf(psf_img, dx, dy):
     # miscutils.lanczos_filter(order, x)
 
     # Construct kernels
-    k_range = jnp.arange(-L, L+1)
+    k_range = jnp.arange(-L, L + 1)
     Lx = lanczos_filter(L, k_range + dx)
     Ly = lanczos_filter(L, k_range + dy)
 
@@ -200,14 +205,16 @@ def render_pixelized_psf(psf_img, dx, dy):
     Ly = Ly[jnp.newaxis, :]
 
     # Shift X (axis 2)
-    sx = batch_correlate1d(img_b, Lx, axis=2, mode='constant')
+    sx = batch_correlate1d(img_b, Lx, axis=2, mode="constant")
     # Shift Y (axis 1)
-    outimg = batch_correlate1d(sx, Ly, axis=1, mode='constant')
+    outimg = batch_correlate1d(sx, Ly, axis=1, mode="constant")
 
     return outimg[0]
 
-def render_galaxy_fft(galaxy_mix, psf_fft, shape_params, wcs_cd_inv,
-                      subpixel_offset, image_shape):
+
+def render_galaxy_fft(
+    galaxy_mix, psf_fft, shape_params, wcs_cd_inv, subpixel_offset, image_shape
+):
     """
     Renders a galaxy using FFT convolution.
 
@@ -328,6 +335,7 @@ def render_galaxy_fft(galaxy_mix, psf_fft, shape_params, wcs_cd_inv,
 
     return img
 
+
 def render_point_source_pixelized(flux, subpixel_offset, psf_image):
     """
     Renders a point source with pixelized PSF.
@@ -343,6 +351,7 @@ def render_point_source_pixelized(flux, subpixel_offset, psf_image):
     dx, dy = subpixel_offset
     shifted_psf = render_pixelized_psf(psf_image, dx, dy)
     return flux * shifted_psf
+
 
 def render_point_source_fft(flux, pos, psf_fft, image_shape):
     """
@@ -381,6 +390,7 @@ def render_point_source_fft(flux, pos, psf_fft, image_shape):
 
     return img
 
+
 def convolve_gaussians(amp1, mean1, var1, amp2, mean2, var2):
     """
     Convolves two MoGs.
@@ -406,9 +416,12 @@ def convolve_gaussians(amp1, mean1, var1, amp2, mean2, var2):
     new_mean = (mean1[:, jnp.newaxis, :] + mean2[jnp.newaxis, :, :]).reshape(-1, 2)
 
     # (K1, 1, 2, 2) + (1, K2, 2, 2) -> (K1, K2, 2, 2)
-    new_var = (var1[:, jnp.newaxis, :, :] + var2[jnp.newaxis, :, :, :]).reshape(-1, 2, 2)
+    new_var = (var1[:, jnp.newaxis, :, :] + var2[jnp.newaxis, :, :, :]).reshape(
+        -1, 2, 2
+    )
 
     return new_amp, new_mean, new_var
+
 
 def evaluate_mog_grid(amp, mean, var, X, Y):
     """
@@ -444,8 +457,8 @@ def evaluate_mog_grid(amp, mean, var, X, Y):
     # But for 2x2, explicit formula is faster/simpler?
     # Let's use jax.numpy.linalg for generality.
 
-    inv_cov = jnp.linalg.inv(cov) # (1, 1, K, 2, 2)
-    det_cov = jnp.linalg.det(cov) # (1, 1, K)
+    inv_cov = jnp.linalg.inv(cov)  # (1, 1, K, 2, 2)
+    det_cov = jnp.linalg.det(cov)  # (1, 1, K)
 
     # Mahalanobis distance
     # diff^T * inv_cov * diff
@@ -453,7 +466,7 @@ def evaluate_mog_grid(amp, mean, var, X, Y):
 
     # diff is (..., 2). Expand to column vector (..., 2, 1)
     diff_col = diff[..., jnp.newaxis]
-    diff_row = diff[..., jnp.newaxis, :] # (..., 1, 2)
+    diff_row = diff[..., jnp.newaxis, :]  # (..., 1, 2)
 
     # inv_cov @ diff
     # (..., 2, 2) @ (..., 2, 1) -> (..., 2, 1)
@@ -472,7 +485,7 @@ def evaluate_mog_grid(amp, mean, var, X, Y):
     norm = 1.0 / (2.0 * jnp.pi * jnp.sqrt(det_cov))
 
     # Gaussian values
-    gauss = norm * jnp.exp(exponent) # (H, W, K)
+    gauss = norm * jnp.exp(exponent)  # (H, W, K)
 
     # Replace nans with 0
     gauss = jnp.nan_to_num(gauss)
@@ -486,8 +499,8 @@ def evaluate_mog_grid(amp, mean, var, X, Y):
 
     return jnp.sum(weighted_gauss, axis=-1)
 
-def render_galaxy_mog(galaxy_mix, psf_mix, shape_params, wcs_cd_inv,
-                      pos, image_shape):
+
+def render_galaxy_mog(galaxy_mix, psf_mix, shape_params, wcs_cd_inv, pos, image_shape):
     """
     Renders a galaxy using MoG convolution (Analytic).
 
@@ -522,8 +535,7 @@ def render_galaxy_mog(galaxy_mix, psf_mix, shape_params, wcs_cd_inv,
     # 2. Convolve with PSF
     # PSF is already in pixels.
     conv_amp, conv_mean, conv_var = convolve_gaussians(
-        gal_amp, sheared_gal_mean, sheared_gal_var,
-        psf_amp, psf_mean, psf_var
+        gal_amp, sheared_gal_mean, sheared_gal_var, psf_amp, psf_mean, psf_var
     )
 
     # Debug info
@@ -545,6 +557,7 @@ def render_galaxy_mog(galaxy_mix, psf_mix, shape_params, wcs_cd_inv,
     img = evaluate_mog_grid(conv_amp, final_mean, conv_var, xx, yy)
 
     return img
+
 
 def render_point_source_mog(flux, pos, psf_mix, image_shape):
     """
