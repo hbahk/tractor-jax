@@ -233,7 +233,7 @@ def render_galaxy_fft(
     wcs_cd_inv,
     subpixel_offset,
     image_shape,
-    psf_sampling=1.0,
+    sampling=1.0,
 ):
     """
     Renders a galaxy using FFT convolution.
@@ -241,12 +241,12 @@ def render_galaxy_fft(
     Args:
         galaxy_mix: (amp, mean, var) of the galaxy profile (normalized, unsheared).
         psf_fft: (H, W) Complex Fourier Transform of the PSF.
-                 If psf_sampling != 1, this should be the FFT of the oversampled PSF.
+                 If sampling != 1, this should be the FFT of the oversampled PSF.
         shape_params: (re, ab, phi)
         wcs_cd_inv: (2, 2) Inverse CD matrix
         subpixel_offset: (x, y)
         image_shape: (H, W) target image shape (data pixels)
-        psf_sampling: float. If < 1, indicates oversampling.
+        sampling: float. Over-sampling factor (>=1.0).
 
     Returns:
         Rendered image (H, W)
@@ -257,23 +257,23 @@ def render_galaxy_fft(
     H, W = image_shape
 
     # Handle Oversampling
-    if psf_sampling < 1.0:
-        factor = int(round(1.0 / psf_sampling))
+    if sampling > 1.0:
+        factor = int(round(sampling))
         # Ensure factor is valid (assuming integer oversampling for now)
         H_fft = H * factor
         W_fft = W * factor
 
         # Scale inputs to high-res
         # CD inv: degrees -> pixels. High res has 'factor' times more pixels per degree.
-        wcs_cd_inv = wcs_cd_inv / psf_sampling
+        wcs_cd_inv = wcs_cd_inv * sampling
 
         # Position: data pixels -> high res pixels
         # Add offset to align pixel centers.
         # Low res pixel 0 center maps to High res pixel center of the first block.
         # Center of first block (0..F-1) is (F-1)/2.0.
         # pos_hr = pos_lr * factor + (factor - 1) / 2.0
-        pos_x = pos_x / psf_sampling + (factor - 1) / 2.0
-        pos_y = pos_y / psf_sampling + (factor - 1) / 2.0
+        pos_x = pos_x * sampling + (factor - 1) / 2.0
+        pos_y = pos_y * sampling + (factor - 1) / 2.0
     else:
         H_fft = H
         W_fft = W
@@ -309,8 +309,8 @@ def render_galaxy_fft(
     img = jfft.irfft2(convolved_fft, s=(H_fft, W_fft))
 
     # 6. Downsample if needed
-    if psf_sampling < 1.0:
-        factor = int(round(1.0 / psf_sampling))
+    if sampling > 1.0:
+        factor = int(round(sampling))
         img = downsample_image(img, factor)
 
     return img
@@ -333,7 +333,7 @@ def render_point_source_pixelized(flux, subpixel_offset, psf_image):
     return flux * shifted_psf
 
 
-def render_point_source_fft(flux, pos, psf_fft, image_shape, psf_sampling=1.0):
+def render_point_source_fft(flux, pos, psf_fft, image_shape, sampling=1.0):
     """
     Renders a point source using FFT convolution (phase shift).
 
@@ -342,19 +342,19 @@ def render_point_source_fft(flux, pos, psf_fft, image_shape, psf_sampling=1.0):
         pos: (x, y) Position.
         psf_fft: (H, W) FFT of PSF (centered at 0 frequency).
         image_shape: (H, W).
-        psf_sampling: float.
+        sampling: float. Over-sampling factor (>=1.0).
 
     Returns:
         Rendered image (H, W).
     """
     H, W = image_shape
 
-    if psf_sampling < 1.0:
-        factor = int(round(1.0 / psf_sampling))
+    if sampling > 1.0:
+        factor = int(round(sampling))
         H_fft = H * factor
         W_fft = W * factor
         # Shift position for alignment
-        pos_fft = pos / psf_sampling + (factor - 1) / 2.0
+        pos_fft = pos * sampling + (factor - 1) / 2.0
     else:
         H_fft = H
         W_fft = W
@@ -379,8 +379,8 @@ def render_point_source_fft(flux, pos, psf_fft, image_shape, psf_sampling=1.0):
     img = jfft.irfft2(model_fft, s=(H_fft, W_fft))
 
     # Downsample
-    if psf_sampling < 1.0:
-        factor = int(round(1.0 / psf_sampling))
+    if sampling > 1.0:
+        factor = int(round(sampling))
         img = downsample_image(img, factor)
 
     return img

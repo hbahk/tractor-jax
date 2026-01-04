@@ -59,18 +59,20 @@ def extract_model_data(tractor_obj, oversample_psf=False):
             psf_data["img"] = jnp.array(psf.img)
 
             # Determine sampling
-            sampling = getattr(psf, "sampling", 1.0)
+            # In tractor, psf.sampling < 1 usually means oversampling.
+            psf_sampling = getattr(psf, "sampling", 1.0)
 
             # Handle Oversampling option
-            if oversample_psf and sampling != 1.0:
+            if oversample_psf and psf_sampling < 1.0:
                 # Store sampling factor (python float for static use)
-                psf_data["sampling"] = float(sampling)
+                # INVERT: we want sampling > 1 to represent oversampling factor
+                factor = 1.0 / psf_sampling
+                psf_data["sampling"] = float(factor)
 
                 # Calculate high-res grid size
-                # Assuming integer oversampling roughly
-                factor = int(round(1.0 / sampling))
-                H_hr = h * factor
-                W_hr = w * factor
+                factor_int = int(round(factor))
+                H_hr = h * factor_int
+                W_hr = w * factor_int
 
                 # Pad in high-res grid
                 ph, pw = psf.img.shape
@@ -82,9 +84,6 @@ def extract_model_data(tractor_obj, oversample_psf=False):
                 x0 = cx - pw // 2
 
                 # Ensure bounds
-                # If PSF is larger than padded image (unlikely for oversampled?), crop?
-                # Assuming PSF stamp is smaller than full image.
-
                 pad_img = pad_img.at[y0 : y0 + ph, x0 : x0 + pw].set(jnp.array(psf.img))
 
                 # Shift to (0,0) for FFT
@@ -285,8 +284,9 @@ def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape):
         # pos_pix: (N_ps, 2)
         # psf_fft: (H, W) -> broadcasted or passed as is (not mapped)
 
-        # Use partial to bind psf_sampling
-        render_fn = vmap(partial(render_point_source_fft, psf_sampling=sampling), in_axes=(0, 0, None, None))
+        # Use partial to bind sampling
+        # Note: render_point_source_fft needs to be updated to accept 'sampling'
+        render_fn = vmap(partial(render_point_source_fft, sampling=sampling), in_axes=(0, 0, None, None))
 
         stamps = render_fn(fluxes, pos_pix, psf_fft, img_shape)
         # Sum over sources
@@ -322,7 +322,7 @@ def render_batch_galaxies(
         gal_mix = (profiles["amp"], profiles["mean"], profiles["var"])
 
         # Vmap over sources
-        # render_galaxy_fft(galaxy_mix, psf_fft, shape_params, wcs_cd_inv, subpixel_offset, image_shape, psf_sampling)
+        # render_galaxy_fft(galaxy_mix, psf_fft, shape_params, wcs_cd_inv, subpixel_offset, image_shape, sampling)
 
         # in_axes:
         # gal_mix: (0, 0, 0)
@@ -332,8 +332,9 @@ def render_batch_galaxies(
         # pos_pix: 0
         # image_shape: None
 
-        # We bind psf_sampling using partial
-        render_fn = vmap(partial(render_galaxy_fft, psf_sampling=sampling), in_axes=((0, 0, 0), None, 0, 0, 0, None))
+        # We bind sampling using partial
+        # Note: render_galaxy_fft needs to be updated to accept 'sampling'
+        render_fn = vmap(partial(render_galaxy_fft, sampling=sampling), in_axes=((0, 0, 0), None, 0, 0, 0, None))
 
         stamps = render_fn(gal_mix, psf_fft, shapes, wcs_cd_inv, pos_pix, img_shape)
 
