@@ -16,7 +16,7 @@ from tractor.utils import BaseParams, ParamList, MultiParams, MogParams
 from tractor import mixture_profiles as mp
 from tractor import ducks
 
-from cupy_wrapper import cp
+import jax.numpy as cp
 
 if sys.version_info[0] == 2:
     # Py2
@@ -27,7 +27,7 @@ if sys.version_info[0] == 2:
 def lanczos_shift_image_batch_gpu(imgs, dxs, dys):
     """Translated from lanczos_shift_image python version to GPU using cupy
         and helper functions from tractor.miscutils"""
-    from tractor.miscutils import gpu_lanczos_filter,batch_correlate1d_gpu
+    from tractor.miscutils import lanczos_filter, batch_correlate1d
     do_reshape = False
     if len(imgs.shape) == 4:
         do_reshape = True
@@ -36,15 +36,15 @@ def lanczos_shift_image_batch_gpu(imgs, dxs, dys):
     L = 3
     nimg = dxs.size 
     lr = cp.tile(cp.arange(-L, L+1), (nimg, 1))
-    Lx = gpu_lanczos_filter(L, lr+dxs.reshape((nimg,1)))
-    Ly = gpu_lanczos_filter(L, lr+dys.reshape((nimg,1)))
+    Lx = lanczos_filter(L, lr+dxs.reshape((nimg,1)))
+    Ly = lanczos_filter(L, lr+dys.reshape((nimg,1)))
     # Normalize the Lanczos interpolants (preserve flux)
     del lr
     Lx /= Lx.sum(1).reshape((nimg,1))
     Ly /= Ly.sum(1).reshape((nimg,1))
-    sx = batch_correlate1d_gpu(imgs, Lx, axis=2, mode='constant')
+    sx = batch_correlate1d(imgs, Lx, axis=2, mode='constant')
     del Lx
-    outimg = batch_correlate1d_gpu(sx, Ly, axis=1, mode='constant')
+    outimg = batch_correlate1d(sx, Ly, axis=1, mode='constant')
     del Ly
     del sx
     if (do_reshape):
@@ -430,7 +430,7 @@ class BatchPixelizedPSF(BaseParams, ducks.ImageCalibration):
         py = cp.asarray(py)
         radius = cp.asarray(radius)
 
-        from astrometry.util.miscutils import get_overlapping_region
+        from tractor.miscutils import get_overlapping_region
 
         # get PSF image at desired pixel location
         img = self.getImage(px, py)

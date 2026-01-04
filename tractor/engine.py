@@ -190,7 +190,7 @@ class Tractor(MultiParams):
         return self.images
 
     def getImagesGPU(self):
-        import cupy as cp
+        import jax.numpy as cp
         return [cp.asarray(im) for im in self.images]
 
     def getCatalog(self):
@@ -467,7 +467,7 @@ class Tractor(MultiParams):
             patch = self.getModelPatch(img, src, minsb=minsb, **kwargs)
             if patch is None:
                 continue
-            patch.addTo(mod)
+            mod = patch.addTo(mod)
         return mod
 
     def getModelImages(self, **kwargs):
@@ -483,7 +483,7 @@ class Tractor(MultiParams):
             yield self.getChiImage(img=img, **kwargs)
 
     def getChiImageGPU(self, imgi=-1, img=None, srcs=None, minsb=0., **kwargs):
-        import cupy as cp
+        import jax.numpy as cp
         gi = cp.asarray(self.getChiImage(imgi, img, srcs, minsb, **kwargs))
         """
         TODO: In future use factored_optimizer helpers to get chi2
@@ -541,7 +541,7 @@ class Tractor(MultiParams):
         '''
         Return the posterior log PDF, evaluated at the current parameters.
         '''
-        import cupy as cp
+        import jax.numpy as cp
         lnprior = self.getLogPrior()
         if lnprior == -np.inf:
             return lnprior

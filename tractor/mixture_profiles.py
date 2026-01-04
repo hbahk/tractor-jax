@@ -75,12 +75,13 @@ class MixtureOfGaussians(object):
         return result
 
     def set_var(self, var):
+        var = np.array(var).astype(float)
         if var.size == self.K:
             self.var = np.zeros((self.K, self.D, self.D))
             for d in range(self.D):
                 self.var[:, d, d] = var
         else:
-            self.var = np.array(var).astype(float)
+            self.var = var
 
     def symmetrize(self):
         for i in range(self.D):

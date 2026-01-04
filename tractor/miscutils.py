@@ -1,112 +1,111 @@
+import jax.numpy as jnp
+from jax import jit
 import numpy as np
-import cupy as cp
-from math import pi
-import gc
 
-def lanczos_filter(order, x, out=None):
-    x = np.atleast_1d(x)
-    nz = np.logical_and(x != 0., np.logical_and(x < order, x > -order))
-    nz = np.flatnonzero(nz)
-    if out is None:
-        out = np.zeros(x.shape, dtype=np.float32)
+def get_overlapping_region(xlo, xhi, xmin, xmax):
+    if xlo > xmax or xhi < xmin or xlo > xhi or xmin > xmax:
+        return ([], [])
+    assert(xlo <= xhi)
+    assert(xmin <= xmax)
+    xloclamp = max(xlo, xmin)
+    Xlo = xloclamp - xlo
+    xhiclamp = min(xhi, xmax)
+    Xhi = Xlo + (xhiclamp - xloclamp)
+    return (slice(xloclamp, xhiclamp+1), slice(Xlo, Xhi+1))
+
+@jit
+def lanczos_filter(order, x):
+    x = jnp.atleast_1d(x)
+    pinz = jnp.pi * x
+    # Avoid division by zero
+    pinz_safe = jnp.where(x == 0, 1.0, pinz)
+
+    val = order * jnp.sin(pinz) * jnp.sin(pinz / order) / (pinz_safe**2)
+    val = jnp.where(x == 0, 1.0, val)
+    val = jnp.where(jnp.abs(x) >= order, 0.0, val)
+    return val
+
+@jit
+def batch_correlate1d(a, b, axis=1, mode='constant'):
+    # a: (z, m, n)
+    # b: (y, x)
+    # axis: 1 or 2
+    # mode: 'constant' (default) or 'full'
+
+    z, m, n = a.shape
+    y, x = b.shape
+
+    # In the original code, z == y is enforced.
+    # a is [N_images, H, W] or similar.
+    # b is [N_images, FilterLen] or similar.
+
+    # We use FFT convolution.
+    # Determine padding size.
+
+    if axis == 1:
+        dim_len = m
     else:
-        out[x <= -order] = 0.
-        out[x >=  order] = 0.
-    pinz = pi * x.flat[nz]
-    out.flat[nz] = order * np.sin(pinz) * np.sin(pinz / order) / (pinz**2)
-    out[x == 0] = 1.
-    return out
+        dim_len = n
 
-def gpu_lanczos_filter(order, x, out=None):
-    x = cp.atleast_1d(x)
-    nz = cp.logical_and(x != 0., cp.logical_and(x < order, x > -order))
-    #nz = cp.flatnonzero(nz)
-    if out is None:
-        out = cp.zeros(x.shape, dtype=cp.float32)
-    else:
-        out[x <= -order] = 0.
-        out[x >=  order] = 0.
-    pinz = pi * x[nz]
-    out[nz] = order * cp.sin(pinz) * cp.sin(pinz / order) / (pinz**2)
-    out[x == 0] = 1.
-    return out
+    npad = dim_len - x
+    r = dim_len + x - 1
+    nclip = r - dim_len
 
-def batch_correlate1d_cpu(a, b, axis=1, mode='constant'):
-    #a = (z, m, n)
-    #b = (y, x) 
-    #First dimension = number of individual (m, n) , (x) arrays
-    #mode = 'full' or 'constant'
-    z,m,n = a.shape
-    y,x = b.shape 
-    if z != y:
-        raise RuntimeError("Dimensions "+str(z)+" and "+str(y)+" do not match") 
-    npad = (m-x)
-    r = m+x-1
-    nclip = r-m 
-    if axis == 2:
-        npad = (n-x)
-        r = n+x-1
-        nclip = r-n 
+    # Padding b
+    # In original code:
+    # if npad > 0:
+    #    if npad % 2 == 0:
+    #        padded_b = cp.pad(b, [0, npad//2])
+    #    else:
+    #        padded_b = cp.pad(b, [(0,0), (npad//2+1, npad//2)])
+    # The padding logic in original code seems a bit specific/odd for general convolution but matches 'same' or 'valid' or specific alignment.
+    # Let's try to match the logic.
+
+    pad_width = []
     if npad > 0:
         if npad % 2 == 0:
-            padded_b = np.pad(b, [0, npad//2])
+            pad_width = ((0, 0), (0, npad//2))
         else:
-            padded_b = np.pad(b, [(0,0), (npad//2+1, npad//2)])
+            pad_width = ((0, 0), (npad//2+1, npad//2))
+        padded_b = jnp.pad(b, pad_width)
     else:
         padded_b = b
-    f_a = np.fft.fft(a, r, axis=axis)
-    f_b = np.fft.fft(padded_b, r, axis=1)
-    if axis == 1:
-        f_p = np.einsum("ijk,ij->ijk", f_a, np.conj(f_b))
-    else:
-        f_p = np.einsum("ijk,ik->ijk", f_a, np.conj(f_b))
-    c = np.real(np.fft.fftshift(np.fft.ifft(f_p, axis=axis), axes=(axis)))
-    if mode == 'full':
-        return c
-    if axis == 1:
-        return c[:,nclip//2:-nclip//2,:]
-    return c[:,:,nclip//2:-nclip//2]
 
-def batch_correlate1d_gpu(a, b, axis=1, mode='constant'):
-    #a = (z, m, n)
-    #b = (y, x)
-    #First dimension = number of individual (m, n) , (x) arrays
-    #mode = 'full' or 'constant'
-    z,m,n = a.shape
-    y,x = b.shape
-    if z != y:
-        raise RuntimeError("Dimensions "+str(z)+" and "+str(y)+" do not match")
-    npad = (m-x)
-    r = m+x-1
-    nclip = r-m
-    if axis == 2:
-        npad = (n-x)
-        r = n+x-1
-        nclip = r-n
-    if npad > 0:
-        if npad % 2 == 0:
-            padded_b = cp.pad(b, [0, npad//2])
-        else:
-            padded_b = cp.pad(b, [(0,0), (npad//2+1, npad//2)])
-    else:
-        padded_b = b
-    f_a = cp.fft.fft(a, r, axis=axis)
-    f_b = cp.fft.fft(padded_b, r, axis=1)
-    del padded_b
+    f_a = jnp.fft.fft(a, r, axis=axis)
+    # b is 2D (y, x), we need to fft along axis 1 (the x dimension)
+    f_b = jnp.fft.fft(padded_b, r, axis=1)
+
+    # Broadcasting for einsum
+    # a: (z, m, n) -> f_a: (z, m, n) (fft along axis)
+    # b: (y, x) -> f_b: (y, r)
+    # if axis=1: a is (z, m, n), fft is along m. f_a is (z, r, n).
+    #            b matches z. f_b is (z, r).
+    #            We want to multiply f_a[i, :, k] * conj(f_b[i, :])
+
     if axis == 1:
-        f_p = cp.einsum("ijk,ij->ijk", f_a, cp.conj(f_b))
+        # f_a: (z, r, n)
+        # f_b: (z, r)
+        # result: (z, r, n)
+        f_p = jnp.einsum("ijk,ij->ijk", f_a, jnp.conj(f_b))
     else:
-        f_p = cp.einsum("ijk,ik->ijk", f_a, cp.conj(f_b))
-    del f_a, f_b
-    c = cp.real(cp.fft.fftshift(cp.fft.ifft(f_p, axis=axis), axes=(axis)))
-    del f_p
-    if c.size > 5.e+8/8:
-        #Make sure memory is freed
-        #gc.collect()
-        mpool = cp.get_default_memory_pool()
-        mpool.free_all_blocks()
+        # axis == 2
+        # f_a: (z, m, r)
+        # f_b: (z, r)
+        # result: (z, m, r)
+        f_p = jnp.einsum("ijk,ik->ijk", f_a, jnp.conj(f_b))
+
+    c = jnp.real(jnp.fft.fftshift(jnp.fft.ifft(f_p, axis=axis), axes=(axis)))
+
     if mode == 'full':
         return c
+
+    # Clipping
+    start = nclip // 2
+    end = -nclip // 2
+    if end == 0:
+        end = None
+
     if axis == 1:
-        return c[:,nclip//2:-nclip//2,:]
-    return c[:,:,nclip//2:-nclip//2]
+        return c[:, start:end, :]
+    else:
+        return c[:, :, start:end]

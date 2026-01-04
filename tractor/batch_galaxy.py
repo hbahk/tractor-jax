@@ -13,8 +13,7 @@ from the SDSS /Photo/ software; we use multi-Gaussian approximations
 of these.
 """
 import numpy as np
-from cupy_wrapper import cp
-#import cupy as cp
+import jax.numpy as cp
 
 from tractor.galaxy import HoggGalaxy
 from tractor.sersic import SersicGalaxy

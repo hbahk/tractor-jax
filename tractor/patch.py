@@ -250,6 +250,7 @@ class Patch(object):
         return self.y0
 
     def clipTo(self, W, H, use_gpu=False):
+        from tractor.miscutils import get_overlapping_region
         if self.patch is None:
             return False
         if self.x0 >= W:
@@ -336,7 +337,7 @@ class Patch(object):
         Returns (spatch, sparent), slices that yield the overlapping regions
         in this Patch and the given image.
         '''
-        from astrometry.util.miscutils import get_overlapping_region
+        from tractor.miscutils import get_overlapping_region
         (ph, pw) = self.shape
         (ih, iw) = shape
         (outx, inx) = get_overlapping_region(
@@ -348,18 +349,18 @@ class Patch(object):
         return (iny, inx), (outy, outx)
 
     def getPixelIndicesGPU(self, parent, dtype=np.int32):
-        import cupy as cp
-        return cp.asarray(self.getPixelIndices(parent, dtype))
+        import jax.numpy as jnp
+        return jnp.asarray(self.getPixelIndices(parent, dtype))
 
     def getPixelIndices(self, parent, dtype=np.int32, use_gpu=False):
         if use_gpu:
-            import cupy as cp
+            import jax.numpy as jnp
             if self.patch is None:
-                return cp.array([], dtype)
+                return jnp.array([], dtype)
             (h, w) = self.shape
             (H, W) = parent.shape
-            return ( (cp.arange(w, dtype=dtype) + dtype(self.x0))[cp.newaxis, :] +
-                ((cp.arange(h, dtype=dtype) + dtype(self.y0)) * dtype(W))[:, cp.newaxis]).ravel()
+            return ( (jnp.arange(w, dtype=dtype) + dtype(self.x0))[jnp.newaxis, :] +
+                ((jnp.arange(h, dtype=dtype) + dtype(self.y0)) * dtype(W))[:, jnp.newaxis]).ravel()
         if self.patch is None:
             return np.array([], dtype)
         (h, w) = self.shape
@@ -370,9 +371,9 @@ class Patch(object):
     plotnum = 0
 
     def addTo(self, img, scale=1.):
-        from astrometry.util.miscutils import get_overlapping_region
+        from tractor.miscutils import get_overlapping_region
         if self.patch is None:
-            return
+            return img
         (ih, iw) = img.shape
         (ph, pw) = self.shape
         (outx, inx) = get_overlapping_region(
@@ -380,9 +381,17 @@ class Patch(object):
         (outy, iny) = get_overlapping_region(
             self.y0, self.y0 + ph - 1, 0, ih - 1)
         if inx == [] or iny == []:
-            return
+            return img
         p = self.patch[iny, inx]
-        img[outy, outx] += p * scale
+
+        # JAX-compatible update
+        # Check if img is a JAX array
+        if hasattr(img, 'at'):
+            return img.at[outy, outx].add(p * scale)
+        else:
+            # Fallback for numpy arrays (legacy support)
+            img[outy, outx] += p * scale
+            return img
 
         # if False:
         #   tmpimg = np.zeros_like(img)

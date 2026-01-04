@@ -303,7 +303,7 @@ class ProfileGalaxy(object):
                                    outer_real_nsigma = 4.,
                                    force_halfsize=None,
                                    **kwargs):
-        from astrometry.util.miscutils import get_overlapping_region
+        from tractor.miscutils import get_overlapping_region
         if modelMask is not None:
             x0, y0 = modelMask.x0, modelMask.y0
         else:
@@ -757,11 +757,11 @@ class HoggGalaxy(ProfileGalaxy, Galaxy):
         return amix
 
     def _getShearedProfileGPU(self, imgs, px, py):
-        import cupy as cp
+        import jax.numpy as jnp
         galmix = self.getProfile()
-        cdinv = cp.array([img.getWcs().cdInverseAtPixel(px[i], py[i]) for i, img in enumerate(imgs)])
-        G = cp.asarray(self.shape.getRaDecBasis())
-        Tinv = cp.dot(cdinv, G)
+        cdinv = jnp.array([img.getWcs().cdInverseAtPixel(px[i], py[i]) for i, img in enumerate(imgs)])
+        G = jnp.asarray(self.shape.getRaDecBasis())
+        Tinv = jnp.dot(cdinv, G)
         amix = galmix.apply_shear_GPU(Tinv)
         return amix
 

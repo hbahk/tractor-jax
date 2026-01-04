@@ -38,7 +38,7 @@ def lanczos_shift_image(img, dx, dy, inplace=False, force_python=False):
         or H > work_corr7f.shape[0] or W > work_corr7f.shape[1]):
         # fallback to python:
         from scipy.ndimage import correlate1d
-        from astrometry.util.miscutils import lanczos_filter
+        from tractor.miscutils import lanczos_filter
         L = 3
         Lx = lanczos_filter(L, np.arange(-L, L+1) + dx)
         Ly = lanczos_filter(L, np.arange(-L, L+1) + dy)
@@ -61,64 +61,19 @@ def lanczos_shift_image(img, dx, dy, inplace=False, force_python=False):
 def lanczos_shift_image_batch_gpu(imgs, dxs, dys):
     """Translated from lanczos_shift_image python version to GPU using cupy
         and helper functions from tractor.miscutils"""
-    import cupy as cp
-    from tractor.miscutils import gpu_lanczos_filter,batch_correlate1d_gpu
+    import jax.numpy as jnp
+    from tractor.miscutils import lanczos_filter, batch_correlate1d
     L = 3
     nimg = dxs.size 
-    lr = cp.tile(cp.arange(-L, L+1), (nimg, 1))
-    Lx = gpu_lanczos_filter(L, lr+dxs.reshape((nimg,1)))
-    Ly = gpu_lanczos_filter(L, lr+dys.reshape((nimg,1)))
+    lr = jnp.tile(jnp.arange(-L, L+1), (nimg, 1))
+    Lx = lanczos_filter(L, lr+dxs.reshape((nimg,1)))
+    Ly = lanczos_filter(L, lr+dys.reshape((nimg,1)))
     # Normalize the Lanczos interpolants (preserve flux)
     Lx /= Lx.sum(1).reshape((nimg,1))
     Ly /= Ly.sum(1).reshape((nimg,1))
-    sx = batch_correlate1d_gpu(imgs, Lx, axis=2, mode='constant')
-    outimg = batch_correlate1d_gpu(sx, Ly, axis=1, mode='constant')
+    sx = batch_correlate1d(imgs, Lx, axis=2, mode='constant')
+    outimg = batch_correlate1d(sx, Ly, axis=1, mode='constant')
     return outimg
-
-def get_overlapping_region(xlo, xhi, xmin, xmax):
-    '''
-    Given a range of integer coordinates that you want to, eg, cut out
-    of an image, [xlo, xhi], and bounds for the image [xmin, xmax],
-    returns the range of coordinates that are in-bounds, and the
-    corresponding region within the desired cutout.
-
-    For example, say you have an image of shape H,W and you want to
-    cut out a region of halfsize "hs" around pixel coordinate x,y, but
-    so that coordinate x,y is centered in the cutout even if x,y is
-    close to the edge.  You can do:
-
-    cutout = np.zeros((hs*2+1, hs*2+1), img.dtype)
-    iny,outy = get_overlapping_region(y-hs, y+hs, 0, H-1)
-    inx,outx = get_overlapping_region(x-hs, x+hs, 0, W-1)
-    cutout[outy,outx] = img[iny,inx]
-
-    '''
-    if xlo > xmax or xhi < xmin or xlo > xhi or xmin > xmax:
-        return ([], [])
-
-    assert(xlo <= xhi)
-    assert(xmin <= xmax)
-
-    xloclamp = max(xlo, xmin)
-    Xlo = xloclamp - xlo
-
-    xhiclamp = min(xhi, xmax)
-    Xhi = Xlo + (xhiclamp - xloclamp)
-
-    #print 'xlo, xloclamp, xhiclamp, xhi', xlo, xloclamp, xhiclamp, xhi
-    assert(xloclamp >= xlo)
-    assert(xloclamp >= xmin)
-    assert(xloclamp <= xmax)
-    assert(xhiclamp <= xhi)
-    assert(xhiclamp >= xmin)
-    assert(xhiclamp <= xmax)
-    #print 'Xlo, Xhi, (xmax-xmin)', Xlo, Xhi, xmax-xmin
-    assert(Xlo >= 0)
-    assert(Xhi >= 0)
-    assert(Xlo <= (xhi-xlo))
-    assert(Xhi <= (xhi-xlo))
-
-    return (slice(xloclamp, xhiclamp+1), slice(Xlo, Xhi+1))
 
 
 # GLOBAL scratch array for lanczos_shift_image!
@@ -206,7 +161,7 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
                                                         modelMask=modelMask,
                                                         radius=radius, **kwargs)
 
-        from astrometry.util.miscutils import get_overlapping_region
+        from tractor.miscutils import get_overlapping_region
 
         # get PSF image at desired pixel location
         img = self.getImage(px, py)

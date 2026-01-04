@@ -1,6 +1,6 @@
 from __future__ import print_function
 import numpy as np
-from astrometry.util.ttime import Time
+from tractor.tractortime import TAITime as Time
 from tractor.engine import logverb, OptResult, logmsg
 
 
