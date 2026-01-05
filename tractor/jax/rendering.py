@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import jax.numpy.fft as jfft
+import jax.image
 from jax import vmap
 
 from tractor.miscutils import lanczos_filter, batch_correlate1d
@@ -212,31 +213,63 @@ def render_pixelized_psf(psf_img, dx, dy):
     return outimg[0]
 
 
+def downsample_image(img, target_shape):
+    """
+    Downsamples image to target_shape using Lanczos3 interpolation.
+    Conserves total flux by scaling the result.
+
+    Args:
+        img: (H_hr, W_hr) image
+        target_shape: (H, W) tuple
+
+    Returns:
+        (H, W) image
+    """
+    H_hr, W_hr = img.shape
+    H, W = target_shape
+
+    # Calculate scale factors
+    scale_y = H_hr / H
+    scale_x = W_hr / W
+
+    # Resize using jax.image.resize
+    # We use "lanczos3" as requested.
+    out = jax.image.resize(img, target_shape, method='lanczos3')
+
+    # Flux conservation:
+    # If we downsample, the new pixel area is (scale_y * scale_x) times the old pixel area.
+    # jax.image.resize interpolates intensity. To preserve total flux,
+    # we need to multiply by the ratio of areas.
+    # (Or effectively, we are integrating over a larger area).
+    out = out * (scale_y * scale_x)
+
+    return out
+
+
 def render_galaxy_fft(
-    galaxy_mix, psf_fft, shape_params, wcs_cd_inv, subpixel_offset, image_shape
+    galaxy_mix,
+    psf_fft,
+    shape_params,
+    wcs_cd_inv,
+    subpixel_offset,
+    image_shape,
 ):
     """
     Renders a galaxy using FFT convolution.
 
     Args:
         galaxy_mix: (amp, mean, var) of the galaxy profile (normalized, unsheared).
-        psf_fft: (H, W) Complex Fourier Transform of the PSF (padded to image_shape).
+        psf_fft: (H, W) Complex Fourier Transform of the PSF.
         shape_params: (re, ab, phi)
         wcs_cd_inv: (2, 2) Inverse CD matrix
-        subpixel_offset: (dx, dy)
-        image_shape: (H, W)
+        subpixel_offset: (x, y)
+        image_shape: (H, W) target image shape (data pixels)
 
     Returns:
         Rendered image (H, W)
     """
     amp, mean, var = galaxy_mix
     re, ab, phi = shape_params
-    # subpixel_offset is actually full position (x,y) if we assume galaxy_fft is centered at 0
-    # and we want to shift it to position.
-    # Or is it (dx, dy)?
-    # The signature in optimizer calls it `pos_pix`.
-    # So it is (x, y).
-
     pos_x, pos_y = subpixel_offset
     H, W = image_shape
 
@@ -255,83 +288,20 @@ def render_galaxy_fft(
     freq_y = jfft.fftfreq(H)
 
     # Meshgrid frequencies
-    # v (x freq) varies along last axis
-    # w (y freq) varies along second last axis
     v_grid, w_grid = jnp.meshgrid(freq_x, freq_y)
 
     # Galaxy is centered at (0,0).
     # We want to shift it to (pos_x, pos_y).
-    # We can do this by adding phase shift in Fourier domain.
-    # Shift theorem: F(f(x-x0)) = F(f(x)) * exp(-2pi i k x0)
-    # Here k is frequency.
-
-    # But wait. `gaussian_fourier_transform` handles mean (position).
-    # We can just set the mean of the Gaussian to (pos_x, pos_y).
-    # BUT: (0,0) in FFT corresponds to index (0,0).
-    # If we want to place it at (pos_x, pos_y) in image coordinates,
-    # we should check coordinate system convention.
-    # Usually index (0,0) is top-left.
-    # The gaussian_fourier_transform formula uses exp(-2pi i (mx*v + my*w)).
-    # This corresponds to shifting the function centered at 0 to mean (mx, my).
-    # So if we set mean = (pos_x, pos_y), the inverse FFT will have the gaussian at (pos_x, pos_y).
-
-    # Note: sheared_mean is (K, 2). It is 0.
-    # We add pos to it.
     shifted_mean = sheared_mean + jnp.array([pos_x, pos_y])
 
     gal_fft = gaussian_fourier_transform(amp, sheared_var, shifted_mean, v_grid, w_grid)
 
     # 4. Multiply with PSF FFT
-    # psf_fft should be rfft2 format
+    # psf_fft should be rfft2 format matching (H, W)
     convolved_fft = gal_fft * psf_fft
 
     # 5. Inverse FFT
-    # irfft2
     img = jfft.irfft2(convolved_fft, s=(H, W))
-
-    # 6. Lanczos shift by subpixel offset
-    # No need if we used phase shift for full position!
-    # Unless we want to split integer and fractional part.
-    # Using phase shift for integer part is exact.
-    # Using phase shift for fractional part is also exact (sinc interpolation equivalent).
-    # But Lanczos is local and avoids ringing?
-    # Actually phase shift is perfect reconstruction for bandlimited signals.
-    # Gaussians are not bandlimited but quickly decaying.
-    # FFT based shift is fine.
-
-    # So we don't need render_pixelized_psf here if we use phase shift.
-
-    # However, if we wanted to replicate Tractor exactly:
-    # Tractor computes galaxy on grid, then convolves.
-    # Or computes galaxy FFT, multiplies PSF FFT.
-    # Tractor centers the patch.
-
-    # Our `optimizer.py` implementation pads PSF to full image and centers at 0 (via ifftshift).
-    # This implies the PSF kernel is centered at (0,0).
-    # So convolution does not introduce shift.
-    # The galaxy shift determines final position.
-
-    # Important: `irfft2` result has origin at (0,0).
-    # But standard image display assumes (0,0) is center of top-left pixel?
-    # Or corner?
-    # We want result to be on grid.
-
-    # Also, we need to take Real part because of numerical noise.
-    # irfft2 returns real.
-
-    # FFT normalization?
-    # jax.numpy.fft.rfft2 is unnormalized.
-    # jax.numpy.fft.irfft2 has 1/N normalization?
-    # Docs say: "The inverse of rfft2 is irfft2."
-    # Standard: forward sum, backward 1/N sum.
-    # If we do F_gal * F_psf, and invert.
-    # F_gal is from gaussian_fourier_transform which is analytic FT formula.
-    # Analytic FT is integral.
-    # Discrete FT (DFT) approximates integral but with scaling.
-    # DFT(x) ~ Sum x.
-    # FT(x) ~ Integral x.
-    # If dx=1 (pixels), then DFT(x) ~ FT(x).
-    # So scaling should be fine.
 
     return img
 
@@ -374,10 +344,8 @@ def render_point_source_fft(flux, pos, psf_fft, image_shape):
 
     v, w = jnp.meshgrid(freq_x, freq_y)
 
-    # Phase shift for position pos=(x, y)
+    # Phase shift for position
     # exp(-2pi * i * (x*v + y*w))
-    # Note: v corresponds to x (last axis), w to y (second last axis).
-
     phase = -2.0 * jnp.pi * 1j * (pos[0] * v + pos[1] * w)
     shift_fft = jnp.exp(phase)
 
