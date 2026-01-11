@@ -27,7 +27,7 @@ from tractor.jax.rendering import (
 )
 
 
-def extract_model_data(tractor_obj, oversample_rendering=False):
+def extract_model_data(tractor_obj, oversample_rendering=False, fit_background=False):
     """
     Extracts all necessary data from a Tractor object for JAX optimization,
     grouping sources into batches (PointSource, Galaxy) for vectorized rendering.
@@ -35,12 +35,14 @@ def extract_model_data(tractor_obj, oversample_rendering=False):
     Args:
         tractor_obj: Tractor object.
         oversample_rendering: If True, handles oversampled PixelizedPSF by rendering at high resolution.
+        fit_background: If True, includes background level in optimization parameters (one scalar per image).
 
     Returns:
         images_data: list of dicts (data, invvar, psf_data, shape, ...)
         batches: dict containing batched source data.
         initial_fluxes: JAX array of all fluxes.
     """
+    from tractor import ConstantSky
     images = tractor_obj.images
     catalog = tractor_obj.catalog
 
@@ -307,6 +309,28 @@ def extract_model_data(tractor_obj, oversample_rendering=False):
             },
         }
 
+    # -- Background --
+    if fit_background:
+        # Append background parameters to initial_fluxes
+        bg_flux_idx = []
+        for img in images:
+            sky = img.getSky()
+            # If sky is ConstantSky, use its value. Else start from 0.
+            if hasattr(sky, "val"):
+                 val = sky.val
+            elif hasattr(sky, "getConstant"):
+                 val = sky.getConstant()
+            else:
+                 val = 0.0
+
+            initial_fluxes.append(val)
+            bg_flux_idx.append(flux_offset)
+            flux_offset += 1
+
+        batches["Background"] = {
+            "flux_idx": jnp.array(bg_flux_idx, dtype=jnp.int32)
+        }
+
     return images_data, batches, jnp.array(initial_fluxes, dtype=jnp.float32)
 
 
@@ -498,6 +522,13 @@ def render_scene(fluxes, images_data, batches):
             )
             img_model = img_model + gal_model
 
+        # 3. Background
+        if "Background" in batches:
+            batch = batches["Background"]
+            f_idx = batch["flux_idx"][img_idx]
+            bg_val = fluxes[f_idx]
+            img_model = img_model + bg_val
+
         model_images.append(img_model)
 
     return model_images
@@ -616,6 +647,16 @@ def compute_fisher_diagonal(images_data, batches, n_flux):
             contrib = jnp.sum(stamps**2 * invvar[jnp.newaxis, :, :], axis=(1, 2))
             fisher_diag = fisher_diag.at[f_idx].add(contrib)
 
+        # 3. Background
+        if "Background" in batches:
+            batch = batches["Background"]
+            f_idx = batch["flux_idx"][img_idx]
+
+            # Derivative of model w.r.t background is 1.0 everywhere.
+            # Contribution is sum(1.0^2 * invvar) = sum(invvar)
+            contrib = jnp.sum(invvar)
+            fisher_diag = fisher_diag.at[f_idx].add(contrib)
+
     return fisher_diag
 
 
@@ -673,7 +714,7 @@ def solve_fluxes_core(initial_fluxes, images_data, batches, return_variances=Fal
     return optimized_fluxes
 
 
-def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=False):
+def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=False, fit_background=False):
     """
     Optimizes fluxes for forced photometry using JAX.
 
@@ -681,13 +722,20 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
         tractor_obj: Tractor object with images and catalog.
         oversample_rendering: bool, if True use oversampled rendering for PixelizedPSF with sampling != 1.
         return_variances: bool, if True, return variances of fluxes.
+        fit_background: bool, if True, includes background level in optimization parameters.
 
     Returns:
         New Tractor object with optimized fluxes.
         (Optional) variances array if return_variances=True.
     """
+    from tractor import ConstantSky
+
     # 1. Precompute/Extract data
-    images_data, batches, initial_fluxes = extract_model_data(tractor_obj, oversample_rendering=oversample_rendering)
+    images_data, batches, initial_fluxes = extract_model_data(
+        tractor_obj,
+        oversample_rendering=oversample_rendering,
+        fit_background=fit_background
+    )
 
     # 2. Run JAX Optimization Core
     # We use the pure function here.
@@ -711,6 +759,23 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
             new_flux = optimized_fluxes_np[flux_idx : flux_idx + n_flux]
             src.brightness.setParams(new_flux)
             flux_idx += n_flux
+
+    # Update Background if fitted
+    if fit_background and "Background" in batches:
+        bg_flux_idx = batches["Background"]["flux_idx"]
+        # bg_flux_idx is array of indices for each image
+        # indices are JAX array, convert to numpy
+        bg_flux_idx = np.array(bg_flux_idx)
+
+        for i, idx in enumerate(bg_flux_idx):
+            bg_val = optimized_fluxes_np[idx]
+            img = tractor_obj.images[i]
+            # Update sky
+            if isinstance(img.sky, ConstantSky):
+                img.sky.val = bg_val
+            else:
+                # Replace with ConstantSky
+                img.sky = ConstantSky(bg_val)
 
     if return_variances:
         return tractor_obj, np.array(variances)
