@@ -7,6 +7,20 @@ from jax import vmap
 from tractor.miscutils import lanczos_filter, batch_correlate1d
 
 
+def rebin_downsample_int_flux(img: jnp.ndarray, k_y: int, k_x: int) -> jnp.ndarray:
+    """
+    Flux-conserving integer-factor downsample.
+    img: (H, W) flux per pixel (integrated over pixel).
+    returns: (H//k_y, W//k_x), sum preserved if H,W divisible.
+    """
+    H, W = img.shape
+    H2 = (H // k_y) * k_y
+    W2 = (W // k_x) * k_x
+    img = img[:H2, :W2]  # crop; or pad if you prefer
+    img = img.reshape(H2 // k_y, k_y, W2 // k_x, k_x)
+    return img.sum(axis=(1, 3))
+
+
 def get_galaxy_shape_matrix(re, ab, phi):
     """
     Computes the transformation matrix G that takes unit vectors (in re)
@@ -215,8 +229,9 @@ def render_pixelized_psf(psf_img, dx, dy):
 
 def downsample_image(img, target_shape):
     """
-    Downsamples image to target_shape using Lanczos3 interpolation.
-    Conserves total flux by scaling the result.
+    Downsamples image to target_shape.
+    If factors are integers, uses flux-conserving rebinning (summation).
+    Otherwise uses Lanczos3 interpolation with flux scaling.
 
     Args:
         img: (H_hr, W_hr) image
@@ -228,19 +243,24 @@ def downsample_image(img, target_shape):
     H_hr, W_hr = img.shape
     H, W = target_shape
 
-    # Calculate scale factors
+    # Try to detect integer downsampling
+    # This assumes shapes are static or concrete integers at trace time
+    is_int_y = (H_hr % H == 0)
+    is_int_x = (W_hr % W == 0)
+
+    if is_int_y and is_int_x:
+        k_y = int(H_hr // H)
+        k_x = int(W_hr // W)
+        return rebin_downsample_int_flux(img, k_y, k_x)
+
+    # Fallback
     scale_y = H_hr / H
     scale_x = W_hr / W
 
     # Resize using jax.image.resize
-    # We use "lanczos3" as requested.
     out = jax.image.resize(img, target_shape, method='lanczos3')
 
-    # Flux conservation:
-    # If we downsample, the new pixel area is (scale_y * scale_x) times the old pixel area.
-    # jax.image.resize interpolates intensity. To preserve total flux,
-    # we need to multiply by the ratio of areas.
-    # (Or effectively, we are integrating over a larger area).
+    # Flux conservation
     out = out * (scale_y * scale_x)
 
     return out
