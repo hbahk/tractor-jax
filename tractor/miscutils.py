@@ -114,11 +114,18 @@ def batch_correlate1d(a, b, axis=1, mode='constant'):
 
 def lanczos3_interpolate_grid(xstart, xstep, ystart, ystep, out_img, in_img):
     """
-    Numpy implementation of Lanczos-3 grid interpolation.
+    Numpy implementation of Lanczos-3 grid interpolation, with support for downsampling.
     """
     H_out, W_out = out_img.shape
     H_in, W_in = in_img.shape
     L = 3
+
+    # Handle downsampling by widening the kernel
+    sx = max(1.0, xstep)
+    sy = max(1.0, ystep)
+
+    Lx = L * sx
+    Ly = L * sy
 
     x_out = xstart + np.arange(W_out) * xstep
     y_out = ystart + np.arange(H_out) * ystep
@@ -134,6 +141,21 @@ def lanczos3_interpolate_grid(xstart, xstep, ystart, ystep, out_img, in_img):
         res[mask1] = a * np.sin(xp) * np.sin(xp/a) / (xp**2)
         return res
 
+    def lanczos_kernel_scaled(x, scale, a=3):
+        # Effective kernel is (1/scale) * Sinc(x/scale) ?
+        # Or just Sinc(x/scale) and normalize later?
+        # Standard Lanczos reconstruction: sum(w) should be 1.
+        # If we widen, we must scale down amplitude?
+        # Actually, if we sample denser (xstep < 1), kernel is fixed.
+        # If we sample sparser (xstep > 1), we effectively smooth.
+        # We want the integral of the kernel over the sampling step to be roughly 1.
+        # Sinc(t) integrates to 1.
+        # Sinc(x/scale) integrates to scale.
+        # So we should divide by scale.
+
+        # Using 1/scale normalization:
+        return lanczos_kernel_np(x / scale, a) / scale
+
     temp_img = np.zeros((H_in, W_out), dtype=in_img.dtype)
 
     # Vectorize inner loop?
@@ -145,8 +167,8 @@ def lanczos3_interpolate_grid(xstart, xstep, ystart, ystep, out_img, in_img):
 
     for i in range(W_out):
         x = x_out[i]
-        k_min = int(np.ceil(x - L))
-        k_max = int(np.floor(x + L))
+        k_min = int(np.ceil(x - Lx))
+        k_max = int(np.floor(x + Lx))
 
         # We can construct index array
         ks = np.arange(k_min, k_max + 1)
@@ -155,7 +177,7 @@ def lanczos3_interpolate_grid(xstart, xstep, ystart, ystep, out_img, in_img):
         ks = ks[valid]
 
         if len(ks) > 0:
-            w = lanczos_kernel_np(x - ks, L)
+            w = lanczos_kernel_scaled(x - ks, sx, L)
             # temp_img[:, i] = sum(in_img[:, k] * w)
             # broadcasting: in_img[:, ks] is (H_in, len(ks))
             # w is (len(ks),)
@@ -163,15 +185,15 @@ def lanczos3_interpolate_grid(xstart, xstep, ystart, ystep, out_img, in_img):
 
     for j in range(H_out):
         y = y_out[j]
-        k_min = int(np.ceil(y - L))
-        k_max = int(np.floor(y + L))
+        k_min = int(np.ceil(y - Ly))
+        k_max = int(np.floor(y + Ly))
 
         ks = np.arange(k_min, k_max + 1)
         valid = (ks >= 0) & (ks < H_in)
         ks = ks[valid]
 
         if len(ks) > 0:
-            w = lanczos_kernel_np(y - ks, L)
+            w = lanczos_kernel_scaled(y - ks, sy, L)
             out_img[j, :] = np.dot(w, temp_img[ks, :])
 
     return out_img
