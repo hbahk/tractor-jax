@@ -346,7 +346,90 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
                                                  width=mw, height=mh)
             return Patch(xl+ix, yl+iy, native_img * scale)
 
-        xl,yl,img = self._sampleImage(img, dx, dy)
+        # Check for integer downsampling
+        factor = 1. / self.sampling
+        is_integer_factor = abs(factor - round(factor)) < 1e-4
+        # Also need input image size to be large enough?
+        # If we use binning, we need to handle edges carefully.
+        # But for now, let's trust _sampleImage fallback if we are close to edge?
+        # Actually _sampleImage handles edges by clamping/padding (in lanczos3_interpolate_grid)
+        # Here we should implement similar robustness.
+
+        # Only use special path if no radius clipping is requested (or if we can handle it)
+        # And if we are not using modelMask (handled above).
+
+        if is_integer_factor and radius is None:
+            k = int(round(factor))
+
+            # Target High Res size
+            target_h = self.nativeH * k
+            target_w = self.nativeW * k
+
+            h, w = img.shape
+
+            # Pad to target size first (centering roughly)
+            # Add margin for shifting
+            margin = int(np.ceil(max(abs(dx * k), abs(dy * k)))) + 10
+
+            canvas_h = max(h, target_h) + 2 * margin
+            canvas_w = max(w, target_w) + 2 * margin
+
+            # Define crop region in center of canvas
+            crop_x0 = (canvas_w - target_w) // 2
+            crop_y0 = (canvas_h - target_h) // 2
+
+            target_center_x_in_canvas = crop_x0 + (target_w - 1) / 2.0
+            target_center_y_in_canvas = crop_y0 + (target_h - 1) / 2.0
+
+            # Desired peak position
+            desired_x = target_center_x_in_canvas + dx * k
+            desired_y = target_center_y_in_canvas + dy * k
+
+            # Place img such that its peak (w//2) is close to desired_x
+            # curr_x = w//2 + pw
+            # pw ~ desired_x - w//2
+            pw = int(round(desired_x - (w // 2)))
+            ph = int(round(desired_y - (h // 2)))
+
+            # Clamp to canvas
+            pw = max(0, min(canvas_w - w, pw))
+            ph = max(0, min(canvas_h - h, ph))
+
+            pad_img = np.zeros((canvas_h, canvas_w), dtype=img.dtype)
+            pad_img[ph:ph+h, pw:pw+w] = img
+
+            curr_x = (w // 2) + pw
+            curr_y = (h // 2) + ph
+
+            shift_x = desired_x - curr_x
+            shift_y = desired_y - curr_y
+
+            shifted = lanczos_shift_image(pad_img, shift_x, shift_y)
+
+            # Crop to target size
+            crop = shifted[crop_y0 : crop_y0 + target_h, crop_x0 : crop_x0 + target_w]
+
+            # Binning
+            crop = crop.reshape(self.nativeH, k, self.nativeW, k)
+            downsampled = crop.sum(axis=(1, 3))
+
+            # Adjust scaling.
+            # We want to return something that, when multiplied by 'scale' (k^2), gives the Flux.
+            # 'downsampled' IS the Flux (sum).
+            # So we return downsampled / k^2.
+            img = downsampled / (k**2)
+
+            # Calculate xl, yl
+            # The patch is centered at (ix, iy).
+            # Size (nativeW, nativeH).
+            # xl = -nativeW // 2
+            # yl = -nativeH // 2
+            xl = -(self.nativeW // 2)
+            yl = -(self.nativeH // 2)
+
+        else:
+            xl,yl,img = self._sampleImage(img, dx, dy)
+
         img *= scale
         x0 = ix + xl
         y0 = iy + yl
