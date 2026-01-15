@@ -111,3 +111,67 @@ def batch_correlate1d(a, b, axis=1, mode='constant'):
         return c[:, start:end, :]
     else:
         return c[:, :, start:end]
+
+def lanczos3_interpolate_grid(xstart, xstep, ystart, ystep, out_img, in_img):
+    """
+    Numpy implementation of Lanczos-3 grid interpolation.
+    """
+    H_out, W_out = out_img.shape
+    H_in, W_in = in_img.shape
+    L = 3
+
+    x_out = xstart + np.arange(W_out) * xstep
+    y_out = ystart + np.arange(H_out) * ystep
+
+    def lanczos_kernel_np(x, a=3):
+        x = np.atleast_1d(x)
+        res = np.zeros_like(x)
+        mask = np.abs(x) < a
+        mask0 = mask & (x == 0)
+        mask1 = mask & (x != 0)
+        res[mask0] = 1.0
+        xp = x[mask1] * np.pi
+        res[mask1] = a * np.sin(xp) * np.sin(xp/a) / (xp**2)
+        return res
+
+    temp_img = np.zeros((H_in, W_out), dtype=in_img.dtype)
+
+    # Vectorize inner loop?
+    # For small images, loops are fine. For large, maybe slow.
+    # But this is primarily for verification/tests/legacy CPU path.
+
+    # Precompute X weights
+    # For each output column i, we need weights for relevant k
+
+    for i in range(W_out):
+        x = x_out[i]
+        k_min = int(np.ceil(x - L))
+        k_max = int(np.floor(x + L))
+
+        # We can construct index array
+        ks = np.arange(k_min, k_max + 1)
+        # Filter valid
+        valid = (ks >= 0) & (ks < W_in)
+        ks = ks[valid]
+
+        if len(ks) > 0:
+            w = lanczos_kernel_np(x - ks, L)
+            # temp_img[:, i] = sum(in_img[:, k] * w)
+            # broadcasting: in_img[:, ks] is (H_in, len(ks))
+            # w is (len(ks),)
+            temp_img[:, i] = np.dot(in_img[:, ks], w)
+
+    for j in range(H_out):
+        y = y_out[j]
+        k_min = int(np.ceil(y - L))
+        k_max = int(np.floor(y + L))
+
+        ks = np.arange(k_min, k_max + 1)
+        valid = (ks >= 0) & (ks < H_in)
+        ks = ks[valid]
+
+        if len(ks) > 0:
+            w = lanczos_kernel_np(y - ks, L)
+            out_img[j, :] = np.dot(w, temp_img[ks, :])
+
+    return out_img

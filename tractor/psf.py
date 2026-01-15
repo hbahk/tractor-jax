@@ -302,7 +302,7 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
 
     def _sampleImage(self, img, dx, dy,
                      xlo=None, ylo=None, width=None, height=None):
-        from astrometry.util.util import lanczos3_interpolate_grid
+        from tractor.miscutils import lanczos3_interpolate_grid
         if img is None:
             img = self.img
         if xlo is None:
@@ -338,14 +338,16 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
         dx = px - ix
         dy = py - iy
 
+        scale = 1. / self.sampling**2
         if modelMask is not None:
             mh, mw = modelMask.shape
             mx0, my0 = modelMask.x0, modelMask.y0
             xl,yl,native_img = self._sampleImage(img, dx, dy, xlo=mx0-ix, ylo=my0-iy,
                                                  width=mw, height=mh)
-            return Patch(xl+ix, yl+iy, native_img)
+            return Patch(xl+ix, yl+iy, native_img * scale)
 
         xl,yl,img = self._sampleImage(img, dx, dy)
+        img *= scale
         x0 = ix + xl
         y0 = iy + yl
 
