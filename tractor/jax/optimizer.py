@@ -717,6 +717,7 @@ def solve_fluxes_core(initial_fluxes, images_data, batches, return_variances=Fal
 def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=False, fit_background=False):
     """
     Optimizes fluxes for forced photometry using JAX.
+    Iterates over images in tractor_obj and fits each one separately.
 
     Args:
         tractor_obj: Tractor object with images and catalog.
@@ -725,59 +726,54 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
         fit_background: bool, if True, includes background level in optimization parameters.
 
     Returns:
-        New Tractor object with optimized fluxes.
-        (Optional) variances array if return_variances=True.
+        List of results per image.
+        Each result is (fluxes, variances) if return_variances is True, else fluxes.
+        Note: The tractor_obj source catalog is NOT updated because independent fits per image
+        cannot be stored in a single source brightness model.
+        However, if fit_background is True, img.sky is updated for each image.
     """
     from tractor import ConstantSky
 
-    # 1. Precompute/Extract data
-    images_data, batches, initial_fluxes = extract_model_data(
-        tractor_obj,
-        oversample_rendering=oversample_rendering,
-        fit_background=fit_background
-    )
+    results = []
 
-    # 2. Run JAX Optimization Core
-    # We use the pure function here.
-    if return_variances:
-        optimized_fluxes, variances = solve_fluxes_core(initial_fluxes, images_data, batches, return_variances=True)
-    else:
-        optimized_fluxes = solve_fluxes_core(initial_fluxes, images_data, batches, return_variances=False)
+    for i, img in enumerate(tractor_obj.images):
+        # Create a temporary Tractor object for this image
+        # We assume catalog is shared
+        sub_tractor = Tractor([img], tractor_obj.catalog)
 
-    # 3. Update Tractor object
-    optimized_fluxes_np = np.array(optimized_fluxes)
+        # 1. Precompute/Extract data
+        images_data, batches, initial_fluxes = extract_model_data(
+            sub_tractor,
+            oversample_rendering=oversample_rendering,
+            fit_background=fit_background
+        )
 
-    flux_idx = 0
-    catalog = tractor_obj.catalog
-    for src in catalog:
-        # Skip sources that were skipped in extraction (Composite)
-        if isinstance(src, (CompositeGalaxy, FixedCompositeGalaxy)):
-            continue
-        # Also ensure it has brightness
-        if hasattr(src, "brightness"):
-            n_flux = len(src.brightness.getParams())
-            new_flux = optimized_fluxes_np[flux_idx : flux_idx + n_flux]
-            src.brightness.setParams(new_flux)
-            flux_idx += n_flux
+        # 2. Run JAX Optimization Core
+        if return_variances:
+            optimized_fluxes, variances = solve_fluxes_core(initial_fluxes, images_data, batches, return_variances=True)
+            res = (np.array(optimized_fluxes), np.array(variances))
+        else:
+            optimized_fluxes = solve_fluxes_core(initial_fluxes, images_data, batches, return_variances=False)
+            res = np.array(optimized_fluxes)
 
-    # Update Background if fitted
-    if fit_background and "Background" in batches:
-        bg_flux_idx = batches["Background"]["flux_idx"]
-        # bg_flux_idx is array of indices for each image
-        # indices are JAX array, convert to numpy
-        bg_flux_idx = np.array(bg_flux_idx)
+        results.append(res)
 
-        for i, idx in enumerate(bg_flux_idx):
-            bg_val = optimized_fluxes_np[idx]
-            img = tractor_obj.images[i]
-            # Update sky
+        # Update Background if fitted
+        if fit_background and "Background" in batches:
+            optimized_fluxes_np = np.array(optimized_fluxes)
+            bg_flux_idx = batches["Background"]["flux_idx"] # Should be array of size 1 for 1 image
+
+            # bg_flux_idx is JAX array, but since we have 1 image, it might be 1D array with 1 element
+            bg_flux_idx = np.array(bg_flux_idx)
+
+            # The structure of bg_flux_idx depends on extract_model_data logic.
+            # It appends flux_offset for each image.
+            # So for 1 image, it has 1 element.
+            bg_val = optimized_fluxes_np[bg_flux_idx[0]]
+
             if isinstance(img.sky, ConstantSky):
                 img.sky.val = bg_val
             else:
-                # Replace with ConstantSky
                 img.sky = ConstantSky(bg_val)
 
-    if return_variances:
-        return tractor_obj, np.array(variances)
-
-    return tractor_obj
+    return results

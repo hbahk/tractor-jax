@@ -67,12 +67,17 @@ def test_jax_optimizer_variance_integration():
 
     # Run optimization with variance
     try:
-        tractor_opt, variances = optimize_fluxes(tractor, return_variances=True)
+        results = optimize_fluxes(tractor, return_variances=True)
     except Exception as e:
         print(f"Optimization failed with error: {e}")
         raise e
 
-    print("Optimized flux:", src.brightness.getParams())
+    assert isinstance(results, list)
+    assert len(results) == 1
+
+    fluxes, variances = results[0]
+
+    print("Optimized flux:", fluxes)
     print("Variances:", variances)
 
     # Check return type
@@ -83,8 +88,9 @@ def test_jax_optimizer_variance_integration():
     assert variances[0] > 0.0
 
     # Check non-variance call still works
-    res = optimize_fluxes(tractor, return_variances=False)
-    assert not isinstance(res, tuple)
+    results_novar = optimize_fluxes(tractor, return_variances=False)
+    assert isinstance(results_novar, list)
+    assert isinstance(results_novar[0], np.ndarray)
 
     print("Integration test passed!")
 
