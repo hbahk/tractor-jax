@@ -27,6 +27,15 @@ from tractor.jax.rendering import (
     downsample_image,
 )
 
+# Trigger PyTree registration
+try:
+    import tractor.jax.tree
+    tractor.jax.tree.register_pytree_nodes()
+except ImportError:
+    pass
+except Exception as e:
+    print(f"Warning: Failed to register JAX PyTree nodes: {e}")
+
 
 def extract_model_data(tractor_obj, oversample_rendering=False, fit_background=False):
     """
@@ -701,7 +710,7 @@ def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=Fals
     return optimized_fluxes
 
 
-def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=False, fit_background=False, update_catalog=False):
+def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=False, fit_background=False, update_catalog=False, vmap_images=True):
     """
     Optimizes fluxes for forced photometry using JAX.
     Iterates over images in tractor_obj and fits each one separately using vectorized execution (vmap).
@@ -713,6 +722,8 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
         fit_background: bool, if True, includes background level in optimization parameters.
         update_catalog: bool, if True, updates the source catalog with optimized fluxes.
                         Requires single image or warns if multiple.
+        vmap_images: bool, if True (default), stacks all images and processes them in a single vmap call.
+                     If False, iterates over images sequentially (saving memory).
 
     Returns:
         List of results per image.
@@ -722,57 +733,119 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
     """
     from tractor import ConstantSky
 
-    # 1. Extract Data (Full Batch)
-    images_data, batches, initial_fluxes = extract_model_data(
-        tractor_obj,
-        oversample_rendering=oversample_rendering,
-        fit_background=fit_background
-    )
-
-    # 2. Define in_axes for batches
-    batches_in_axes = {}
-    if "PointSource" in batches:
-        batches_in_axes["PointSource"] = {
-            "flux_idx": None, # Shared
-            "pos_pix": 0,     # Batched
-        }
-    if "Galaxy" in batches:
-        batches_in_axes["Galaxy"] = {
-            "flux_idx": None,
-            "pos_pix": 0,
-            "wcs_cd_inv": 0,
-            "shapes": None,
-            "profile": {
-                "amp": None,
-                "mean": None,
-                "var": None,
-            }
-        }
-    if "Background" in batches:
-        batches_in_axes["Background"] = {
-            "flux_idx": None
-        }
-
-    # 3. Vmap Optimization
-    # images_data is fully batched (0)
-    # initial_fluxes is batched (0)
-
-    solve_fn = vmap(
-        partial(solve_fluxes_core, return_variances=return_variances),
-        in_axes=(0, 0, batches_in_axes)
-    )
-
-    if return_variances:
-        optimized_fluxes_stack, variances_stack = solve_fn(initial_fluxes, images_data, batches)
-    else:
-        optimized_fluxes_stack = solve_fn(initial_fluxes, images_data, batches)
-
-    # 4. Process Results & Update Backgrounds
     results = []
 
-    optimized_fluxes_np = np.array(optimized_fluxes_stack)
-    if return_variances:
-        variances_np = np.array(variances_stack)
+    # Common function to compile/call solve_fluxes_core
+    # We can use JIT here regardless of vmap
+    solve_jit = jit(partial(solve_fluxes_core, return_variances=return_variances))
+
+    if vmap_images:
+        # 1. Extract Data (Full Batch)
+        images_data, batches, initial_fluxes = extract_model_data(
+            tractor_obj,
+            oversample_rendering=oversample_rendering,
+            fit_background=fit_background
+        )
+
+        # 2. Define in_axes for batches
+        batches_in_axes = {}
+        if "PointSource" in batches:
+            batches_in_axes["PointSource"] = {
+                "flux_idx": None, # Shared
+                "pos_pix": 0,     # Batched
+            }
+        if "Galaxy" in batches:
+            batches_in_axes["Galaxy"] = {
+                "flux_idx": None,
+                "pos_pix": 0,
+                "wcs_cd_inv": 0,
+                "shapes": None,
+                "profile": {
+                    "amp": None,
+                    "mean": None,
+                    "var": None,
+                }
+            }
+        if "Background" in batches:
+            batches_in_axes["Background"] = {
+                "flux_idx": None
+            }
+
+        # 3. Vmap Optimization
+        # images_data is fully batched (0)
+        # initial_fluxes is batched (0)
+
+        solve_fn = vmap(
+            partial(solve_fluxes_core, return_variances=return_variances),
+            in_axes=(0, 0, batches_in_axes)
+        )
+
+        if return_variances:
+            optimized_fluxes_stack, variances_stack = solve_fn(initial_fluxes, images_data, batches)
+        else:
+            optimized_fluxes_stack = solve_fn(initial_fluxes, images_data, batches)
+
+        optimized_fluxes_np = np.array(optimized_fluxes_stack)
+        if return_variances:
+            variances_np = np.array(variances_stack)
+
+    else:
+        # Sequential Processing
+        # We process images one by one to save memory.
+        # However, we still need to collect results in the same format.
+
+        fluxes_list = []
+        variances_list = []
+
+        batches = {} # Initialize in case loop doesn't run, to avoid UnboundLocalError for bg check
+
+        for img in tractor_obj.images:
+            # Create a mini Tractor object for extraction
+            # extract_model_data works on Tractor objects.
+            sub_tractor = Tractor([img], tractor_obj.catalog)
+
+            img_data, batches, init_flux = extract_model_data(
+                sub_tractor,
+                oversample_rendering=oversample_rendering,
+                fit_background=fit_background
+            )
+
+            # img_data is stacked with shape (1, ...). We unbatch.
+            single_data = jax.tree_util.tree_map(lambda x: x[0], img_data)
+
+            # batches contain fields like 'pos_pix' which are (1, N_src, 2).
+            # We unbatch them to (N_src, 2).
+
+            single_batches = batches.copy()
+            if "PointSource" in batches:
+                # pos_pix is (N_img, N_src, 2).
+                single_batches["PointSource"] = batches["PointSource"].copy()
+                single_batches["PointSource"]["pos_pix"] = batches["PointSource"]["pos_pix"][0]
+                # flux_idx is shared.
+
+            if "Galaxy" in batches:
+                single_batches["Galaxy"] = batches["Galaxy"].copy()
+                single_batches["Galaxy"]["pos_pix"] = batches["Galaxy"]["pos_pix"][0]
+                single_batches["Galaxy"]["wcs_cd_inv"] = batches["Galaxy"]["wcs_cd_inv"][0]
+                # shapes, profile are shared (attributes of source).
+
+            if "Background" in batches:
+                # flux_idx is (1,) for single image?
+                pass
+
+            single_flux = init_flux[0] # (N_params,)
+
+            if return_variances:
+                f, v = solve_jit(single_flux, single_data, single_batches)
+                fluxes_list.append(f)
+                variances_list.append(v)
+            else:
+                f = solve_jit(single_flux, single_data, single_batches)
+                fluxes_list.append(f)
+
+        optimized_fluxes_np = np.array(fluxes_list)
+        if return_variances:
+            variances_np = np.array(variances_list)
 
     N_img = len(tractor_obj.images)
 

@@ -108,11 +108,25 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
            shifting the image to subpixel positions.
         '''
         # ensure float32 and align
-        img = img.astype(np.float32)
-        self.img = np.require(img, requirements=['A'])
-        H,W = img.shape
-        assert((H % 2) == 1)
-        assert((W % 2) == 1)
+        if isinstance(img, np.ndarray):
+            img = img.astype(np.float32)
+            self.img = np.require(img, requirements=['A'])
+        else:
+            # Assume it's a JAX Tracer or other array-like
+            self.img = img
+
+        # Handle batching (JAX vmap)
+        if img.ndim >= 2:
+            H,W = img.shape[-2:]
+        else:
+            # Fallback
+            H,W = img.shape
+
+        # Only assert if we are strictly 2D (not batched) to avoid breaking vmap construction
+        if img.ndim == 2:
+            assert((H % 2) == 1)
+            assert((W % 2) == 1)
+
         self.radius = np.hypot(H / 2., W / 2.)
         self.H, self.W = H, W
         self.Lorder = Lorder
