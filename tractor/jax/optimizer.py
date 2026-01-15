@@ -412,23 +412,23 @@ def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape):
     """
     Renders a batch of Point Sources.
     """
-    # Determine factor from FFT shape vs Target shape
+    # Determine scale from FFT shape vs Target shape
     H, W = img_shape
     H_hr = psf_data['fft'].shape[0]
-    factor = H_hr // H
+    scale = float(H_hr) / float(H)
 
     def render_fft(operand):
-        W_hr = W * factor
+        W_hr = int(round(W * scale))
         render_shape = (H_hr, W_hr)
 
-        s = float(factor)
+        s = scale
         pos_pix_scaled = pos_pix * s + (s - 1.0) / 2.0
 
         render_fn = vmap(partial(render_point_source_fft, image_shape=render_shape), in_axes=(0, 0, None))
         stamps = render_fn(fluxes, pos_pix_scaled, psf_data['fft'])
         combined = jnp.sum(stamps, axis=0)
 
-        if factor > 1:
+        if scale > 1.001:
             combined = downsample_image(combined, img_shape)
         return combined
 
@@ -450,13 +450,13 @@ def render_batch_galaxies(
     """
     H, W = img_shape
     H_hr = psf_data['fft'].shape[0]
-    factor = H_hr // H
+    scale = float(H_hr) / float(H)
 
     def render_fft(operand):
-        W_hr = W * factor
+        W_hr = int(round(W * scale))
         render_shape = (H_hr, W_hr)
 
-        s = float(factor)
+        s = scale
         pos_pix_scaled = pos_pix * s + (s - 1.0) / 2.0
         wcs_cd_inv_scaled = wcs_cd_inv * s
 
@@ -468,7 +468,7 @@ def render_batch_galaxies(
         weighted_stamps = stamps * fluxes[:, jnp.newaxis, jnp.newaxis]
         combined = jnp.sum(weighted_stamps, axis=0)
 
-        if factor > 1:
+        if scale > 1.001:
             combined = downsample_image(combined, img_shape)
         return combined
 
@@ -579,18 +579,18 @@ def compute_fisher_diagonal(image_data, batches, n_flux):
         # Using branching logic again?
 
         H_hr = psf_data['fft'].shape[0]
-        factor = H_hr // H
+        scale = float(H_hr) / float(H)
 
         def compute_stamps_fft(op):
-            W_hr = W * factor
+            W_hr = int(round(W * scale))
             render_shape = (H_hr, W_hr)
-            s = float(factor)
+            s = scale
             pos_pix_scaled = pos_pix * s + (s - 1.0) / 2.0
 
             render_fn = vmap(partial(render_point_source_fft, image_shape=render_shape), in_axes=(0, 0, None))
             stamps = render_fn(unit_fluxes, pos_pix_scaled, psf_data['fft'])
 
-            if factor > 1:
+            if scale > 1.001:
                 ds_fn = vmap(partial(downsample_image, target_shape=(H, W)))
                 stamps = ds_fn(stamps)
             return stamps
@@ -618,12 +618,12 @@ def compute_fisher_diagonal(image_data, batches, n_flux):
 
         psf_data = image_data["psf"]
         H_hr = psf_data['fft'].shape[0]
-        factor = H_hr // H
+        scale = float(H_hr) / float(H)
 
         def compute_stamps_fft(op):
-            W_hr = W * factor
+            W_hr = int(round(W * scale))
             render_shape = (H_hr, W_hr)
-            s = float(factor)
+            s = scale
             pos_pix_scaled = pos_pix * s + (s - 1.0) / 2.0
             wcs_cd_inv_scaled = wcs_cd_inv * s
 
@@ -631,7 +631,7 @@ def compute_fisher_diagonal(image_data, batches, n_flux):
             render_fn = vmap(partial(render_galaxy_fft, image_shape=render_shape), in_axes=((0, 0, 0), None, 0, 0, 0))
             stamps = render_fn(gal_mix, psf_data['fft'], shapes, wcs_cd_inv_scaled, pos_pix_scaled)
 
-            if factor > 1:
+            if scale > 1.001:
                 ds_fn = vmap(partial(downsample_image, target_shape=(H, W)))
                 stamps = ds_fn(stamps)
             return stamps
