@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 import jax.numpy.fft as jfft
 from jax import jit, value_and_grad, vmap
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 import numpy as np
 from functools import partial
 import jax.image
@@ -494,6 +495,52 @@ def render_batch_galaxies(
     return jax.lax.cond(psf_data['type_code'] == 0, render_fft, render_mog, None)
 
 
+def prepare_sharded_inputs(images_data, batches, initial_fluxes):
+    """
+    Distributes data across available devices using NamedSharding (GSPMD).
+    Shards image-based arrays along axis 0 and replicates shared source parameters.
+    """
+    devices = jax.devices()
+    # Create a mesh for data parallelism over images
+    mesh = Mesh(devices, axis_names=('img_batch',))
+
+    # Shard along the first axis (axis 0) corresponding to 'img_batch'
+    sharding = NamedSharding(mesh, PartitionSpec('img_batch'))
+
+    # Replicate on all devices (no partitioning axes)
+    replicated = NamedSharding(mesh, PartitionSpec())
+
+    # 1. Shard images_data (all leaves have shape (N_img, ...))
+    images_spec = jax.tree_util.tree_map(lambda x: sharding, images_data)
+
+    # 2. Shard initial_fluxes (N_img, N_params)
+    fluxes_spec = sharding
+
+    # 3. Shard batches
+    # Keys like 'pos_pix', 'wcs_cd_inv' are per-image (N_img, ...) -> Shard
+    # Others like 'flux_idx', 'shapes', 'profile' are shared -> Replicate
+    batches_spec = {}
+
+    for key, batch in batches.items():
+        spec = {}
+        for k, v in batch.items():
+            if k in ['pos_pix', 'wcs_cd_inv']:
+                 spec[k] = sharding
+            elif k == 'profile':
+                 # profile is a dict of arrays, all replicated
+                 spec[k] = jax.tree_util.tree_map(lambda x: replicated, v)
+            else:
+                 # flux_idx, shapes, etc.
+                 spec[k] = replicated
+        batches_spec[key] = spec
+
+    return (
+        jax.device_put(images_data, images_spec),
+        jax.device_put(batches, batches_spec),
+        jax.device_put(initial_fluxes, fluxes_spec)
+    )
+
+
 def render_image(fluxes, image_data, batches):
     """
     Renders a single image using sliced batch data.
@@ -710,7 +757,7 @@ def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=Fals
     return optimized_fluxes
 
 
-def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=False, fit_background=False, update_catalog=False, vmap_images=True):
+def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=False, fit_background=False, update_catalog=False, vmap_images=True, use_sharding=True):
     """
     Optimizes fluxes for forced photometry using JAX.
     Iterates over images in tractor_obj and fits each one separately using vectorized execution (vmap).
@@ -724,6 +771,7 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
                         Requires single image or warns if multiple.
         vmap_images: bool, if True (default), stacks all images and processes them in a single vmap call.
                      If False, iterates over images sequentially (saving memory).
+        use_sharding: bool, if True (default), distributes the batch across available devices when vmap_images=True.
 
     Returns:
         List of results per image.
@@ -775,10 +823,13 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
         # images_data is fully batched (0)
         # initial_fluxes is batched (0)
 
-        solve_fn = vmap(
+        if use_sharding:
+            images_data, batches, initial_fluxes = prepare_sharded_inputs(images_data, batches, initial_fluxes)
+
+        solve_fn = jit(vmap(
             partial(solve_fluxes_core, return_variances=return_variances),
             in_axes=(0, 0, batches_in_axes)
-        )
+        ))
 
         if return_variances:
             optimized_fluxes_stack, variances_stack = solve_fn(initial_fluxes, images_data, batches)
