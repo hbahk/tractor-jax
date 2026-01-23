@@ -16,18 +16,18 @@ def test_jax_optimizer_accuracy():
     invvar = np.ones((H, W), dtype=np.float64) / (0.1**2)
 
     # Create two separated sources to avoid degeneracy and isolate JAX accuracy
-    x1, y1 = 5.0, 5.0
-    x2, y2 = 15.0, 15.0
+    x1, y1 = 4.85, 5.32
+    x2, y2 = 14.97, 15.14
     true_flux1 = 1000.0
     true_flux2 = 500.0
 
     # Create PSF with sampling < 1.0
     yy, xx = np.mgrid[-5:6, -5:6]
-    sigma = 1.0
+    sigma = 10.0
     psf_img = np.exp(-(xx**2 + yy**2) / (2 * sigma**2))
     psf_img /= psf_img.sum()
     # sampling=0.5
-    psf = PixelizedPSF(psf_img, sampling=0.5)
+    psf = PixelizedPSF(psf_img, sampling=0.1)
 
     wcs = NullWCS(pixscale=1.0)
     sky = ConstantSky(0.0)

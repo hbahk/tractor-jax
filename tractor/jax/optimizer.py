@@ -1003,7 +1003,7 @@ class JaxOptimizer(Optimizer):
         res = optimize_fluxes(
             tractor,
             return_variances=variance,
-            fit_background=False,
+            fit_background=True,
             oversample_rendering=True,
             update_catalog=True
         )
