@@ -28,14 +28,6 @@ from tractor.jax.rendering import (
     downsample_image,
 )
 
-# Trigger PyTree registration
-try:
-    import tractor.jax.tree
-    tractor.jax.tree.register_pytree_nodes()
-except ImportError:
-    pass
-except Exception as e:
-    print(f"Warning: Failed to register JAX PyTree nodes: {e}")
 
 
 def extract_model_data(tractor_obj, oversample_rendering=False, fit_background=False):

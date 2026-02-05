@@ -215,3 +215,90 @@ class RaDecPos(ArithmeticParams, ParamList):
         # clip to avoid domain errors
         d = np.clip(d, -1.0, 1.0)
         return np.rad2deg(np.arccos(d))
+
+class AffineWCS(BaseParams, ducks.WCS):
+    '''
+    A WCS implementation using a simple affine transformation (CD matrix).
+    Supports JAX-traceable operations if attributes are arrays.
+    '''
+    def __init__(self, crpix, crval, cd):
+        self.crpix = crpix
+        self.crval = crval
+        self.cd = cd
+        try:
+            self.cd_inv = np.linalg.inv(self.cd)
+        except Exception:
+            # Handle JAX Tracers
+            import jax.numpy as jnp
+            self.cd_inv = jnp.linalg.inv(self.cd)
+
+    def hashkey(self):
+        return ('AffineWCS', tuple(self.crpix), tuple(self.crval), tuple(self.cd.ravel()))
+
+    def positionToPixel(self, pos, src=None):
+        if hasattr(pos, 'x') and hasattr(pos, 'y'):
+             return pos.x, pos.y
+
+        # Tangent plane projection for RaDecPos
+        ra, dec = pos.ra, pos.dec
+        ra0, dec0 = self.crval
+
+        d2r = np.pi / 180.0
+        ra_r, dec_r = ra * d2r, dec * d2r
+        ra0_r, dec0_r = ra0 * d2r, dec0 * d2r
+
+        xi = np.cos(dec_r) * np.sin(ra_r - ra0_r)
+        eta = np.sin(dec_r) * np.cos(dec0_r) - np.cos(dec_r) * np.sin(dec0_r) * np.cos(ra_r - ra0_r)
+
+        r2d = 180.0 / np.pi
+        xi_deg = xi * r2d
+        eta_deg = eta * r2d
+
+        # (pix - crpix) = CD_inv * (xi, eta)
+        # Using einsum or dot. If mapped, need jnp.
+        # But this class is used in JAX context if registered.
+        # If running in JAX, self.cd_inv is a Tracer.
+        # np.dot handles tracers usually if using jax.numpy?
+        # But this file imports numpy as np.
+        # If inputs are tracers, dispatch happens.
+
+        uv = np.array([xi_deg, eta_deg])
+
+        # Handle batching?
+        # If pos is scalar (one source), uv is (2,). cd_inv is (2,2).
+        # np.dot(cd_inv, uv) -> (2,)
+
+        # Note: If running inside vmap, np.* functions might be JAX primitives if jax.numpy is imported as np,
+        # but here it is standard numpy.
+        # However, JAX tracers passed to numpy functions often trigger JAX dispatch or error.
+        # Safe way is to use operators.
+
+        # xy = cd_inv @ uv + crpix
+        # But standard numpy doesn't support @ for Tracers seamlessly if linalg involved?
+        # Actually JAX tracers implement __array_ufunc__ / __matmul__.
+
+        xy = self.cd_inv @ uv + self.crpix
+
+        return xy[0], xy[1]
+
+    def pixelToPosition(self, x, y, src=None):
+        xy = np.array([x, y]) - self.crpix
+        uv = self.cd @ xy
+        xi_deg, eta_deg = uv[0], uv[1]
+
+        # Simple approx inverse
+        ra0, dec0 = self.crval
+        return RaDecPos(ra0 + xi_deg / np.cos(np.deg2rad(dec0)), dec0 + eta_deg)
+
+    def cdAtPixel(self, x, y):
+        return self.cd
+
+    def cdInverseAtPixel(self, x, y):
+        return self.cd_inv
+
+    def pixscale_at(self, x, y):
+        det = np.abs(np.linalg.det(self.cd))
+        return 3600. * np.sqrt(det)
+
+    def shifted(self, dx, dy):
+        return AffineWCS(self.crpix - np.array([dx, dy]), self.crval, self.cd)

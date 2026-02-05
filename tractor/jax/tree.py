@@ -3,10 +3,11 @@ from tractor.engine import Tractor, Images, Catalog
 from tractor.image import Image
 from tractor.pointsource import PointSource
 from tractor.sky import ConstantSky, NullSky
-from tractor.wcs import NullWCS, PixPos, RaDecPos
+from tractor.wcs import NullWCS, PixPos, RaDecPos, AffineWCS
 from tractor.psf import PixelizedPSF, GaussianMixturePSF
 from tractor.utils import MogParams, ScalarParam, ParamList
 from tractor.brightness import Flux, LinearPhotoCal, NullPhotoCal
+from tractor.galaxy import JaxGalaxy
 
 def register_pytree_nodes():
     # Tractor
@@ -46,6 +47,13 @@ def register_pytree_nodes():
         lambda aux, children: _restore_pointsource(children, aux)
     )
 
+    # JaxGalaxy
+    jax.tree_util.register_pytree_node(
+        JaxGalaxy,
+        lambda g: ((g.pos, g.brightness, g.shape, g.profile), (g.liquid,)),
+        lambda aux, children: _restore_jaxgalaxy(children, aux)
+    )
+
     # ConstantSky (ScalarParam)
     jax.tree_util.register_pytree_node(
         ConstantSky,
@@ -65,6 +73,13 @@ def register_pytree_nodes():
         NullWCS,
         lambda w: ((w.pixscale, w.dx, w.dy), None),
         lambda aux, children: NullWCS(children[0], dx=children[1], dy=children[2])
+    )
+
+    # AffineWCS
+    jax.tree_util.register_pytree_node(
+        AffineWCS,
+        lambda w: ((w.crpix, w.crval, w.cd), None),
+        lambda aux, children: AffineWCS(children[0], children[1], children[2])
     )
 
     # PixelizedPSF
@@ -134,6 +149,13 @@ def _restore_pointsource(children, aux):
     ps.minRadius = minRadius
     ps.liquid = liquid
     return ps
+
+def _restore_jaxgalaxy(children, aux):
+    pos, brightness, shape, profile = children
+    liquid, = aux
+    g = JaxGalaxy(pos, brightness, shape, profile)
+    g.liquid = liquid
+    return g
 
 def _restore_gmpsf(children, aux):
     amp, mean, var = children

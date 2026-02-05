@@ -1255,3 +1255,20 @@ class CompositeGalaxy(MultiParams, BasicSource):
             derivs.extend(dd[npos:])
 
         return derivs
+
+class JaxGalaxy(Galaxy):
+    '''
+    A Galaxy subclass designed for JAX optimization.
+    It holds a pre-computed profile (MoG) to avoid complex calculations during JAX tracing.
+    '''
+    def __init__(self, pos, brightness, shape, profile):
+        # Galaxy init takes (pos, brightness, shape) - wait, it takes *args.
+        # MultiParams.__init__(self, pos, brightness, shape)
+        super(JaxGalaxy, self).__init__(pos, brightness, shape)
+        self.profile = profile
+
+    def getName(self):
+        return 'JaxGalaxy'
+
+    def getProfile(self):
+        return self.profile
