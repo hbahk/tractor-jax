@@ -225,7 +225,8 @@ def test_jax_optimizer_spherex_batch(idx_list):
             data=img_padded - bkg_padded,
             inverr=np.sqrt(invvar_padded),
             psf=psf_tractor,
-            wcs=affine_wcs,
+            # wcs=affine_wcs,
+            wcs=NullWCS(pixscale=6.15),
             photocal=LinearPhotoCal(1.0),
             sky=ConstantSky(0.0),
         )
@@ -235,11 +236,14 @@ def test_jax_optimizer_spherex_batch(idx_list):
         # Sources
         frame_sources = []
         stab = tab
-        for row in stab:
+        sco = SkyCoord(ra=stab["ra"], dec=stab["dec"], unit="deg")
+        pxs, pys = wcs.world_to_pixel(sco)
+        for row, px, py in zip(stab, pxs, pys):
             _flux = Flux(np.random.uniform(high=1))
             
             # Use original WCS for position (valid for padded image since origin preserved)
-            px, py = wcs_tractor.positionToPixel(RaDecPos(row["ra"], row["dec"]))
+            # px, py = wcs_tractor.positionToPixel(RaDecPos(row["ra"], row["dec"]))
+            # px, py = row["x"], row["y"]
             
             if row["shape_r"] == 0:
                 _src = PointSource(PixPos(px, py), _flux)
