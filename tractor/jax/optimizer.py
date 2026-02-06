@@ -4,6 +4,7 @@ import jax.numpy.fft as jfft
 from jax import jit, value_and_grad, vmap
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 import numpy as np
+import math
 from functools import partial
 import jax.image
 
@@ -92,7 +93,6 @@ def extract_model_data(tractor_obj, oversample_rendering=False, fit_background=F
             max_psf_w = max(max_psf_w, pw_target)
 
     # Padding for FFT circular convolution safety
-    import math
     fft_pad_h_lr = int(math.ceil(max_psf_h / max_factor))
     fft_pad_w_lr = int(math.ceil(max_psf_w / max_factor))
 
