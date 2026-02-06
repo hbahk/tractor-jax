@@ -1,5 +1,8 @@
 import time
 import re
+import os
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 
 import astropy.units as u
@@ -94,6 +97,108 @@ def pad_mog(mog_params, max_K):
 
     return new_amp, new_mean, new_var
 
+def _build_tractor_for_frame(
+    frame,
+    tab,
+    max_h,
+    max_w,
+    max_psf_h,
+    max_psf_w,
+    max_mog_K,
+    thaw_shape,
+    thaw_positions,
+    maskbits,
+):
+    img = frame["img"]
+    flg = frame["flg"]
+    var = frame["var"]
+    bkg = frame["bkg"]
+    psf_data = frame["psf"]
+    hdr = frame["hdr"]
+    idx = frame["idx"]
+
+    # Padding
+    img_padded = pad_array(img, (max_h, max_w))
+    bkg_padded = pad_array(bkg, (max_h, max_w))
+
+    invvar = 1 / var
+    mask = flg & maskbits != 0
+    invvar[mask] = 0
+    invvar_padded = pad_array(invvar, (max_h, max_w))
+
+    psf_padded = pad_array(psf_data, (max_psf_h, max_psf_w))
+    psf_tractor = PixelizedPSF(psf_padded, sampling=0.1)
+
+    # WCS
+    wcs = WCS(hdr)
+    wcs_tractor = AstropyWCS(wcs)
+
+    # Affine WCS approximates the wcs using original image center.
+    orig_cx, orig_cy = img.shape[1] / 2.0, img.shape[0] / 2.0
+    cd = wcs_tractor.cdAtPixel(orig_cx, orig_cy)
+    center_sky = wcs_tractor.pixelToPosition(orig_cx, orig_cy)
+    crval = [center_sky.ra, center_sky.dec]
+    crpix = [orig_cx, orig_cy]
+    affine_wcs = AffineWCS(crpix, crval, cd)
+
+    # Create Image
+    tim = tractor.Image(
+        data=img_padded - bkg_padded,
+        inverr=np.sqrt(invvar_padded),
+        psf=psf_tractor,
+        # wcs=affine_wcs,
+        wcs=NullWCS(pixscale=6.15),
+        photocal=LinearPhotoCal(1.0),
+        sky=ConstantSky(0.0),
+    )
+    tim.freezeAllRecursive()
+    tim.thawPathsTo("sky")
+
+    # Sources
+    frame_sources = []
+    stab = tab
+    sco = SkyCoord(ra=stab["ra"], dec=stab["dec"], unit="deg")
+    pxs, pys = wcs.world_to_pixel(sco)
+    rng = np.random.default_rng(idx)
+    for row, px, py in zip(stab, pxs, pys):
+        _flux = Flux(rng.uniform(high=1))
+
+        # Use original WCS for position (valid for padded image since origin preserved)
+        # px, py = wcs_tractor.positionToPixel(RaDecPos(row["ra"], row["dec"]))
+        # px, py = row["x"], row["y"]
+
+        if row["shape_r"] == 0:
+            _src = PointSource(PixPos(px, py), _flux)
+        else:
+            phi_img = sky_pa_to_pixel_pa(
+                wcs, row["ra"], row["dec"], row["shape_phi"], d_arcsec=1.0, y_down=False
+            )
+            shape = GalaxyShape(row["shape_r"], row["shape_ab"], phi_img)
+
+            profile_mog = SPHERExSersicMixture.getProfile(row["sersic"])
+            amp, mean, var = pad_mog(profile_mog, max_mog_K)
+
+            prof_params = MogParams(np.array(amp), np.array(mean), np.array(var))
+
+            _src = JaxGalaxy(
+                PixPos(px, py),
+                _flux,
+                shape,
+                prof_params,
+            )
+
+        _src.freezeAllRecursive()
+        _src.thawParam("brightness")
+        if row["shape_r"] > 0 and thaw_shape:
+            _src.thawPathsTo("shape")
+        if thaw_positions:
+            _src.thawPathsTo("pos")
+
+        frame_sources.append(_src)
+
+    optimizer = JaxOptimizer()
+    return Tractor([tim], frame_sources, optimizer=optimizer)
+
 def test_jax_optimizer_spherex_batch(idx_list):
     start_time = time.time()
     hdul = fits.open("tests/testphot.fits")
@@ -119,8 +224,6 @@ def test_jax_optimizer_spherex_batch(idx_list):
     tab["shape_ab"] = ab
 
     nframes = (len(hdul) - 2) // 6
-
-    optimizer = JaxOptimizer()
 
     # 1. First Pass: Collect data and determine Max Shapes
     frames_data = []
@@ -181,99 +284,28 @@ def test_jax_optimizer_spherex_batch(idx_list):
     tractor_list = []
 
     print("Constructing Tractors...")
-    for frame in tqdm(frames_data):
-        img = frame['img']
-        flg = frame['flg']
-        var = frame['var']
-        bkg = frame['bkg']
-        psf_data = frame['psf']
-        hdr = frame['hdr']
-        i = frame['idx']
-
-        # Padding
-        img_padded = pad_array(img, (max_h, max_w))
-        bkg_padded = pad_array(bkg, (max_h, max_w))
-
-        invvar = 1 / var
-        mask = flg & MASKBITS != 0
-        invvar[mask] = 0
-        invvar_padded = pad_array(invvar, (max_h, max_w))
-
-        psf_padded = pad_array(psf_data, (max_psf_h, max_psf_w))
-        psf_tractor = PixelizedPSF(psf_padded, sampling=0.1)
-
-        # WCS
-        wcs = WCS(hdr)
-        wcs_tractor = AstropyWCS(wcs)
-
-        cx, cy = max_w / 2.0, max_h / 2.0 # Use padded center
-        # Or should we use original center?
-        # Affine WCS approximates the wcs.
-        # Since we padded right/bottom, the WCS origin (0,0) is same.
-        # But for linearization, better use actual image center.
-        # Original center:
-        orig_cx, orig_cy = img.shape[1]/2.0, img.shape[0]/2.0
-        
-        cd = wcs_tractor.cdAtPixel(orig_cx, orig_cy)
-        center_sky = wcs_tractor.pixelToPosition(orig_cx, orig_cy)
-        crval = [center_sky.ra, center_sky.dec]
-        crpix = [orig_cx, orig_cy]
-        affine_wcs = AffineWCS(crpix, crval, cd)
-
-        # Create Image
-        tim = tractor.Image(
-            data=img_padded - bkg_padded,
-            inverr=np.sqrt(invvar_padded),
-            psf=psf_tractor,
-            # wcs=affine_wcs,
-            wcs=NullWCS(pixscale=6.15),
-            photocal=LinearPhotoCal(1.0),
-            sky=ConstantSky(0.0),
+    if frames_data:
+        # max_workers = min(len(frames_data), os.cpu_count() or 1)
+        max_workers = 10
+        mp_context = mp.get_context("spawn")
+        build_fn = partial(
+            _build_tractor_for_frame,
+            tab=tab,
+            max_h=max_h,
+            max_w=max_w,
+            max_psf_h=max_psf_h,
+            max_psf_w=max_psf_w,
+            max_mog_K=max_mog_K,
+            thaw_shape=THAW_SHAPE,
+            thaw_positions=THAW_POSITIONS,
+            maskbits=MASKBITS,
         )
-        tim.freezeAllRecursive()
-        tim.thawPathsTo("sky")
-        
-        # Sources
-        frame_sources = []
-        stab = tab
-        sco = SkyCoord(ra=stab["ra"], dec=stab["dec"], unit="deg")
-        pxs, pys = wcs.world_to_pixel(sco)
-        for row, px, py in zip(stab, pxs, pys):
-            _flux = Flux(np.random.uniform(high=1))
-            
-            # Use original WCS for position (valid for padded image since origin preserved)
-            # px, py = wcs_tractor.positionToPixel(RaDecPos(row["ra"], row["dec"]))
-            # px, py = row["x"], row["y"]
-            
-            if row["shape_r"] == 0:
-                _src = PointSource(PixPos(px, py), _flux)
-            else:
-                phi_img = sky_pa_to_pixel_pa(wcs, row["ra"], row["dec"], row["shape_phi"], d_arcsec=1.0, y_down=False)
-                shape = GalaxyShape(row["shape_r"], row["shape_ab"], phi_img)
-
-                profile_mog = SPHERExSersicMixture.getProfile(row["sersic"])
-                amp, mean, var = pad_mog(profile_mog, max_mog_K)
-
-                prof_params = MogParams(jnp.array(amp), jnp.array(mean), jnp.array(var))
-
-                _src = JaxGalaxy(
-                    PixPos(px, py),
-                    _flux,
-                    shape,
-                    prof_params
-                )
-
-            _src.freezeAllRecursive()
-            _src.thawParam("brightness")
-            if row["shape_r"] > 0 and THAW_SHAPE:
-                _src.thawPathsTo("shape")
-            if THAW_POSITIONS:
-                _src.thawPathsTo("pos")
-
-            frame_sources.append(_src)
-
-        trac = Tractor([tim], frame_sources, optimizer=optimizer)
-        tractor_list.append(trac)
+        with ProcessPoolExecutor(
+            max_workers=max_workers, mp_context=mp_context
+        ) as executor:
+            tractor_list = list(
+                tqdm(executor.map(build_fn, frames_data), total=len(frames_data))
+            )
 
     print("Precomputing model data...")
     start_time = time.time()
@@ -378,11 +410,19 @@ if __name__ == "__main__":
     except ValueError:
         pass
 
-    test_index = np.arange(0, 3000, 100)
+    # test_index = np.arange(0, 3000, 100)
     # Check if files exist to avoid error
     import os
     if os.path.exists("tests/testphot.fits"):
-        cutout_info = test_jax_optimizer_spherex_batch(test_index)
+        hdul = fits.open("tests/testphot.fits")
+        cutout_info = Table(hdul[1].data)
+        test_index = np.arange(len(cutout_info))
+        batch_size = 100
+        for i in range(0, len(test_index), batch_size):
+            batch_index = test_index[i:i+batch_size]
+            batch_cutout_info = test_jax_optimizer_spherex_batch(batch_index)
+            cutout_info[batch_index] = batch_cutout_info[batch_index]
+
         cutout_info.write("tests/test_jax_optimizer_spherex_batch.parquet", overwrite=True)
 
         if os.path.exists("/data1/hbahk/spherex-cluster/codes/realworld/specphot_results_testgal_a2255_b.parquet"):
@@ -394,8 +434,8 @@ if __name__ == "__main__":
 
             fig = plt.figure(figsize=(10, 5))
             ax = fig.add_subplot(1, 1, 1)
-            ax.errorbar(wave, flux, ferr, fmt="o", label="flux (CPU)")
-            ax.errorbar(cutout_info["central_wavelength"], cutout_info["flux"], cutout_info["flux_err"], fmt="o", label="flux (JAX Batched)")
+            ax.errorbar(wave, flux, ferr, fmt=".", label="flux (CPU)", color="tab:blue")
+            ax.errorbar(cutout_info["central_wavelength"], cutout_info["flux"], cutout_info["flux_err"], fmt=".", label="flux (JAX Batched)", color="tab:red")
             ax.legend()
             fig.savefig("tests/test_jax_optimizer_spherex_batch_comparison.png", dpi=300, bbox_inches='tight')
     else:
