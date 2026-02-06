@@ -56,6 +56,7 @@ def extract_model_data(tractor_obj, oversample_rendering=False, fit_background=F
     max_H, max_W = 0, 0
     max_factor = 1.0
 
+    # First pass: image sizes and max_factor
     for img in images:
         h, w = img.shape
         max_H = max(max_H, h)
@@ -67,6 +68,46 @@ def extract_model_data(tractor_obj, oversample_rendering=False, fit_background=F
                 s = getattr(psf, "sampling", 1.0)
                 if s < 1.0:
                     max_factor = max(max_factor, 1.0 / s)
+
+    # Calculate Max PSF Size for padding
+    max_psf_h = 0
+    max_psf_w = 0
+
+    for img in images:
+        psf = img.getPsf()
+        if isinstance(psf, PixelizedPSF):
+            ph, pw = psf.img.shape
+            s = getattr(psf, "sampling", 1.0)
+
+            # We assume we rescale to max_factor
+            if oversample_rendering:
+                 scale = max_factor * s
+                 ph_target = int(ph * scale)
+                 pw_target = int(pw * scale)
+            else:
+                 ph_target = ph
+                 pw_target = pw
+
+            max_psf_h = max(max_psf_h, ph_target)
+            max_psf_w = max(max_psf_w, pw_target)
+
+    # Padding for FFT circular convolution safety
+    import math
+    fft_pad_h_lr = int(math.ceil(max_psf_h / max_factor))
+    fft_pad_w_lr = int(math.ceil(max_psf_w / max_factor))
+
+    padded_H = max_H + fft_pad_h_lr
+    padded_W = max_W + fft_pad_w_lr
+
+    # Calculate Target High Res Grid
+    if oversample_rendering and max_factor > 1.0:
+        target_H = int(round(padded_H * max_factor))
+        target_W = int(round(padded_W * max_factor))
+        target_sampling = float(max_factor)
+    else:
+        target_H = padded_H
+        target_W = padded_W
+        target_sampling = 1.0
 
     # 2. Extract & Stack Image Data
     data_list = []
@@ -94,8 +135,8 @@ def extract_model_data(tractor_obj, oversample_rendering=False, fit_background=F
         h, w = img.shape
 
         # -- Pad Data --
-        pad_h = max_H - h
-        pad_w = max_W - w
+        pad_h = padded_H - h
+        pad_w = padded_W - w
 
         d = jnp.array(img.getImage())
         d = jnp.pad(d, ((0, pad_h), (0, pad_w)), constant_values=0.0)
@@ -111,25 +152,12 @@ def extract_model_data(tractor_obj, oversample_rendering=False, fit_background=F
 
         # Default Dummies
         p_type = 0
-        p_sampling = 1.0
+        p_sampling = target_sampling
 
         # Dummy MoG (Identity)
         p_amp = jnp.zeros(max_mog_K)
         p_mean = jnp.zeros((max_mog_K, 2))
         p_var = jnp.tile(jnp.eye(2), (max_mog_K, 1, 1))
-
-        # FFT Handling
-        # We need a consistent grid size for FFTs.
-        # If oversampling is used, we use max_factor.
-
-        if oversample_rendering and max_factor > 1.0:
-            target_H = int(round(max_H * max_factor))
-            target_W = int(round(max_W * max_factor))
-            p_sampling = float(max_factor) # Force uniform sampling for stack
-        else:
-            target_H = max_H
-            target_W = max_W
-            p_sampling = 1.0
 
         if isinstance(psf, PixelizedPSF):
             p_type = 0
@@ -154,9 +182,19 @@ def extract_model_data(tractor_obj, oversample_rendering=False, fit_background=F
 
             if abs(local_factor - p_sampling) > 1e-3:
                 # Resize PSF image to match target resolution
-                # This is complex (flux conservation etc).
-                # Simplification: Assume consistent sampling for now or just pad/place.
-                pass
+                ratio = p_sampling / local_factor
+                new_shape = (int(round(ph * ratio)), int(round(pw * ratio)))
+
+                # Resize using jax.image.resize
+                resized_img = jax.image.resize(raw_img, new_shape, method='lanczos3')
+
+                # Normalize flux to preserve sum
+                orig_sum = jnp.sum(raw_img)
+                new_sum = jnp.sum(resized_img)
+                resized_img = resized_img * (orig_sum / new_sum)
+
+                raw_img = resized_img
+                ph, pw = raw_img.shape
 
             # 3. Pad to target_H, target_W
             pad_img = jnp.zeros((target_H, target_W))
