@@ -59,6 +59,8 @@ def test_jax_optimizer_accuracy():
         }
 
     true_model = render_image(initial_fluxes[0], single_image_data, single_batches)
+    # Crop padding
+    true_model = true_model[:H, :W]
     img.data += np.array(true_model)
 
     print(f"True Model Sum: {true_model.sum():.4f}")
