@@ -6,6 +6,7 @@ from jax.sharding import Mesh, NamedSharding, PartitionSpec
 import numpy as np
 import math
 from functools import partial
+from collections import defaultdict, Counter
 import jax.image
 
 from tractor.engine import Tractor
@@ -31,7 +32,184 @@ from tractor.jax.rendering import (
 
 
 
-def extract_model_data(tractor_obj, oversample_rendering=False, fit_background=False):
+def compute_image_shapes(images, stats):
+    """
+    Computes required target shape for each image.
+    """
+    max_factor = stats["max_factor"]
+    fft_pad_h_lr = stats["fft_pad_h_lr"]
+    fft_pad_w_lr = stats["fft_pad_w_lr"]
+
+    shapes = []
+    for img in images:
+        h, w = img.shape
+        padded_h = h + fft_pad_h_lr
+        padded_w = w + fft_pad_w_lr
+
+        target_h = int(round(padded_h * max_factor))
+        target_w = int(round(padded_w * max_factor))
+        shapes.append((target_h, target_w))
+
+    return shapes
+
+
+def assign_buckets(
+    required_shapes,
+    bucket_sizes=None,
+    bucket_mode="auto",
+    bucket_shape_mode="square",
+    bucket_base=32,
+    max_buckets=5
+):
+    """
+    Assigns images to buckets based on required shapes.
+    Returns a dict: { bucket_shape: [img_indices] }
+    """
+
+    # 1. Determine available buckets
+    allowed_sizes = []
+    allowed_shapes = []
+
+    if bucket_mode == "fixed":
+        if bucket_sizes is None:
+            # Fallback default
+            bucket_sizes = [128, 256, 512, 1024, 2048]
+
+        # In fixed mode, we assume bucket_sizes defines the allowed grid.
+        # It can be a list of ints (squares) or tuples.
+        allowed_list = sorted(bucket_sizes) if hasattr(bucket_sizes, '__iter__') else [bucket_sizes]
+
+        # Normalize to tuples
+        norm_shapes = []
+        for b in allowed_list:
+            if isinstance(b, (int, float)):
+                norm_shapes.append((int(b), int(b)))
+            else:
+                norm_shapes.append((int(b[0]), int(b[1])))
+
+        # For assignment logic, we use this list.
+        allowed_shapes = norm_shapes
+
+    else: # auto
+        # Determine buckets from distribution
+
+        # Quantize required shapes to bucket_base
+        quantized_shapes = []
+        for h, w in required_shapes:
+            # Ceil to multiple of bucket_base
+            h_q = int(math.ceil(h / bucket_base) * bucket_base)
+            w_q = int(math.ceil(w / bucket_base) * bucket_base)
+            quantized_shapes.append((h_q, w_q))
+
+        if bucket_shape_mode == "square":
+            # Force square
+            sq_sizes = []
+            for h, w in quantized_shapes:
+                s = max(h, w)
+                sq_sizes.append(s)
+
+            counts = Counter(sq_sizes)
+            max_size = max(sq_sizes) if sq_sizes else bucket_base
+
+            # Get common sizes
+            common = counts.most_common(max_buckets)
+
+            candidates = set([s for s, c in common])
+            candidates.add(max_size)
+
+            for s in sorted(list(candidates)):
+                allowed_shapes.append((s, s))
+
+        else: # independent
+            counts = Counter(quantized_shapes)
+
+            all_h = [s[0] for s in quantized_shapes]
+            all_w = [s[1] for s in quantized_shapes]
+            max_h_all = max(all_h) if all_h else bucket_base
+            max_w_all = max(all_w) if all_w else bucket_base
+            catch_all = (max_h_all, max_w_all)
+
+            common = counts.most_common(max_buckets - 1)
+            active = set([s for s, c in common])
+            active.add(catch_all)
+
+            allowed_shapes = list(active)
+
+    # 2. Assign images
+    bucket_map = defaultdict(list)
+
+    for i, (req_h, req_w) in enumerate(required_shapes):
+        # Find best bucket: Smallest area that fits
+        valid = [s for s in allowed_shapes if s[0] >= req_h and s[1] >= req_w]
+
+        if valid:
+            best = min(valid, key=lambda x: x[0]*x[1])
+        else:
+            # Fallback if no bucket fits (e.g. fixed mode with too small buckets)
+            # We create a new bucket on the fly fitting this image
+            bh = int(math.ceil(req_h / bucket_base) * bucket_base)
+            bw = int(math.ceil(req_w / bucket_base) * bucket_base)
+            if bucket_shape_mode == "square":
+                s = max(bh, bw)
+                best = (s, s)
+            else:
+                best = (bh, bw)
+
+        bucket_map[best].append(i)
+
+    return bucket_map
+
+
+def compute_target_stats(images, oversample_rendering=False):
+    """
+    Computes global statistics for a set of images to determine required grid sizes.
+    """
+    max_factor = 1.0
+    # First pass: max_factor
+    for img in images:
+        if oversample_rendering:
+            psf = img.getPsf()
+            if isinstance(psf, PixelizedPSF):
+                s = getattr(psf, "sampling", 1.0)
+                if s < 1.0:
+                    max_factor = max(max_factor, 1.0 / s)
+
+    max_psf_h = 0
+    max_psf_w = 0
+    for img in images:
+        psf = img.getPsf()
+        if isinstance(psf, PixelizedPSF):
+            ph, pw = psf.img.shape
+            s = getattr(psf, "sampling", 1.0)
+            if oversample_rendering:
+                scale = max_factor * s
+                ph_target = int(ph * scale)
+                pw_target = int(pw * scale)
+            else:
+                ph_target = ph
+                pw_target = pw
+            max_psf_h = max(max_psf_h, ph_target)
+            max_psf_w = max(max_psf_w, pw_target)
+
+    fft_pad_h_lr = int(math.ceil(max_psf_h / max_factor))
+    fft_pad_w_lr = int(math.ceil(max_psf_w / max_factor))
+
+    return {
+        "max_factor": max_factor,
+        "max_psf_h": max_psf_h,
+        "max_psf_w": max_psf_w,
+        "fft_pad_h_lr": fft_pad_h_lr,
+        "fft_pad_w_lr": fft_pad_w_lr,
+    }
+
+
+def extract_model_data(
+    tractor_obj,
+    oversample_rendering=False,
+    fit_background=False,
+    fixed_target_shape=None,
+    fixed_max_factor=None
+):
     """
     Extracts all necessary data from a Tractor object for JAX optimization,
     grouping sources into batches and stacking image data with padding for vectorized rendering.
@@ -40,6 +218,10 @@ def extract_model_data(tractor_obj, oversample_rendering=False, fit_background=F
         tractor_obj: Tractor object.
         oversample_rendering: If True, handles oversampled PixelizedPSF by rendering at high resolution.
         fit_background: If True, includes background level in optimization parameters.
+        fixed_target_shape: (H, W) tuple. If provided, forces the target grid size to this shape.
+                            Useful for bucketing.
+        fixed_max_factor: float. Required if fixed_target_shape is provided.
+                          The oversampling factor assumed for the bucket.
 
     Returns:
         images_data: dict containing stacked image data (data, invvar, psf).
@@ -53,61 +235,50 @@ def extract_model_data(tractor_obj, oversample_rendering=False, fit_background=F
     images = tractor_obj.images
     catalog = tractor_obj.catalog
 
-    # 1. Determine Max Image Size & Sampling
-    max_H, max_W = 0, 0
-    max_factor = 1.0
+    if fixed_target_shape is not None:
+        if fixed_max_factor is None:
+            raise ValueError("fixed_max_factor is required when fixed_target_shape is used.")
 
-    # First pass: image sizes and max_factor
-    for img in images:
-        h, w = img.shape
-        max_H = max(max_H, h)
-        max_W = max(max_W, w)
+        target_H, target_W = fixed_target_shape
+        max_factor = fixed_max_factor
 
-        if oversample_rendering:
-            psf = img.getPsf()
-            if isinstance(psf, PixelizedPSF):
-                s = getattr(psf, "sampling", 1.0)
-                if s < 1.0:
-                    max_factor = max(max_factor, 1.0 / s)
+        # Calculate max_mog_K for padding logic below (needed for consistency)
+        # Note: We still need psf info for individual images.
 
-    # Calculate Max PSF Size for padding
-    max_psf_h = 0
-    max_psf_w = 0
+        # We need padded_H/W (input resolution padded size) for padding input images.
+        # target_H >= padded_H * max_factor
+        # padded_H = floor(target_H / max_factor)
+        # We use floor to ensure that valid_H_hr (padded_H * max_factor) <= target_H
+        padded_H = int(math.floor(target_H / max_factor))
+        padded_W = int(math.floor(target_W / max_factor))
 
-    for img in images:
-        psf = img.getPsf()
-        if isinstance(psf, PixelizedPSF):
-            ph, pw = psf.img.shape
-            s = getattr(psf, "sampling", 1.0)
+        # We enforce target_sampling to be max_factor physically
+        target_sampling = float(max_factor) if max_factor > 1.0 else 1.0
 
-            # We assume we rescale to max_factor
-            if oversample_rendering:
-                 scale = max_factor * s
-                 ph_target = int(ph * scale)
-                 pw_target = int(pw * scale)
-            else:
-                 ph_target = ph
-                 pw_target = pw
-
-            max_psf_h = max(max_psf_h, ph_target)
-            max_psf_w = max(max_psf_w, pw_target)
-
-    # Padding for FFT circular convolution safety
-    fft_pad_h_lr = int(math.ceil(max_psf_h / max_factor))
-    fft_pad_w_lr = int(math.ceil(max_psf_w / max_factor))
-
-    padded_H = max_H + fft_pad_h_lr
-    padded_W = max_W + fft_pad_w_lr
-
-    # Calculate Target High Res Grid
-    if oversample_rendering and max_factor > 1.0:
-        target_H = int(round(padded_H * max_factor))
-        target_W = int(round(padded_W * max_factor))
-        target_sampling = float(max_factor)
     else:
-        target_H = padded_H
-        target_W = padded_W
-        target_sampling = 1.0
+        # Standard logic: compute from current batch
+        stats = compute_target_stats(images, oversample_rendering)
+        max_factor = stats["max_factor"]
+        fft_pad_h_lr = stats["fft_pad_h_lr"]
+        fft_pad_w_lr = stats["fft_pad_w_lr"]
+
+        max_H, max_W = 0, 0
+        for img in images:
+            h, w = img.shape
+            max_H = max(max_H, h)
+            max_W = max(max_W, w)
+
+        padded_H = max_H + fft_pad_h_lr
+        padded_W = max_W + fft_pad_w_lr
+
+        if oversample_rendering and max_factor > 1.0:
+            target_H = int(round(padded_H * max_factor))
+            target_W = int(round(padded_W * max_factor))
+            target_sampling = float(max_factor)
+        else:
+            target_H = padded_H
+            target_W = padded_W
+            target_sampling = 1.0
 
     # 2. Extract & Stack Image Data
     data_list = []
@@ -456,28 +627,44 @@ def extract_model_data(tractor_obj, oversample_rendering=False, fit_background=F
     return images_data, batches, jnp.array(initial_fluxes_matrix, dtype=jnp.float32)
 
 
-def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape):
+def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape, sampling_factor=None):
     """
     Renders a batch of Point Sources.
     """
-    # Determine scale from FFT shape vs Target shape
+    if sampling_factor is not None:
+        s = sampling_factor
+    else:
+        s = psf_data['sampling']
+
     H, W = img_shape
-    H_hr = psf_data['fft'].shape[0]
-    scale = float(H_hr) / float(H)
+    H_hr_grid = psf_data['fft'].shape[0]
+    # FFT shape is (H, W//2 + 1). We assume W is even (valid for buckets/padding).
+    W_hr_grid = (psf_data['fft'].shape[1] - 1) * 2
 
     def render_fft(operand):
-        W_hr = int(round(W * scale))
-        render_shape = (H_hr, W_hr)
+        render_shape = (H_hr_grid, W_hr_grid)
 
-        s = scale
         pos_pix_scaled = pos_pix * s + (s - 1.0) / 2.0
 
         render_fn = vmap(partial(render_point_source_fft, image_shape=render_shape), in_axes=(0, 0, None))
         stamps = render_fn(fluxes, pos_pix_scaled, psf_data['fft'])
         combined = jnp.sum(stamps, axis=0)
 
-        if scale > 1.001:
+        # If s is provided as static (float), we can check and slice statically
+        if sampling_factor is not None and s > 1.001:
+            valid_H = int(round(H * s))
+            valid_W = int(round(W * s))
+            valid_H = min(valid_H, H_hr_grid)
+            valid_W = min(valid_W, W_hr_grid)
+
+            combined = combined[:valid_H, :valid_W]
             combined = downsample_image(combined, img_shape)
+        # Fallback for dynamic s (cannot slice) - assuming s matches grid exactly if dynamic
+        elif sampling_factor is None:
+             # If H_hr_grid > H, we assume downsampling is required (classic behavior)
+             if H_hr_grid > H + 1:
+                 combined = downsample_image(combined, img_shape)
+
         return combined
 
     def render_mog(operand):
@@ -491,20 +678,23 @@ def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape):
 
 
 def render_batch_galaxies(
-    fluxes, pos_pix, wcs_cd_inv, shapes, profiles, psf_data, img_shape
+    fluxes, pos_pix, wcs_cd_inv, shapes, profiles, psf_data, img_shape, sampling_factor=None
 ):
     """
     Renders a batch of Galaxies.
     """
+    if sampling_factor is not None:
+        s = sampling_factor
+    else:
+        s = psf_data['sampling']
+
     H, W = img_shape
-    H_hr = psf_data['fft'].shape[0]
-    scale = float(H_hr) / float(H)
+    H_hr_grid = psf_data['fft'].shape[0]
+    W_hr_grid = (psf_data['fft'].shape[1] - 1) * 2
 
     def render_fft(operand):
-        W_hr = int(round(W * scale))
-        render_shape = (H_hr, W_hr)
+        render_shape = (H_hr_grid, W_hr_grid)
 
-        s = scale
         pos_pix_scaled = pos_pix * s + (s - 1.0) / 2.0
         wcs_cd_inv_scaled = wcs_cd_inv * s
 
@@ -516,8 +706,18 @@ def render_batch_galaxies(
         weighted_stamps = stamps * fluxes[:, jnp.newaxis, jnp.newaxis]
         combined = jnp.sum(weighted_stamps, axis=0)
 
-        if scale > 1.001:
+        if sampling_factor is not None and s > 1.001:
+            valid_H = int(round(H * s))
+            valid_W = int(round(W * s))
+            valid_H = min(valid_H, H_hr_grid)
+            valid_W = min(valid_W, W_hr_grid)
+
+            combined = combined[:valid_H, :valid_W]
             combined = downsample_image(combined, img_shape)
+        elif sampling_factor is None:
+             if H_hr_grid > H + 1:
+                 combined = downsample_image(combined, img_shape)
+
         return combined
 
     def render_mog(operand):
@@ -579,7 +779,7 @@ def prepare_sharded_inputs(images_data, batches, initial_fluxes):
     )
 
 
-def render_image(fluxes, image_data, batches):
+def render_image(fluxes, image_data, batches, sampling_factor=None):
     """
     Renders a single image using sliced batch data.
     """
@@ -594,7 +794,7 @@ def render_image(fluxes, image_data, batches):
         batch_fluxes = fluxes[f_idx]
 
         ps_model = render_batch_point_sources(
-            batch_fluxes, pos_pix, image_data["psf"], (H, W)
+            batch_fluxes, pos_pix, image_data["psf"], (H, W), sampling_factor=sampling_factor
         )
         img_model = img_model + ps_model
 
@@ -617,6 +817,7 @@ def render_image(fluxes, image_data, batches):
             profiles,
             image_data["psf"],
             (H, W),
+            sampling_factor=sampling_factor
         )
         img_model = img_model + gal_model
 
@@ -752,7 +953,7 @@ def compute_fisher_diagonal(image_data, batches, n_flux):
     return fisher_diag
 
 
-def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=False):
+def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=False, sampling_factor=None):
     """
     Pure JAX core optimization logic for a SINGLE image.
     Designed to be vmapped.
@@ -765,7 +966,7 @@ def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=Fals
     """
 
     def loss_fn(fluxes):
-        model_image = render_image(fluxes, image_data, batches)
+        model_image = render_image(fluxes, image_data, batches, sampling_factor=sampling_factor)
         data = image_data["data"]
         invvar = image_data["invvar"]
         diff = data - model_image
@@ -795,7 +996,7 @@ def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=Fals
     return optimized_fluxes
 
 
-def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=False, fit_background=False, update_catalog=False, vmap_images=True, use_sharding=True):
+def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=False, fit_background=False, update_catalog=False, vmap_images=True, use_sharding=True, bucket_sizes=None, bucket_mode="auto", bucket_shape_mode="square", bucket_base=32):
     """
     Optimizes fluxes for forced photometry using JAX.
     Iterates over images in tractor_obj and fits each one separately using vectorized execution (vmap).
@@ -810,6 +1011,10 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
         vmap_images: bool, if True (default), stacks all images and processes them in a single vmap call.
                      If False, iterates over images sequentially (saving memory).
         use_sharding: bool, if True (default), distributes the batch across available devices when vmap_images=True.
+        bucket_sizes: List of bucket sizes (e.g. [128, 256]). Used if bucket_mode="fixed".
+        bucket_mode: "auto" or "fixed".
+        bucket_shape_mode: "square" or "independent".
+        bucket_base: rounding base for auto mode.
 
     Returns:
         List of results per image.
@@ -826,57 +1031,113 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
     solve_jit = jit(partial(solve_fluxes_core, return_variances=return_variances))
 
     if vmap_images:
-        # 1. Extract Data (Full Batch)
-        images_data, batches, initial_fluxes = extract_model_data(
-            tractor_obj,
-            oversample_rendering=oversample_rendering,
-            fit_background=fit_background
-        )
+        # Determine buckets
+        stats = compute_target_stats(tractor_obj.images, oversample_rendering)
+        max_factor = stats["max_factor"]
+        req_shapes = compute_image_shapes(tractor_obj.images, stats)
+        bucket_map = assign_buckets(req_shapes, bucket_sizes, bucket_mode, bucket_shape_mode, bucket_base)
 
-        # 2. Define in_axes for batches
-        batches_in_axes = {}
-        if "PointSource" in batches:
-            batches_in_axes["PointSource"] = {
-                "flux_idx": None, # Shared
-                "pos_pix": 0,     # Batched
-            }
-        if "Galaxy" in batches:
-            batches_in_axes["Galaxy"] = {
-                "flux_idx": None,
-                "pos_pix": 0,
-                "wcs_cd_inv": 0,
-                "shapes": None,
-                "profile": {
-                    "amp": None,
-                    "mean": None,
-                    "var": None,
+        # Debug Logging
+        print(f"JAX Optimization: {len(tractor_obj.images)} images -> {len(bucket_map)} buckets")
+        for shape, idxs in bucket_map.items():
+            print(f"  Bucket {shape}: {len(idxs)} images")
+
+        # Container for results
+        all_results = [None] * len(tractor_obj.images)
+
+        optimized_fluxes_np = None # placeholder if needed later
+        # Actually we construct results list at the end differently if we bucket.
+        # But optimize_fluxes expects `results` list in order.
+
+        # We need to collect fluxes to update catalog if single image.
+        # But if single image, we probably only have 1 bucket.
+
+        # For update_catalog logic at end:
+        # We need `optimized_fluxes_np` array (N_img, N_params).
+        # We can construct it from all_results.
+
+        for shape, img_indices in bucket_map.items():
+            if not img_indices:
+                continue
+
+            sub_images = [tractor_obj.images[i] for i in img_indices]
+            # sub_tractor needs same catalog
+            sub_tractor = Tractor(sub_images, tractor_obj.catalog)
+
+            # 1. Extract Data (Bucket Batch)
+            images_data, batches, initial_fluxes = extract_model_data(
+                sub_tractor,
+                oversample_rendering=oversample_rendering,
+                fit_background=fit_background,
+                fixed_target_shape=shape,
+                fixed_max_factor=max_factor
+            )
+
+            # 2. Define in_axes for batches
+            batches_in_axes = {}
+            if "PointSource" in batches:
+                batches_in_axes["PointSource"] = {
+                    "flux_idx": None, # Shared
+                    "pos_pix": 0,     # Batched
                 }
-            }
-        if "Background" in batches:
-            batches_in_axes["Background"] = {
-                "flux_idx": None
-            }
+            if "Galaxy" in batches:
+                batches_in_axes["Galaxy"] = {
+                    "flux_idx": None,
+                    "pos_pix": 0,
+                    "wcs_cd_inv": 0,
+                    "shapes": None,
+                    "profile": {
+                        "amp": None,
+                        "mean": None,
+                        "var": None,
+                    }
+                }
+            if "Background" in batches:
+                batches_in_axes["Background"] = {
+                    "flux_idx": None
+                }
 
-        # 3. Vmap Optimization
-        # images_data is fully batched (0)
-        # initial_fluxes is batched (0)
+            # 3. Vmap Optimization
 
-        if use_sharding:
-            images_data, batches, initial_fluxes = prepare_sharded_inputs(images_data, batches, initial_fluxes)
+            if use_sharding:
+                images_data, batches, initial_fluxes = prepare_sharded_inputs(images_data, batches, initial_fluxes)
 
-        solve_fn = jit(vmap(
-            partial(solve_fluxes_core, return_variances=return_variances),
-            in_axes=(0, 0, batches_in_axes)
-        ))
+            # Re-compile for this shape
+            solve_fn = jit(vmap(
+                partial(solve_fluxes_core, return_variances=return_variances, sampling_factor=max_factor),
+                in_axes=(0, 0, batches_in_axes)
+            ))
 
-        if return_variances:
-            optimized_fluxes_stack, variances_stack = solve_fn(initial_fluxes, images_data, batches)
+            if return_variances:
+                optimized_fluxes_stack, variances_stack = solve_fn(initial_fluxes, images_data, batches)
+            else:
+                optimized_fluxes_stack = solve_fn(initial_fluxes, images_data, batches)
+
+            # Map back to original indices
+            res_fluxes = np.array(optimized_fluxes_stack)
+            if return_variances:
+                res_variances = np.array(variances_stack)
+
+            for k, original_idx in enumerate(img_indices):
+                f = res_fluxes[k]
+                if return_variances:
+                    v = res_variances[k]
+                    all_results[original_idx] = (f, v)
+                else:
+                    all_results[original_idx] = f
+
+        # Reconstruct arrays for compatibility with subsequent logic
+        if len(all_results) > 0:
+            if return_variances:
+                optimized_fluxes_np = np.array([r[0] for r in all_results])
+                variances_np = np.array([r[1] for r in all_results])
+            else:
+                optimized_fluxes_np = np.array(all_results)
         else:
-            optimized_fluxes_stack = solve_fn(initial_fluxes, images_data, batches)
-
-        optimized_fluxes_np = np.array(optimized_fluxes_stack)
-        if return_variances:
-            variances_np = np.array(variances_stack)
+             # Handle empty case
+             optimized_fluxes_np = np.array([])
+             if return_variances:
+                 variances_np = np.array([])
 
     else:
         # Sequential Processing
@@ -1045,7 +1306,8 @@ class JaxOptimizer(Optimizer):
             oversample_rendering=True,
             update_catalog=True,
             vmap_images=vmap_images,
-            use_sharding=use_sharding
+            use_sharding=use_sharding,
+            **kwargs
         )
 
         # tractor catalog is updated.
