@@ -46,8 +46,10 @@ def test_jax_optimizer_accuracy():
 
     images_data, batches, initial_fluxes = extract_model_data(tractor, oversample_rendering=True)
 
-    # initial_fluxes contains true fluxes (1000, 500)
-    # batches contains positions etc.
+    # Check PSF FFT
+    psf_fft = images_data['psf']['fft']
+    print("PSF FFT shape:", psf_fft.shape)
+    print("PSF FFT sum:", jnp.sum(jnp.abs(psf_fft)))
 
     # Slice for render
     single_image_data = jax.tree_util.tree_map(lambda x: x[0], images_data)
@@ -59,12 +61,26 @@ def test_jax_optimizer_accuracy():
             'mask': batches['PointSource']['mask'][0] if 'mask' in batches['PointSource'] else None
         }
 
+    # Debug render
+    fluxes = initial_fluxes[0]
+    print("Fluxes:", fluxes)
+    pos = single_batches['PointSource']['pos_pix']
+    print("Positions:", pos)
+
     true_model = render_image(initial_fluxes[0], single_image_data, single_batches)
+    print("Raw Model Sum:", jnp.sum(true_model))
+    print("Raw Model Mean:", jnp.mean(true_model))
+    print("Raw Model Max:", jnp.max(true_model))
+
     # Crop padding
     true_model = true_model[:H, :W]
     img.data += np.array(true_model)
 
-    print(f"True Model Sum: {true_model.sum():.4f}")
+    print(f"True Model Sum (Cropped): {true_model.sum():.4f}")
+
+    if true_model.sum() == 0:
+        print("FAIL: Model is zero.")
+        return
 
     # Perturb fluxes
     src1.brightness.setParams([800.0])
@@ -74,10 +90,6 @@ def test_jax_optimizer_accuracy():
 
     # Use JaxOptimizer
     tractor.optimizer = JaxOptimizer()
-    # We must inform JaxOptimizer to use oversampling.
-    # The optimize method takes kwargs.
-    # But currently JaxOptimizer hardcodes oversample_rendering=True?
-    # Yes, I wrote it to pass oversample_rendering=True.
 
     # Run optimization
     dchisq = 1e-10
