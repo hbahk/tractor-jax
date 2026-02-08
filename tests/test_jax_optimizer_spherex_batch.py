@@ -1,5 +1,6 @@
 import time
 import re
+import math
 import os
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor
@@ -323,6 +324,18 @@ def test_jax_optimizer_spherex_batch(idx_list):
     print(f"Max PSF Shape: {max_psf_h}x{max_psf_w}")
     print(f"Max MoG K: {max_mog_K}")
 
+    # Compute a fixed target shape so all frames stack cleanly.
+    # Sampling is fixed at 0.2 in _build_tractor_for_frame -> max_factor = 1 / 0.2 = 5.
+    fixed_max_factor = 5.0
+    fft_pad_h_lr = int(math.ceil(max_psf_h / fixed_max_factor))
+    fft_pad_w_lr = int(math.ceil(max_psf_w / fixed_max_factor))
+    padded_h = max_h + fft_pad_h_lr
+    padded_w = max_w + fft_pad_w_lr
+    fixed_target_shape = (
+        int(round(padded_h * fixed_max_factor)),
+        int(round(padded_w * fixed_max_factor)),
+    )
+
     # 2. Second Pass: Create Tractors with Padding
     tractor_list = []
 
@@ -361,7 +374,9 @@ def test_jax_optimizer_spherex_batch(idx_list):
         images_data, batches, initial_fluxes = extract_model_data(
             trac,
             oversample_rendering=True,
-            fit_background=True
+            fit_background=True,
+            fixed_target_shape=fixed_target_shape,
+            fixed_max_factor=fixed_max_factor,
         )
         images_data_list.append(images_data)
         batches_list.append(batches)
@@ -389,19 +404,21 @@ def test_jax_optimizer_spherex_batch(idx_list):
     batches_in_axes = {}
     if "PointSource" in sample_batches:
         batches_in_axes["PointSource"] = {
-            "flux_idx": None,
+            "flux_idx": 0,
             "pos_pix": 0,
+            "mask": 0,
         }
     if "Galaxy" in sample_batches:
         batches_in_axes["Galaxy"] = {
-            "flux_idx": None,
+            "flux_idx": 0,
             "pos_pix": 0,
             "wcs_cd_inv": 0,
-            "shapes": None,
+            "mask": 0,
+            "shapes": 0,
             "profile": {
-                "amp": None,
-                "mean": None,
-                "var": None,
+                "amp": 0,
+                "mean": 0,
+                "var": 0,
             },
         }
     if "Background" in sample_batches:
