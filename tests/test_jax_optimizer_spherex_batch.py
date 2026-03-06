@@ -15,6 +15,7 @@ from astropy.io import fits
 from astropy.table import Table
 from astropy.wcs import WCS
 import jax
+jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from photutils.background import Background2D, MedianBackground
 from tractor import Tractor, Image, PointSource, Catalog, NullWCS, ConstantSky
@@ -880,7 +881,7 @@ if __name__ == "__main__":
         cutout_info["flux"] = np.full(len(cutout_info), np.nan)
         cutout_info["flux_err"] = np.full(len(cutout_info), np.nan)
         test_index = np.arange(len(cutout_info))
-        batch_size = 500
+        batch_size = 100
         # for i in range(0, len(test_index), batch_size):
         for i in range(1000, 2000, batch_size):
             batch_index = test_index[i:i+batch_size]
