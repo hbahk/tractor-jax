@@ -5,6 +5,7 @@ import os
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
+import logging
 
 import astropy.units as u
 import matplotlib.pyplot as plt
@@ -29,14 +30,25 @@ from tractor.sersic import SersicIndex, SersicGalaxy, SersicMixture
 from tqdm import tqdm, trange
 from utils import get_nearest_psf_zone_index, sky_pa_to_pixel_pa, SPHERExSersicGalaxy, SPHERExSersicMixture
 
+logger = logging.getLogger(__name__)
+
 THAW_SHAPE = False
 THAW_POSITIONS = False
 
 BKG_MODEL = "photutils"
-BKG_BOX_SIZE = 15
+# BKG_MODEL = "plane"
+# BKG_MODEL = "none"
+BKG_BOX_SIZE = 5
 BKG_FILTER_SIZE = 3
 
-PIX_SR = ((6.15 * u.arcsec)**2).to_value(u.sr)
+# Pixel-area handling (mJy/sr -> mJy/pixel) via SIP WCS.
+# Downsampling/grid options help speed while keeping SIP distortion.
+PIXAREA_MODE = "sip_tangent"  # "sip_tangent","sip","constant"
+PIXAREA_DOWNSAMPLE = 1  # integer >= 1
+PIXAREA_USE_GRID = False  # if True, compute on coarse grid + interpolate
+PIXAREA_GRID_STRIDE = 8  # grid step (pixels) when PIXAREA_USE_GRID is True
+PIXAREA_CONST_SR = ((6.15 * u.arcsec)**2).to_value(u.sr)
+IMG_SCALE = 1.0e9  # scale MJy -> mJy to improve numerical stability
 
 # Bit definitions from FLAGS header
 FLAG_BITS = {
@@ -213,6 +225,272 @@ def downsample_psf_oversample2(psf):
 
     return out
 
+def _pixel_area_from_wcs_sip(wcs, shape, *, downsample=1, use_grid=True, grid_stride=8):
+    """Compute per-pixel solid angle (sr) using SIP WCS.
+
+    Options:
+      - downsample: compute on a downsampled image shape
+      - use_grid: compute on a coarse grid and interpolate
+    """
+    h, w = shape
+    if downsample < 1:
+        raise ValueError("downsample must be >= 1")
+    if grid_stride < 1:
+        raise ValueError("grid_stride must be >= 1")
+
+    dh = int(math.ceil(h / downsample))
+    dw = int(math.ceil(w / downsample))
+
+    # Too small to compute gradients; fall back to constant area.
+    if dh < 2 or dw < 2:
+        return np.full((h, w), PIXAREA_CONST_SR, dtype=np.float64)
+
+    if use_grid:
+        ys = np.arange(0, dh, grid_stride, dtype=np.float64)
+        xs = np.arange(0, dw, grid_stride, dtype=np.float64)
+        if ys[-1] != dh - 1:
+            ys = np.append(ys, dh - 1)
+        if xs[-1] != dw - 1:
+            xs = np.append(xs, dw - 1)
+        yy, xx = np.meshgrid(ys, xs, indexing="ij")
+    else:
+        yy, xx = np.indices((dh, dw), dtype=np.float64)
+
+    if yy.shape[0] < 2 or yy.shape[1] < 2:
+        return np.full((h, w), PIXAREA_CONST_SR, dtype=np.float64)
+
+    # Map to original pixel coordinates (center positions).
+    xx_full = xx * downsample + 0.5 * (downsample - 1)
+    yy_full = yy * downsample + 0.5 * (downsample - 1)
+
+    ra, dec = wcs.pixel_to_world_values(xx_full, yy_full)  # deg
+    ra = np.deg2rad(ra)
+    dec = np.deg2rad(dec)
+
+    # Unwrap RA to avoid 0/2pi discontinuity before differentiation.
+    ra = np.unwrap(ra, axis=1)
+    ra = np.unwrap(ra, axis=0)
+
+    # Account for sampling step in gradient spacing.
+    step = float(downsample * (grid_stride if use_grid else 1))
+    ddec_dy, ddec_dx = np.gradient(dec, step, step)
+    dra_dy, dra_dx = np.gradient(ra, step, step)
+
+    omega = np.abs(
+        (dra_dx * np.cos(dec)) * ddec_dy - (dra_dy * np.cos(dec)) * ddec_dx
+    )
+
+    if use_grid:
+        # Bilinear interpolation onto downsampled full grid.
+        yy_fullgrid, xx_fullgrid = np.indices((dh, dw), dtype=np.float64)
+        y0 = np.floor((yy_fullgrid / grid_stride)).astype(int)
+        x0 = np.floor((xx_fullgrid / grid_stride)).astype(int)
+        y1 = np.clip(y0 + 1, 0, omega.shape[0] - 1)
+        x1 = np.clip(x0 + 1, 0, omega.shape[1] - 1)
+        wy = (yy_fullgrid / grid_stride) - y0
+        wx = (xx_fullgrid / grid_stride) - x0
+
+        omega00 = omega[y0, x0]
+        omega01 = omega[y0, x1]
+        omega10 = omega[y1, x0]
+        omega11 = omega[y1, x1]
+        omega = (
+            (1 - wy) * (1 - wx) * omega00
+            + (1 - wy) * wx * omega01
+            + wy * (1 - wx) * omega10
+            + wy * wx * omega11
+        )
+
+    if downsample == 1:
+        return omega
+
+    # Expand back to original shape by nearest-neighbor tiling.
+    omega_full = np.repeat(np.repeat(omega, downsample, axis=0), downsample, axis=1)
+    return omega_full[:h, :w]
+
+
+def _pixel_area_from_wcs_sip_tangent_offsets(
+    wcs,
+    shape,
+    *,
+    downsample=1,
+    grid_stride=8,
+):
+    """
+    Compute per-pixel solid angle Omega [sr/pixel] using a SIP-including WCS
+    via a *local Jacobian* estimated from tangent-plane offsets.
+
+      - For each grid pixel center, build a local tangent plane at that center.
+      - Compute spherical offsets (xi, eta) from the center to +/-x and +/-y
+        neighbor points using SkyCoord.spherical_offsets_to().
+      - Estimate Jacobian entries with finite differences.
+      - Omega ~ |det d(xi,eta)/d(x,y)|, where (xi, eta) are in radians.
+
+    Notes:
+      - Uses a coarse grid for speed, then interpolates to full resolution.
+      - Uses one-sided differences at the grid boundary as needed.
+      - This avoids RA wrap issues and is generally more robust than differentiating RA/Dec.
+
+    Parameters
+    ----------
+    wcs : astropy.wcs.WCS
+        WCS object (SIP is honored if present).
+    shape : (H, W)
+        Output image shape.
+    downsample : int >= 1
+        Additional coarsening factor (effective step = downsample*grid_stride pixels).
+    grid_stride : int >= 1
+        Grid step in pixels (after downsample factor is folded in).
+
+    Returns
+    -------
+    omega_full : ndarray, shape (H, W), float64
+        Solid angle per pixel [sr/pixel].
+    """
+    H, W = map(int, shape)
+    if downsample < 1 or grid_stride < 1:
+        raise ValueError("downsample and grid_stride must be >= 1")
+    if H < 2 or W < 2:
+        return np.full((H, W), PIXAREA_CONST_SR, dtype=np.float64)
+
+    # Effective finite-difference step in *original* pixel units
+    step = int(downsample) * int(grid_stride)
+    if step < 1:
+        step = 1
+
+    # Grid pixel-center coordinates in original pixel space: centers are (i+0.5, j+0.5)
+    xs = np.arange(0, W, step, dtype=np.float64) + 0.5
+    ys = np.arange(0, H, step, dtype=np.float64) + 0.5
+
+    # Ensure last grid point reaches the last pixel center
+    if xs[-1] != (W - 0.5):
+        xs = np.append(xs, W - 0.5)
+    if ys[-1] != (H - 0.5):
+        ys = np.append(ys, H - 0.5)
+
+    if xs.size < 2 or ys.size < 2:
+        return np.full((H, W), PIXAREA_CONST_SR, dtype=np.float64)
+
+    # Mesh of grid pixel centers
+    yy0, xx0 = np.meshgrid(ys, xs, indexing="ij")  # (Ny, Nx)
+
+    # Neighbor pixel centers for finite differences (clamped at boundaries)
+    x_min, x_max = 0.5, W - 0.5
+    y_min, y_max = 0.5, H - 0.5
+
+    xxp = np.clip(xx0 + step, x_min, x_max)
+    xxm = np.clip(xx0 - step, x_min, x_max)
+    yyp = np.clip(yy0 + step, y_min, y_max)
+    yym = np.clip(yy0 - step, y_min, y_max)
+
+    dxp = xxp - xx0
+    dxm = xx0 - xxm
+    dyp = yyp - yy0
+    dym = yy0 - yym
+
+    # WCS transform for center and neighbors (SIP included)
+    # We keep everything as arrays for vectorization.
+    ra0_deg, dec0_deg = wcs.pixel_to_world_values(xx0, yy0)
+    rap_deg, decp_deg = wcs.pixel_to_world_values(xxp, yy0)
+    ram_deg, decm_deg = wcs.pixel_to_world_values(xxm, yy0)
+    rayp_deg, decyp_deg = wcs.pixel_to_world_values(xx0, yyp)
+    raym_deg, decym_deg = wcs.pixel_to_world_values(xx0, yym)
+
+    # Build SkyCoord objects (broadcasting works over arrays)
+    c0 = SkyCoord(ra0_deg * u.deg, dec0_deg * u.deg, frame="icrs")
+    cxp = SkyCoord(rap_deg * u.deg, decp_deg * u.deg, frame="icrs")
+    cxm = SkyCoord(ram_deg * u.deg, decm_deg * u.deg, frame="icrs")
+    cyp = SkyCoord(rayp_deg * u.deg, decyp_deg * u.deg, frame="icrs")
+    cym = SkyCoord(raym_deg * u.deg, decym_deg * u.deg, frame="icrs")
+
+    # Spherical offsets from center to neighbors in the local tangent plane
+    # (dlon, dlat) are angles; convert to radians for a solid-angle Jacobian.
+    xi_p,  eta_p  = c0.spherical_offsets_to(cxp)
+    xi_m,  eta_m  = c0.spherical_offsets_to(cxm)
+    xi_yp, eta_yp = c0.spherical_offsets_to(cyp)
+    xi_ym, eta_ym = c0.spherical_offsets_to(cym)
+
+    xi_p  = xi_p.to_value(u.rad)
+    eta_p = eta_p.to_value(u.rad)
+    xi_m  = xi_m.to_value(u.rad)
+    eta_m = eta_m.to_value(u.rad)
+    xi_yp  = xi_yp.to_value(u.rad)
+    eta_yp = eta_yp.to_value(u.rad)
+    xi_ym  = xi_ym.to_value(u.rad)
+    eta_ym = eta_ym.to_value(u.rad)
+
+    # Finite-difference derivatives with support for one-sided differences at boundaries.
+    # For non-symmetric spacing (-dxm, +dxp), a reasonable linear estimate is:
+    #   f'(0) ~ (f(+dxp) - f(-dxm)) / (dxp + dxm)
+    # where f(-dxm) is the offset to the minus-point (typically negative in xi/eta).
+    def two_sided_or_one_sided(fp, fm, dp, dm):
+        out = np.empty_like(fp, dtype=np.float64)
+
+        # Two-sided where both sides exist
+        m2 = (dp > 0) & (dm > 0)
+        out[m2] = (fp[m2] - fm[m2]) / (dp[m2] + dm[m2])
+
+        # One-sided + where only + exists
+        mp = (dp > 0) & ~(dm > 0)
+        out[mp] = fp[mp] / dp[mp]
+
+        # One-sided - where only - exists (note: fm is offset to the minus-point)
+        mm = (dm > 0) & ~(dp > 0)
+        out[mm] = -fm[mm] / dm[mm]
+
+        # Degenerate (should be rare): set to 0
+        mz = ~(m2 | mp | mm)
+        out[mz] = 0.0
+        return out
+
+    dxi_dx  = two_sided_or_one_sided(xi_p,  xi_m,  dxp, dxm)
+    deta_dx = two_sided_or_one_sided(eta_p, eta_m, dxp, dxm)
+    dxi_dy  = two_sided_or_one_sided(xi_yp, xi_ym, dyp, dym)
+    deta_dy = two_sided_or_one_sided(eta_yp, eta_ym, dyp, dym)
+
+    # Solid angle per pixel ~ |det J| with J = d(xi,eta)/d(x,y)
+    omega_grid = np.abs(dxi_dx * deta_dy - dxi_dy * deta_dx).astype(np.float64, copy=False)
+
+    # If grid is already full resolution, return it
+    if step == 1:
+        return omega_grid
+
+    # Interpolate from coarse grid (ys, xs) to full pixel-center grid using two-pass 1D interp.
+    x_full = np.arange(W, dtype=np.float64) + 0.5
+    y_full = np.arange(H, dtype=np.float64) + 0.5
+
+    # 1) Interpolate along x for each coarse y
+    omega_x = np.empty((ys.size, W), dtype=np.float64)
+    for i in range(ys.size):
+        omega_x[i, :] = np.interp(x_full, xs, omega_grid[i, :])
+
+    # 2) Interpolate along y for each x
+    omega_full = np.empty((H, W), dtype=np.float64)
+    for j in range(W):
+        omega_full[:, j] = np.interp(y_full, ys, omega_x[:, j])
+
+    return omega_full
+
+def _pixel_area_sr(wcs, shape):
+    if PIXAREA_MODE == "constant":
+        return np.full(shape, wcs.celestial.proj_plane_pixel_area().to_value(u.sr), dtype=np.float64)
+    elif PIXAREA_MODE == "sip_tangent":
+        return _pixel_area_from_wcs_sip_tangent_offsets(
+            wcs,
+            shape,
+            downsample=PIXAREA_DOWNSAMPLE,
+            grid_stride=PIXAREA_GRID_STRIDE,
+        )
+    elif PIXAREA_MODE == "sip":
+        return _pixel_area_from_wcs_sip(
+            wcs,
+            shape,
+            downsample=PIXAREA_DOWNSAMPLE,
+            use_grid=PIXAREA_USE_GRID,
+            grid_stride=PIXAREA_GRID_STRIDE,
+        )
+    raise ValueError(f"Invalid PIXAREA_MODE: {PIXAREA_MODE}")
+
 def _build_tractor_for_frame(
     frame,
     tab,
@@ -262,8 +540,8 @@ def _build_tractor_for_frame(
         data=img_padded - bkg_padded,
         inverr=np.sqrt(invvar_padded),
         psf=psf_tractor,
-        wcs=affine_wcs,
-        # wcs=NullWCS(pixscale=6.15),
+        # wcs=affine_wcs,
+        wcs=NullWCS(pixscale=6.15),
         photocal=LinearPhotoCal(1.0),
         sky=ConstantSky(0.0),
     )
@@ -277,7 +555,14 @@ def _build_tractor_for_frame(
     pxs, pys = wcs.world_to_pixel(sco)
     rng = np.random.default_rng(idx)
     for row, px, py in zip(stab, pxs, pys):
-        _flux = Flux(rng.uniform(high=1))
+        # _flux = Flux(rng.uniform(high=1))
+        ix = int(round(px))
+        iy = int(round(py))
+        if 0 <= iy < img.shape[0] and 0 <= ix < img.shape[1]:
+            init_flux_val = img[iy, ix] - bkg[iy, ix]
+        else:
+            init_flux_val = 0.0
+        _flux = Flux(init_flux_val)
 
         # Use original WCS for position (valid for padded image since origin preserved)
         # px, py = wcs_tractor.positionToPixel(RaDecPos(row["ra"], row["dec"]))
@@ -319,14 +604,14 @@ def test_jax_optimizer_spherex_batch(idx_list):
     start_time = time.time()
     hdul = fits.open("tests/testphot.fits")
     end_time = time.time()
-    print(f"Time to open the output file: {end_time - start_time} seconds")
+    logger.info("Time to open the output file: %.6f seconds", end_time - start_time)
 
     start_time = time.time()
     cutout_info = Table(hdul[1].data)
     cutout_info["flux"] = np.full(len(cutout_info), np.nan)
     cutout_info["flux_err"] = np.full(len(cutout_info), np.nan)
     end_time = time.time()
-    print(f"Time to read the cutout info: {end_time - start_time} seconds")
+    logger.info("Time to read the cutout info: %.6f seconds", end_time - start_time)
 
     tab = Table.read("tests/ls_testgal.parquet")
     tco = SkyCoord(ra=tab["ra"], dec=tab["dec"], unit="deg")
@@ -348,7 +633,7 @@ def test_jax_optimizer_spherex_batch(idx_list):
     max_mog_K = 0
     grid_cache = {}
 
-    print("Loading frames and determining shapes...")
+    logger.info("Loading frames and determining shapes...")
     for i in tqdm(idx_list):
         img_idx = 2 + i * 6
         flg_idx = img_idx + 1
@@ -377,7 +662,7 @@ def test_jax_optimizer_spherex_batch(idx_list):
                 box_size=BKG_BOX_SIZE,
                 filter_size=BKG_FILTER_SIZE,
             )
-        else:
+        elif BKG_MODEL == "plane":
             shape_key = img.shape
             if shape_key not in grid_cache:
                 grid_cache[shape_key] = np.indices(shape_key)
@@ -390,6 +675,10 @@ def test_jax_optimizer_spherex_batch(idx_list):
                 source_bit=(1 << FLAG_BITS["SOURCE"]),
                 grid=grid_cache[shape_key],
             )
+        elif BKG_MODEL == "none":
+            pass
+        else:
+            raise ValueError(f"Invalid background model: {BKG_MODEL}")
 
         psf_cube = hdul[psf_idx].data
         psf_lookup = hdul[psf_lookup_idx].data
@@ -402,6 +691,13 @@ def test_jax_optimizer_spherex_batch(idx_list):
         max_psf_w = max(max_psf_w, psf_data.shape[1])
 
         hdr = hdul[img_idx].header
+
+        # Convert mJy/sr -> mJy/pixel using SIP WCS pixel area.
+        wcs = WCS(hdr)
+        omega_sr = _pixel_area_sr(wcs, img.shape).astype(img.dtype, copy=False)
+        img = img * omega_sr * IMG_SCALE
+        bkg = bkg * omega_sr * IMG_SCALE
+        var = var * (omega_sr ** 2) * (IMG_SCALE ** 2)
 
         frames_data.append({
             'img': img,
@@ -419,9 +715,9 @@ def test_jax_optimizer_spherex_batch(idx_list):
             profile_mog = SPHERExSersicMixture.getProfile(row["sersic"])
             max_mog_K = max(max_mog_K, len(profile_mog.amp))
 
-    print(f"Max Image Shape: {max_h}x{max_w}")
-    print(f"Max PSF Shape: {max_psf_h}x{max_psf_w}")
-    print(f"Max MoG K: {max_mog_K}")
+    logger.info("Max Image Shape: %sx%s", max_h, max_w)
+    logger.info("Max PSF Shape: %sx%s", max_psf_h, max_psf_w)
+    logger.info("Max MoG K: %s", max_mog_K)
 
     # Compute a fixed target shape so all frames stack cleanly.
     # Sampling is fixed at 0.2 in _build_tractor_for_frame -> max_factor = 1 / 0.2 = 5.
@@ -438,7 +734,7 @@ def test_jax_optimizer_spherex_batch(idx_list):
     # 2. Second Pass: Create Tractors with Padding
     tractor_list = []
 
-    print("Constructing Tractors...")
+    logger.info("Constructing Tractors...")
     if frames_data:
         # max_workers = min(len(frames_data), os.cpu_count() or 1)
         max_workers = 10
@@ -462,7 +758,7 @@ def test_jax_optimizer_spherex_batch(idx_list):
                 tqdm(executor.map(build_fn, frames_data), total=len(frames_data))
             )
 
-    print("Precomputing model data...")
+    logger.info("Precomputing model data...")
     start_time = time.time()
 
     images_data_list = []
@@ -482,9 +778,9 @@ def test_jax_optimizer_spherex_batch(idx_list):
         fluxes_list.append(initial_fluxes)
 
     end_time = time.time()
-    print(f"Time to precompute: {end_time - start_time} seconds")
+    logger.info("Time to precompute: %.6f seconds", end_time - start_time)
 
-    print("Stacking model data...")
+    logger.info("Stacking model data...")
     start_time = time.time()
     images_data_batched = jax.tree_util.tree_map(
         lambda *x: jnp.stack(x), *images_data_list
@@ -494,9 +790,9 @@ def test_jax_optimizer_spherex_batch(idx_list):
     )
     fluxes_batched = jnp.stack(fluxes_list)
     end_time = time.time()
-    print(f"Time to stack: {end_time - start_time} seconds")
+    logger.info("Time to stack: %.6f seconds", end_time - start_time)
 
-    print("Running JAX optimization...")
+    logger.info("Running JAX optimization...")
     start_time = time.time()
 
     sample_batches = batches_list[0] if batches_list else {}
@@ -526,7 +822,7 @@ def test_jax_optimizer_spherex_batch(idx_list):
         }
 
     solve_images_vmap = jax.vmap(
-        partial(solve_fluxes_core, return_variances=True),
+        partial(solve_fluxes_core, return_variances=True, use_preconditioner=False),
         in_axes=(0, 0, batches_in_axes)
     )
     solve_tractors_vmap = jax.vmap(
@@ -538,7 +834,7 @@ def test_jax_optimizer_spherex_batch(idx_list):
         fluxes_batched, images_data_batched, batches_batched
     )
     end_time = time.time()
-    print(f"Time to optimize fluxes: {end_time - start_time} seconds")
+    logger.info("Time to optimize fluxes: %.6f seconds", end_time - start_time)
 
     # If each tractor has a single image, drop the image axis.
     if fluxes_stack.ndim == 3:
@@ -551,10 +847,10 @@ def test_jax_optimizer_spherex_batch(idx_list):
     sep = sc.separation(gco)
     main_idx = np.argmin(sep)
 
-    flux = np.array(fluxes_stack)[:, main_idx] * PIX_SR * 1.0e9
-    ferr = np.sqrt(np.array(variances_stack)[:, main_idx]) * PIX_SR * 1.0e9
+    flux = np.array(fluxes_stack)[:, main_idx]
+    ferr = np.sqrt(np.array(variances_stack)[:, main_idx])
 
-    print(f"Final Flux Sample: {flux[:5]}")
+    logger.info("Final Flux Sample: %s", flux[:5])
 
     for i in range(len(idx_list)):
         cutout_info["flux"][idx_list[i]] = flux[i]
@@ -564,6 +860,10 @@ def test_jax_optimizer_spherex_batch(idx_list):
 
 if __name__ == "__main__":
     from tractor.jax.tree import register_pytree_nodes
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     try:
         register_pytree_nodes()
     except ValueError:
@@ -604,6 +904,6 @@ if __name__ == "__main__":
             ax.legend()
             fig.savefig("tests/test_jax_optimizer_spherex_batch_comparison.png", dpi=300, bbox_inches='tight')
         end_time = time.time()
-        print(f"Time to run the test: {(end_time - start_time) / 60} minutes")
+        logger.info("Time to run the test: %.6f minutes", (end_time - start_time) / 60)
     else:
-        print("Test data not found. Skipping execution.")
+        logger.info("Test data not found. Skipping execution.")

@@ -8,3 +8,9 @@ __pycache__/
 .env
 *.png
 *.csv
+outlier_cutout_plots/
+psf_compare_cpu/
+psf_compare_jax/
+psf_compare_cpu_hires/
+testphot.ipynb
+tractor_sphxutils.py

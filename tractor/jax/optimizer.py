@@ -1040,7 +1040,7 @@ def compute_fisher_diagonal(image_data, batches, n_flux):
     return fisher_diag
 
 
-def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=False, sampling_factor=None):
+def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=False, sampling_factor=None, use_preconditioner=True, precond_eps=1e-12):
     """
     Pure JAX core optimization logic for a SINGLE image.
     Designed to be vmapped.
@@ -1067,23 +1067,35 @@ def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=Fals
     def matvec(v):
         return jax.jvp(grad_fn, (initial_fluxes,), (v,))[1]
 
+    fisher_diag = None
+    inv_fisher_diag = None
+    if use_preconditioner or return_variances:
+        fisher_diag = compute_fisher_diagonal(image_data, batches, len(initial_fluxes))
+        fisher_diag = jnp.where(fisher_diag <= 0, precond_eps, fisher_diag)
+        inv_fisher_diag = 1.0 / fisher_diag
+
     # CG solve A x = b where A is Hessian, b = -grads
     # For high precision, maxiter needs to be higher?
     # User requested dchi2=1e-10.
-    step, info = jax.scipy.sparse.linalg.cg(matvec, -grads, maxiter=500, tol=1e-10)
+    if use_preconditioner:
+        def precond(v):
+            return v * inv_fisher_diag
+        step, info = jax.scipy.sparse.linalg.cg(
+            matvec, -grads, maxiter=500, tol=1e-10, M=precond
+        )
+    else:
+        step, info = jax.scipy.sparse.linalg.cg(matvec, -grads, maxiter=500, tol=1e-10)
 
     optimized_fluxes = initial_fluxes + step
 
     if return_variances:
-        fisher_diag = compute_fisher_diagonal(image_data, batches, len(initial_fluxes))
-        fisher_diag = jnp.where(fisher_diag <= 0, 1e-12, fisher_diag)
-        variances = 1.0 / fisher_diag
+        variances = inv_fisher_diag
         return optimized_fluxes, variances
 
     return optimized_fluxes
 
 
-def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=False, fit_background=False, update_catalog=False, vmap_images=True, use_sharding=True, bucket_sizes=None, bucket_mode="auto", bucket_shape_mode="square", bucket_base=32, use_tiling=False, tile_size=256, tile_super_halo=None):
+def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=False, fit_background=False, update_catalog=False, vmap_images=True, use_sharding=True, bucket_sizes=None, bucket_mode="auto", bucket_shape_mode="square", bucket_base=32, use_tiling=False, tile_size=256, tile_super_halo=None, use_preconditioner=True, precond_eps=1e-12):
     """
     Optimizes fluxes for forced photometry using JAX.
     Iterates over images in tractor_obj and fits each one separately using vectorized execution (vmap).
@@ -1105,6 +1117,8 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
         use_tiling: bool, if True, splits images into tiles and processes them.
         tile_size: int, size of tiles (default 256).
         tile_super_halo: optional int, override calculated halo size.
+        use_preconditioner: bool, if True (default), use Fisher diagonal preconditioner.
+        precond_eps: float, floor for Fisher diagonal to avoid divide-by-zero.
 
     Returns:
         List of results per image.
@@ -1118,7 +1132,12 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
 
     # Common function to compile/call solve_fluxes_core
     # We can use JIT here regardless of vmap
-    solve_jit = jit(partial(solve_fluxes_core, return_variances=return_variances))
+    solve_jit = jit(partial(
+        solve_fluxes_core,
+        return_variances=return_variances,
+        use_preconditioner=use_preconditioner,
+        precond_eps=precond_eps,
+    ))
 
     if use_tiling:
         # TILING MODE
@@ -1237,7 +1256,13 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
                 images_data, batches, initial_fluxes = prepare_sharded_inputs(images_data, batches, initial_fluxes)
 
             solve_fn = jit(vmap(
-                partial(solve_fluxes_core, return_variances=return_variances, sampling_factor=max_factor),
+                partial(
+                    solve_fluxes_core,
+                    return_variances=return_variances,
+                    sampling_factor=max_factor,
+                    use_preconditioner=use_preconditioner,
+                    precond_eps=precond_eps,
+                ),
                 in_axes=(0, 0, batches_in_axes)
             ))
 
@@ -1344,7 +1369,13 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
 
             # Re-compile for this shape
             solve_fn = jit(vmap(
-                partial(solve_fluxes_core, return_variances=return_variances, sampling_factor=max_factor),
+                partial(
+                    solve_fluxes_core,
+                    return_variances=return_variances,
+                    sampling_factor=max_factor,
+                    use_preconditioner=use_preconditioner,
+                    precond_eps=precond_eps,
+                ),
                 in_axes=(0, 0, batches_in_axes)
             ))
 
