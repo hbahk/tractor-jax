@@ -1081,10 +1081,10 @@ def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=Fals
         def precond(v):
             return v * inv_fisher_diag
         step, info = jax.scipy.sparse.linalg.cg(
-            matvec, -grads, maxiter=500, tol=1e-10, M=precond
+            matvec, -grads, maxiter=500, tol=1e-6, M=precond
         )
     else:
-        step, info = jax.scipy.sparse.linalg.cg(matvec, -grads, maxiter=500, tol=1e-10)
+        step, info = jax.scipy.sparse.linalg.cg(matvec, -grads, maxiter=500, tol=1e-6)
 
     optimized_fluxes = initial_fluxes + step
 

@@ -517,6 +517,10 @@ def _build_tractor_for_frame(
     bkg_padded = pad_array(bkg, (max_h, max_w))
 
     invvar = 1 / var
+    # Mask non-finite invvar: inf from var=0 (unobserved pixels not caught by flags),
+    # NaN from var=NaN. Both cause inf×0=NaN in JAX, corrupting the CG solver for
+    # the entire frame even when invvar=0 should make the pixel contribute nothing.
+    invvar[~np.isfinite(invvar)] = 0
     mask = flg & maskbits != 0
     invvar[mask] = 0
     invvar_padded = pad_array(invvar, (max_h, max_w))
@@ -536,9 +540,14 @@ def _build_tractor_for_frame(
     crpix = [orig_cx, orig_cy]
     affine_wcs = AffineWCS(crpix, crval, cd)
 
+    # Background-subtracted data; zero out NaN/inf to prevent IEEE NaN propagation
+    # in JAX JIT (0 * NaN = NaN even when invvar=0, corrupting the CG solver).
+    data_padded = img_padded - bkg_padded
+    data_padded = np.where(np.isfinite(data_padded), data_padded, 0.0)
+
     # Create Image
     tim = tractor.Image(
-        data=img_padded - bkg_padded,
+        data=data_padded,
         inverr=np.sqrt(invvar_padded),
         psf=psf_tractor,
         # wcs=affine_wcs,
@@ -560,7 +569,11 @@ def _build_tractor_for_frame(
         ix = int(round(px))
         iy = int(round(py))
         if 0 <= iy < img.shape[0] and 0 <= ix < img.shape[1]:
-            init_flux_val = img[iy, ix] - bkg[iy, ix]
+            raw = img[iy, ix] - bkg[iy, ix]
+            # Guard against NaN in masked pixels (img may have NaN where flagged).
+            # NaN initial flux propagates through CG: optimized = initial + step,
+            # and NaN + finite = NaN, corrupting that source's flux.
+            init_flux_val = float(raw) if np.isfinite(raw) else 0.0
         else:
             init_flux_val = 0.0
         _flux = Flux(init_flux_val)
@@ -842,6 +855,60 @@ def test_jax_optimizer_spherex_batch(idx_list):
         fluxes_stack = fluxes_stack[:, 0]
         variances_stack = variances_stack[:, 0]
 
+    # --- Step 3: NaN/Inf diagnostics ---
+    f_np = np.array(fluxes_stack)     # (n_frames, n_flux)
+    v_np = np.array(variances_stack)  # (n_frames, n_flux)
+    wavelengths_diag = np.array([cutout_info["central_wavelength"][i] for i in idx_list])
+
+    nan_flux  = np.isnan(f_np)
+    inf_flux  = np.isinf(f_np)
+    nan_var   = np.isnan(v_np)
+    inf_var   = np.isinf(v_np)
+    zero_var  = (v_np == 0.0)
+    tiny_var  = (v_np > 0) & (v_np < 1e-20)   # suspiciously small but not zero
+    neg_flux  = f_np < 0.0
+
+    logger.info("=== Step 3: NaN/Inf Diagnostics ===")
+    logger.info("fluxes   — NaN: %d  Inf: %d  Negative: %d  (out of %d elements)",
+                nan_flux.sum(), inf_flux.sum(), neg_flux.sum(), f_np.size)
+    logger.info("variances — NaN: %d  Inf: %d  zero: %d  tiny(<1e-20): %d",
+                nan_var.sum(), inf_var.sum(), zero_var.sum(), tiny_var.sum())
+
+    # Per-wavelength breakdown of anomalous frames
+    # An outlier frame is one where the target-source flux or variance is bad
+    # (we check the main_idx source column after finding it)
+    # But at this point we haven't computed main_idx yet — use any-column flags
+    bad_flux_frame  = nan_flux.any(axis=1) | inf_flux.any(axis=1)
+    bad_var_frame   = nan_var.any(axis=1)  | inf_var.any(axis=1) | zero_var.any(axis=1) | tiny_var.any(axis=1)
+    bad_frame       = bad_flux_frame | bad_var_frame
+
+    logger.info("Frames with any bad flux:     %d / %d (%.1f%%)",
+                bad_flux_frame.sum(), len(bad_flux_frame), 100.0 * bad_flux_frame.mean())
+    logger.info("Frames with any bad variance: %d / %d (%.1f%%)",
+                bad_var_frame.sum(), len(bad_var_frame), 100.0 * bad_var_frame.mean())
+
+    if bad_frame.any():
+        bins = np.arange(0.5, 6.0, 0.5)
+        logger.info("Bad-frame wavelength breakdown:")
+        for lo, hi in zip(bins[:-1], bins[1:]):
+            mask = (wavelengths_diag >= lo) & (wavelengths_diag < hi)
+            if mask.sum() == 0:
+                continue
+            frac = bad_frame[mask].mean()
+            logger.info("  %.1f–%.1f µm: %d frames, %.0f%% bad",
+                        lo, hi, mask.sum(), 100 * frac)
+
+    # Variance distribution: log-histogram to spot degenerate values
+    v_col = v_np[~nan_var & ~inf_var & (v_np > 0)]
+    if len(v_col) > 0:
+        log_v = np.log10(v_col)
+        logger.info("Variance log10 distribution (non-NaN/Inf/zero): "
+                    "min=%.2f  p5=%.2f  p25=%.2f  median=%.2f  p75=%.2f  p95=%.2f  max=%.2f",
+                    log_v.min(), np.percentile(log_v, 5), np.percentile(log_v, 25),
+                    np.median(log_v), np.percentile(log_v, 75), np.percentile(log_v, 95),
+                    log_v.max())
+    # ----------------------------------------
+
     gra, gdec = 258.2084186 * u.deg, 64.0529535 * u.deg
     gco = SkyCoord(ra=gra, dec=gdec)
     sc = SkyCoord(ra=tab["ra"], dec=tab["dec"], unit="deg")
@@ -850,6 +917,266 @@ def test_jax_optimizer_spherex_batch(idx_list):
 
     flux = np.array(fluxes_stack)[:, main_idx]
     ferr = np.sqrt(np.array(variances_stack)[:, main_idx])
+
+    # --- Step 3b: Main-source + background + PSF diagnostics ---
+    main_var = v_np[:, main_idx]
+
+    logger.info("=== Step 3b: Main-source (idx=%d) diagnostics ===", main_idx)
+    logger.info("Main flux : min=%.3e  p5=%.3e  median=%.3e  p95=%.3e  max=%.3e  n_negative=%d",
+                flux.min(), np.percentile(flux, 5), np.median(flux),
+                np.percentile(flux, 95), flux.max(), (flux < 0).sum())
+    logger.info("Main ferr : min=%.3e  p5=%.3e  median=%.3e  p95=%.3e  max=%.3e",
+                ferr.min(), np.percentile(ferr, 5), np.median(ferr),
+                np.percentile(ferr, 95), ferr.max())
+
+    # Outlier = flux below 10% of positive-flux median
+    pos_flux = flux[flux > 0]
+    ref_flux = np.median(pos_flux) if len(pos_flux) > 0 else np.abs(np.median(flux))
+    outlier_threshold = 0.1 * ref_flux
+    outlier_mask = flux < outlier_threshold
+    logger.info("Outlier frames (flux < %.3e, i.e. <10%% of median): %d / %d (%.1f%%)",
+                outlier_threshold, outlier_mask.sum(), len(outlier_mask),
+                100.0 * outlier_mask.mean())
+
+    if outlier_mask.any():
+        bins = np.arange(0.5, 6.0, 0.5)
+        logger.info("Outlier frames — wavelength breakdown:")
+        for lo, hi in zip(bins[:-1], bins[1:]):
+            mask = (wavelengths_diag >= lo) & (wavelengths_diag < hi)
+            if mask.sum() == 0:
+                continue
+            frac = outlier_mask[mask].mean()
+            logger.info("  %.1f–%.1f µm: %d frames, %.0f%% outlier",
+                        lo, hi, mask.sum(), 100 * frac)
+
+        # Variance comparison
+        nrm = ~outlier_mask
+        logger.info("Variance (main source): normal median=%.3e  outlier median=%.3e",
+                    np.median(main_var[nrm]) if nrm.any() else np.nan,
+                    np.median(main_var[outlier_mask]))
+
+    # Background values (fit_background=True → last param in flux vector)
+    bg_flux = f_np[:, -1]
+    logger.info("Background: min=%.3e  p5=%.3e  median=%.3e  p95=%.3e  max=%.3e",
+                bg_flux.min(), np.percentile(bg_flux, 5), np.median(bg_flux),
+                np.percentile(bg_flux, 95), bg_flux.max())
+    if outlier_mask.any():
+        logger.info("Background — outlier median=%.3e  normal median=%.3e",
+                    np.median(bg_flux[outlier_mask]),
+                    np.median(bg_flux[~outlier_mask]) if (~outlier_mask).any() else np.nan)
+
+    # PSF normalization: DC component of PSF FFT = sum(PSF pixels)
+    # images_data_batched["psf"]["fft"] shape: (n_frames, 1, H_hr, W_hr//2+1)
+    psf_fft = np.array(images_data_batched["psf"]["fft"])   # (n_frames, 1, ...)
+    psf_dc = psf_fft[:, 0, 0, 0].real  # (n_frames,) — DC component = PSF pixel sum
+    logger.info("PSF DC (should be ≈1.0): min=%.4f  p5=%.4f  median=%.4f  p95=%.4f  max=%.4f",
+                psf_dc.min(), np.percentile(psf_dc, 5), np.median(psf_dc),
+                np.percentile(psf_dc, 95), psf_dc.max())
+    bins = np.arange(0.5, 6.0, 0.5)
+    logger.info("PSF DC by wavelength:")
+    for lo, hi in zip(bins[:-1], bins[1:]):
+        mask = (wavelengths_diag >= lo) & (wavelengths_diag < hi)
+        if mask.sum() == 0:
+            continue
+        logger.info("  %.1f–%.1f µm: n=%d  median DC=%.4f  min=%.4f  max=%.4f",
+                    lo, hi, mask.sum(),
+                    np.median(psf_dc[mask]), psf_dc[mask].min(), psf_dc[mask].max())
+    # --- Step 3c: Source position + invvar check in outlier frames ---
+    # main_idx is the global flux index; search both PointSource and Galaxy batches
+    main_pos = np.full((len(idx_list), 2), np.nan)
+    _main_batch_key = None
+    for _bk in ("PointSource", "Galaxy"):
+        if _bk not in batches_batched:
+            continue
+        _fi_np = np.array(batches_batched[_bk]["flux_idx"])   # (n_frames, 1, N_src)
+        _po_np = np.array(batches_batched[_bk]["pos_pix"])    # (n_frames, 1, N_src, 2)
+        if (_fi_np == main_idx).any():
+            _main_batch_key = _bk
+            for _f in range(len(idx_list)):
+                local_k = np.where(_fi_np[_f, 0] == main_idx)[0]
+                if len(local_k) > 0:
+                    main_pos[_f] = _po_np[_f, 0, local_k[0], :]
+            break
+    logger.info("Main source (idx=%d) found in batch: %s", main_idx, _main_batch_key)
+
+    invvar_np = np.array(images_data_batched["invvar"])  # (n_frames, 1, H, W)
+    H_img, W_img = invvar_np.shape[2], invvar_np.shape[3]
+    invvar_sum = invvar_np[:, 0].sum(axis=(1, 2))  # (n_frames,)
+
+    logger.info("=== Step 3c: Source position & invvar for outlier frames ===")
+    logger.info("Image size: %d x %d", H_img, W_img)
+    valid_normal = ~outlier_mask & ~np.isnan(main_pos[:, 0])
+    logger.info("Main-source pos (normal frames):  median_x=%.2f  median_y=%.2f  std_x=%.2f  std_y=%.2f",
+                np.nanmedian(main_pos[valid_normal, 0]), np.nanmedian(main_pos[valid_normal, 1]),
+                np.nanstd(main_pos[valid_normal, 0]),    np.nanstd(main_pos[valid_normal, 1]))
+
+    if outlier_mask.any():
+        logger.info("Main-source pos (outlier frames):")
+        for k in np.where(outlier_mask)[0]:
+            x, y = main_pos[k]
+            if np.isnan(x):
+                oor = " *** SOURCE NOT VISIBLE IN FRAME ***"
+            elif (x < 0 or x >= W_img or y < 0 or y >= H_img):
+                oor = " *** OUT-OF-BOUNDS ***"
+            else:
+                oor = ""
+            logger.info("  frame %d  λ=%.3f µm  x=%.2f  y=%.2f  flux=%.3e  ferr=%.3e  bg=%.3e  var=%.3e%s",
+                        idx_list[k], wavelengths_diag[k], x, y,
+                        flux[k], ferr[k], bg_flux[k], main_var[k], oor)
+
+        out_pos = main_pos[outlier_mask]
+        nan_mask = np.isnan(out_pos[:, 0])
+        oor_mask = (
+            ~nan_mask & (
+                (out_pos[:, 0] < 0) | (out_pos[:, 0] >= W_img) |
+                (out_pos[:, 1] < 0) | (out_pos[:, 1] >= H_img)
+            )
+        )
+        logger.info("Not visible in outlier frames: %d / %d", nan_mask.sum(), outlier_mask.sum())
+        logger.info("Out-of-bounds source in outlier frames: %d / %d",
+                    oor_mask.sum(), outlier_mask.sum())
+
+    # Invvar sum comparison
+    logger.info("Invvar sum (normal): min=%.3e  median=%.3e  max=%.3e",
+                invvar_sum[~outlier_mask].min(), np.median(invvar_sum[~outlier_mask]),
+                invvar_sum[~outlier_mask].max())
+    if outlier_mask.any():
+        logger.info("Invvar sum (outlier): %s", invvar_sum[outlier_mask])
+
+    # Image data range in outlier frames (spot bad pixels)
+    if outlier_mask.any():
+        data_np = np.array(images_data_batched["data"])  # (n_frames, 1, H, W)
+        logger.info("Image data stats in outlier frames:")
+        for k in np.where(outlier_mask)[0]:
+            d = data_np[k, 0]
+            iv = invvar_np[k, 0]
+            logger.info("  frame %d  λ=%.3f µm  data[min=%.3e max=%.3e median=%.3e]  invvar[sum=%.3e]",
+                        idx_list[k], wavelengths_diag[k],
+                        d.min(), d.max(), np.median(d), iv.sum())
+    # --- Step 4: PSF-background degeneracy and valid-pixel coverage ---
+    # Remaining outliers after the NaN fix fall into two modes:
+    #   (a) too few valid pixels  → Fisher matrix nearly singular
+    #   (b) large/flat PSF within cutout  → PSF ≈ constant background
+    # Metric: PSF coefficient-of-variation (CV = std/mean) within valid pixels.
+    # Low CV → flat PSF → high source-background degeneracy.
+    n_valid_pix = (invvar_np[:, 0] > 0).sum(axis=(1, 2))   # (n_frames,)
+    coverage    = n_valid_pix / (H_img * W_img)
+
+    psf_fft_np = np.array(images_data_batched["psf"]["fft"])  # (n_frames, 1, H_hr, Wr)
+    H_hr_f  = psf_fft_np.shape[2]
+    W_hr_f  = (psf_fft_np.shape[3] - 1) * 2
+    max_fac = int(round(fixed_max_factor))
+    H_lr    = H_hr_f // max_fac
+    W_lr    = W_hr_f // max_fac
+
+    psf_cv = np.full(len(idx_list), np.nan)
+    for _k in range(len(idx_list)):
+        psf_hr = np.fft.irfft2(psf_fft_np[_k, 0], s=(H_hr_f, W_hr_f))
+        psf_c  = np.fft.fftshift(psf_hr)            # DC moved to centre
+        psf_lr = (psf_c[:H_lr * max_fac, :W_lr * max_fac]
+                  .reshape(H_lr, max_fac, W_lr, max_fac)
+                  .mean(axis=(1, 3)))                # average-pool to LR
+        # Crop to the image footprint, centred
+        ch, cw = H_lr // 2, W_lr // 2
+        h0, h1 = ch - H_img // 2, ch - H_img // 2 + H_img
+        w0, w1 = cw - W_img // 2, cw - W_img // 2 + W_img
+        if h0 < 0 or h1 > H_lr or w0 < 0 or w1 > W_lr:
+            continue
+        p = psf_lr[h0:h1, w0:w1]
+        iv = invvar_np[_k, 0]
+        pv = p[iv > 0]
+        if pv.size > 1 and np.abs(pv.mean()) > 0:
+            psf_cv[_k] = pv.std() / np.abs(pv.mean())
+
+    logger.info("=== Step 4: Valid-pixel coverage and PSF-BG degeneracy ===")
+    logger.info("Valid-pixel coverage (normal):  median=%.1f%%  min=%.1f%%  max=%.1f%%",
+                100 * np.median(coverage[~outlier_mask]),
+                100 * coverage[~outlier_mask].min(),
+                100 * coverage[~outlier_mask].max())
+    logger.info("PSF CV (normal):  median=%.3f  p5=%.3f  min=%.3f",
+                np.nanmedian(psf_cv[~outlier_mask]),
+                np.nanpercentile(psf_cv[~outlier_mask], 5),
+                np.nanmin(psf_cv[~outlier_mask]))
+    if outlier_mask.any():
+        logger.info("Outlier frames (coverage / PSF-CV / flux / bg):")
+        for _k in np.where(outlier_mask)[0]:
+            logger.info(
+                "  frame %d  λ=%.3f µm  coverage=%.1f%%  psf_cv=%.3f"
+                "  flux=%.3e  bg=%.3e  var=%.3e",
+                idx_list[_k], wavelengths_diag[_k],
+                100 * coverage[_k], psf_cv[_k],
+                flux[_k], bg_flux[_k], main_var[_k])
+        low_cov = outlier_mask & (coverage < 0.5 * np.median(coverage[~outlier_mask]))
+        low_psf = outlier_mask & (psf_cv < 0.5 * np.nanmedian(psf_cv[~outlier_mask]))
+        logger.info("  → low-coverage outliers:  %d / %d", low_cov.sum(), outlier_mask.sum())
+        logger.info("  → flat-PSF outliers:       %d / %d", low_psf.sum(), outlier_mask.sum())
+    # ----------------------------------------
+
+    # --- Step 5: Targeted inspection for known outlier frames ---
+    TARGET_FRAMES = {1487, 1519, 1536, 1562, 1644, 1657, 1675, 1720}
+    target_in_batch = [k for k, gi in enumerate(idx_list) if gi in TARGET_FRAMES]
+    if target_in_batch:
+        data_np_t = np.array(images_data_batched["data"])  # (n_frames,1,H,W)
+        logger.info("=== Step 5: Targeted frame inspection ===")
+        for _k in target_in_batch:
+            d  = data_np_t[_k, 0]
+            iv = invvar_np[_k, 0]
+            valid = iv > 0
+            d_valid = d[valid]
+            # Data stats on valid pixels only
+            d_min  = d_valid.min()  if d_valid.size else np.nan
+            d_max  = d_valid.max()  if d_valid.size else np.nan
+            d_med  = np.median(d_valid) if d_valid.size else np.nan
+            d_rms  = np.sqrt(np.mean(d_valid**2)) if d_valid.size else np.nan
+            # Invvar stats
+            iv_valid = iv[valid]
+            iv_med = np.median(iv_valid) if iv_valid.size else np.nan
+            iv_max = iv_valid.max()      if iv_valid.size else np.nan
+            # Check for remaining hot pixels above 5-sigma
+            if d_valid.size > 4:
+                sigma = d_rms
+                n_hot = (d_valid > 5.0 * sigma).sum()
+            else:
+                n_hot = 0
+            logger.info(
+                "  frame %d  λ=%.3f µm  flux=%.3e  ferr=%.3e  bg=%.3e  var=%.3e",
+                idx_list[_k], wavelengths_diag[_k],
+                flux[_k], ferr[_k], bg_flux[_k], main_var[_k])
+            logger.info(
+                "    data(valid): min=%.3e  max=%.3e  median=%.3e  rms=%.3e  n_hot(>5σ)=%d",
+                d_min, d_max, d_med, d_rms, n_hot)
+            logger.info(
+                "    invvar:  n_valid=%d  coverage=%.1f%%  median=%.3e  max=%.3e  psf_cv=%.3f",
+                valid.sum(), 100.0 * coverage[_k], iv_med, iv_max, psf_cv[_k])
+            # Initial fluxes: check for NaN that would survive the CG solve
+            # (optimized = initial + step, so NaN initial → NaN output regardless of step)
+            _init_f_all = np.array(fluxes_batched)  # (n_frames, [1,] n_flux)
+            _init_f = _init_f_all[_k, 0] if _init_f_all.ndim == 3 else _init_f_all[_k]
+            n_nan_init = np.isnan(_init_f).sum()
+            nan_init_pos = np.where(np.isnan(_init_f))[0][:10].tolist()
+            logger.info(
+                "    initial fluxes: n_NaN=%d  (first positions: %s)",
+                n_nan_init, nan_init_pos if n_nan_init > 0 else "none")
+            # Per-batch flux of ALL sources for this frame (spot if many sources are also bad)
+            f_frame = f_np[_k]
+            n_nan_src = np.isnan(f_frame[:-1]).sum()
+            n_bad_src = (np.abs(f_frame[:-1]) < 0.05).sum()  # near-zero excluding bg
+            logger.info(
+                "    all-source fluxes: n_NaN=%d  n_near_zero=(%d/%d)  min=%.3e  max=%.3e",
+                n_nan_src, n_bad_src, len(f_frame) - 1,
+                np.nanmin(f_frame[:-1]) if not np.all(np.isnan(f_frame[:-1])) else np.nan,
+                np.nanmax(f_frame[:-1]) if not np.all(np.isnan(f_frame[:-1])) else np.nan)
+    # ----------------------------------------
+
+    # Flag frames with extreme pixel loss (< 10% of image area valid).
+    # These are underconstrained regardless of wavelength.
+    MIN_COVERAGE = 0.10
+    poor_coverage = coverage < MIN_COVERAGE
+    if poor_coverage.any():
+        logger.info("Flagging %d frames with coverage < %.0f%% as NaN",
+                    poor_coverage.sum(), 100 * MIN_COVERAGE)
+        flux[poor_coverage] = np.nan
+        ferr[poor_coverage] = np.nan
 
     logger.info("Final Flux Sample: %s", flux[:5])
 
@@ -881,9 +1208,9 @@ if __name__ == "__main__":
         cutout_info["flux"] = np.full(len(cutout_info), np.nan)
         cutout_info["flux_err"] = np.full(len(cutout_info), np.nan)
         test_index = np.arange(len(cutout_info))
-        batch_size = 100
-        # for i in range(0, len(test_index), batch_size):
-        for i in range(1000, 2000, batch_size):
+        batch_size = 500
+        for i in range(0, len(test_index), batch_size):
+        # for i in range(1000, 2000, batch_size):
             batch_index = test_index[i:i+batch_size]
             batch_cutout_info = test_jax_optimizer_spherex_batch(batch_index)
             cutout_info["flux"][batch_index] = batch_cutout_info["flux"][batch_index]
