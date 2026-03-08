@@ -1549,8 +1549,6 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
 class JaxOptimizer(Optimizer):
     def __init__(self):
         super(JaxOptimizer, self).__init__()
-        # Enable 64-bit precision for JAX
-        jax.config.update("jax_enable_x64", True)
 
     def optimize(self, tractor, alphas=None, damp=0, priors=True,
                  scale_columns=True, shared_params=True, variance=False,

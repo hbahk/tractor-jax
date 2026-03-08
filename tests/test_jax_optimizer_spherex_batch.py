@@ -590,7 +590,8 @@ def _build_tractor_for_frame(
             )
             shape = GalaxyShape(row["shape_r"], row["shape_ab"], phi_img)
 
-            profile_mog = SPHERExSersicMixture.getProfile(row["sersic"])
+            # profile_mog = SPHERExSersicMixture.getProfile(row["sersic"])
+            profile_mog = SersicMixture.getProfile(row["sersic"])
             amp, mean, var = pad_mog(profile_mog, max_mog_K)
 
             prof_params = MogParams(np.array(amp), np.array(mean), np.array(var))
@@ -726,7 +727,8 @@ def test_jax_optimizer_spherex_batch(idx_list):
     # Determine max MoG K from catalog
     for row in tab:
         if row["shape_r"] > 0:
-            profile_mog = SPHERExSersicMixture.getProfile(row["sersic"])
+            # profile_mog = SPHERExSersicMixture.getProfile(row["sersic"])
+            profile_mog = SersicMixture.getProfile(row["sersic"])
             max_mog_K = max(max_mog_K, len(profile_mog.amp))
 
     logger.info("Max Image Shape: %sx%s", max_h, max_w)
