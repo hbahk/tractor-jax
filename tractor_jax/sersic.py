@@ -15,7 +15,7 @@ if __name__ == '__main__':
 
 import numpy as np
 
-from tractor import mixture_profiles as mp
+from tractor_jax import mixture_profiles as mp
 from tractor_jax.engine import *
 from tractor_jax.utils import *
 from tractor_jax.cache import *

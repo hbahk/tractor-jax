@@ -1,6 +1,6 @@
 from __future__ import print_function
 from tractor_jax.utils import BaseParams
-from tractor import ducks
+from tractor_jax import ducks
 
 # class SubImage(Image):
 #   def __init__(self, im, roi,

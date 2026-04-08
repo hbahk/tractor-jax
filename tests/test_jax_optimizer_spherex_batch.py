@@ -701,7 +701,7 @@ if __name__ == "__main__":
         tab["shape_ab"] = ab
 
         test_index = np.arange(len(cutout_info))
-        batch_size = 1000
+        batch_size = 500
         solver = "linear"  # "linear" or "cg"
 
         for i in range(0, len(test_index), batch_size):

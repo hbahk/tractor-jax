@@ -1,6 +1,6 @@
 from tractor_jax.utils import BaseParams, ScalarParam
 from tractor_jax.patch import Patch
-from tractor import ducks
+from tractor_jax import ducks
 
 
 class NullSky(BaseParams, ducks.Sky):

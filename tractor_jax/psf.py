@@ -13,8 +13,8 @@ from tractor_jax.brightness import Flux
 from tractor_jax.engine import Tractor
 from tractor_jax.patch import Patch
 from tractor_jax.utils import BaseParams, ParamList, MultiParams, MogParams
-from tractor import mixture_profiles as mp
-from tractor import ducks
+from tractor_jax import mixture_profiles as mp
+from tractor_jax import ducks
 from tractor_jax.utils import savetxt_cpu_append
 
 if sys.version_info[0] == 2:

@@ -1,5 +1,5 @@
 import numpy as np
-from tractor import RaDecPos
+from tractor_jax.wcs import RaDecPos
 
 
 def interpret_roi(wcs, imgshape, roi=None, roiradecsize=None, roiradecbox=None,

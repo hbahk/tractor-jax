@@ -1,6 +1,6 @@
 import numpy as np
 from tractor_jax.utils import ScalarParam, ParamList, BaseParams, getClassName
-from tractor import ducks
+from tractor_jax import ducks
 
 
 class Mag(ScalarParam):

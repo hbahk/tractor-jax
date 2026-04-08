@@ -3,7 +3,7 @@ import numpy as np
 
 from tractor_jax.utils import MultiParams
 from tractor_jax.patch import ModelMask
-from tractor import ducks
+from tractor_jax import ducks
 
 ct1 = np.zeros(2,dtype=np.int32)
 

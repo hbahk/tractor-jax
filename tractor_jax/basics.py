@@ -16,7 +16,7 @@ import numpy as np
 from tractor_jax.image import Image
 from tractor_jax.patch import Patch
 from tractor_jax.utils import MultiParams
-from tractor import mixture_profiles as mp
+from tractor_jax import mixture_profiles as mp
 
 from tractor_jax.tractortime import TAITime
 from tractor_jax.psf import (PixelizedPSF, GaussianMixturePSF,

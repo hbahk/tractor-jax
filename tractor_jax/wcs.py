@@ -2,7 +2,7 @@ from __future__ import print_function
 import numpy as np
 
 from tractor_jax.utils import BaseParams, ParamList, MultiParams, ArithmeticParams
-from tractor import ducks
+from tractor_jax import ducks
 
 try:
     from astropy.wcs import WCS as AstropyWCSObject

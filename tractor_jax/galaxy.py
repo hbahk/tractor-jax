@@ -14,7 +14,7 @@ of these.
 """
 import numpy as np
 
-from tractor import mixture_profiles as mp
+from tractor_jax import mixture_profiles as mp
 from tractor_jax.utils import ParamList, MultiParams, ScalarParam, BaseParams
 from tractor_jax.patch import Patch, add_patches, ModelMask
 from tractor_jax.basics import SingleProfileSource, BasicSource
