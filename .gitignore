@@ -15,3 +15,5 @@ psf_compare_cpu_hires/
 testphot.ipynb
 tractor_sphxutils.py
 .claude/
+repos/
+testdata/
