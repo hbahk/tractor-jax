@@ -216,3 +216,19 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- project-specific (tractor_jax engine) ---
+*.parquet
+*.fits
+*.fits.gz
+*.png
+*.csv
+*.npy
+*.npz
+testdata/
+repos/
+psf_compare_*/
+outlier_cutout_plots/
+.vscode/
+.env
+.claude/

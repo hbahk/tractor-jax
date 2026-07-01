@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tractor-jax"
+version = "0.0.1"
+description = "JAX-accelerated astronomical image modeling and forced photometry"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "scipy",
+    "jax",
+    "astropy",
+    "photutils",
+]
+
+[project.optional-dependencies]
+dev = [
+    "matplotlib",
+    "tqdm",
+    "pyarrow",  # for parquet I/O in tests
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tractor_jax*"]
+
+[tool.setuptools.package-data]
+tractor_jax = ["*.c", "Makefile"]
