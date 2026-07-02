@@ -134,8 +134,15 @@ class Tractor(MultiParams):
         self.modelMasks = None
         self.expectModelMasks = False
         if optimizer is None:
-            from .lsqr_optimizer import LsqrOptimizer
-            self.optimizer = LsqrOptimizer()
+            try:
+                from .lsqr_optimizer import LsqrOptimizer
+                self.optimizer = LsqrOptimizer()
+            except ImportError:
+                # lsqr_optimizer is not part of the trimmed JAX engine; fall
+                # back to the JAX optimizer so a default Tractor() is usable
+                # (optimize_fluxes constructs sub-Tractors without optimizer=).
+                from .jax.optimizer import JaxOptimizer
+                self.optimizer = JaxOptimizer()
         else:
             self.optimizer = optimizer
 
