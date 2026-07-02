@@ -1442,6 +1442,261 @@ def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=Fa
     return optimized_fluxes
 
 
+def _power_iter_lmax(G, n_steps=16):
+    """Largest eigenvalue of a symmetric PSD matrix via power iteration.
+
+    Deterministic init (ones vector) so results are reproducible under jit/vmap.
+    """
+    n = G.shape[0]
+    v0 = jnp.ones(n) / jnp.sqrt(n)
+
+    def body(v, _):
+        w = G @ v
+        v_new = w / (jnp.linalg.norm(w) + 1e-30)
+        return v_new, None
+
+    v, _ = jax.lax.scan(body, v0, None, length=n_steps)
+    return jnp.vdot(v, G @ v)
+
+
+def _lasso_fista(G, b, lam, *, nonneg=True, free=None, n_iter=1000, reg=0.0):
+    """Per-coordinate L1-penalized quadratic solve on the normal equations.
+
+        minimize  1/2 f^T (G + reg*I) f - b^T f + sum_j lam_j |f_j|
+        subject to f_j >= 0 for penalized coordinates (if nonneg)
+
+    G = A^T W A, b = A^T W d of a whitened linear model; lam_j is the absolute
+    per-coordinate penalty (lam_j = 0 leaves coordinate j unpenalized).
+    Coordinates with free[j] = 1 are unpenalized AND sign-free (background).
+
+    Runs FISTA with gradient-scheme adaptive restart in Jacobi-normalized
+    coordinates beta_j = sqrt(G_jj) * f_j (unit-diagonal system), which removes
+    the dynamic-range part of the conditioning; with lam_j = alpha*sqrt(G_jj)
+    the normalized threshold is uniform and dimensionless (S/N units).
+
+    Returns (f, kkt): the solution in original coordinates and the maximum KKT
+    violation in normalized (S/N) units - the convergence diagnostic.
+    """
+    n = G.shape[0]
+    if free is None:
+        free = jnp.zeros(n)
+    Fjj = jnp.clip(jnp.diag(G), 0.0)
+    live = Fjj > 0
+    D = jnp.where(live, jnp.sqrt(jnp.where(live, Fjj, 1.0)), 1.0)
+
+    Ghat = G / (D[:, None] * D[None, :]) + jnp.diag(reg / (D * D))
+    chat = b / D
+    lamhat = lam / D
+
+    L = jnp.maximum(_power_iter_lmax(Ghat), 1e-12) * 1.05
+
+    def prox(z):
+        if nonneg:
+            pen = jnp.maximum(z - lamhat / L, 0.0)
+        else:
+            pen = jnp.sign(z) * jnp.maximum(jnp.abs(z) - lamhat / L, 0.0)
+        return jnp.where(free > 0, z, pen)
+
+    def step(carry, _):
+        beta, y, t = carry
+        grad = Ghat @ y - chat
+        beta_new = prox(y - grad / L)
+        restart = jnp.vdot(y - beta_new, beta_new - beta) > 0
+        t_new = jnp.where(restart, 1.0, 0.5 * (1.0 + jnp.sqrt(1.0 + 4.0 * t * t)))
+        y_new = beta_new + jnp.where(restart, 0.0, (t - 1.0) / t_new) * (beta_new - beta)
+        return (beta_new, y_new, t_new), None
+
+    beta0 = jnp.zeros(n)
+    (beta, _, _), _ = jax.lax.scan(step, (beta0, beta0, 1.0), None, length=n_iter)
+
+    # KKT violation in normalized units (exact stationarity conditions)
+    grad = Ghat @ beta - chat
+    active = beta != 0
+    if nonneg:
+        v_active = jnp.abs(grad + lamhat)
+        v_inactive = jnp.maximum(-grad - lamhat, 0.0)
+    else:
+        v_active = jnp.abs(grad + lamhat * jnp.sign(beta))
+        v_inactive = jnp.maximum(jnp.abs(grad) - lamhat, 0.0)
+    viol = jnp.where(active, v_active, v_inactive)
+    viol = jnp.where(free > 0, jnp.abs(grad), viol)
+    kkt = jnp.max(jnp.where(live, viol, 0.0))
+
+    return beta / D, kkt
+
+
+def _ln_binom(p, k):
+    """log C(p, k) via gammaln (exact; valid for traced float k)."""
+    from jax.scipy.special import gammaln
+    return gammaln(p + 1.0) - gammaln(k + 1.0) - gammaln(p - k + 1.0)
+
+
+def solve_fluxes_lasso(initial_fluxes, image_data, batches,
+                       return_variances=False, sampling_factor=None,
+                       alpha=None, penalty_mode="snr", penalty_weights=None,
+                       nonneg=True, selection_mode="fixed", criterion="ebic",
+                       grid=None, ebic_gamma=0.5, return_path=False,
+                       debias=True, return_aux=False,
+                       n_iter=1000, rcond=1e-12):
+    """L1-regularized (LASSO) forced photometry on a SINGLE image.
+
+    Designed to be vmapped, like solve_fluxes_linear. Builds the same design
+    matrix A (unit-flux templates) and solves
+
+        min 1/2 || W^{1/2} (d - A f) ||^2 + sum_j lambda_j |f_j|,   f >= 0
+
+    Penalty parameterization (see proj-spherex-gpupipe research note
+    notebooks/research_notes/lasso_alpha/01):
+      penalty_mode="snr":  lambda_j = alpha * w_j * sqrt(F_jj), with
+        F_jj = diag(A^T W A) the squared matched-filter norm of template j,
+        TAKEN FROM THE SAME TEMPLATES USED FOR THE SOLVE (not from
+        compute_fisher_diagonal, which deviates in the oversampled-FFT path).
+        alpha is then a dimensionless residual matched-filter S/N entry
+        threshold, invariant across images, bands, depth and cutout size.
+      penalty_mode="raw":  lambda_j = alpha * w_j (absolute units; sklearn
+        conversion: lambda_raw = n_pix * alpha_sklearn).
+
+    penalty_weights: (n_flux,) per-source multiplier; 0 = PROTECTED source
+      (never shrunk, never zeroed, always refit - use for the forced-photometry
+      target list). None = ones. The background parameter (if fit) is always
+      forced unpenalized and sign-free.
+
+    Selection:
+      selection_mode="fixed": solve at the given alpha (production; inject the
+        sim-calibrated value here).
+      selection_mode="path":  solve on `grid` (default logspace(0.5..5, 16) in
+        S/N units), score with `criterion` on the DEBIASED refit
+        ("ebic" [default; exact 2*gamma*ln C(p,k) multiplicity term],
+        "bic" [gamma=0], "sure" [biased RSS + 2*df - n_eff]), pick the argmin.
+        No CV, deliberately: pixel folds violate independence and select
+        overfit alphas (research note lasso_alpha/02 section 5).
+
+    debias=True: exact re-solve on the selected support (identity pinning,
+      static shapes), nonneg-clipped for penalized coordinates; variances are
+      diag(inv(AtWA_S + reg)) of the refit, inf off-support (conditional on
+      the selected support - not post-selection corrected).
+
+    Returns (matching solve_fluxes_linear unless return_aux):
+      fluxes                                  if not return_variances
+      (fluxes, variances)                     if return_variances
+      (..., aux)                              if return_aux, where aux carries
+        support (float mask), alpha, alpha_index, criterion_values, kkt
+        (max KKT violation in S/N units - convergence diagnostic), n_active,
+        and path_fluxes (n_alpha, n_flux) if return_path.
+
+    Note: with jax_enable_x64 off everything runs in float32; the Jacobi
+    normalization inside _lasso_fista makes support recovery reliable in f32,
+    but calibration-grade fluxes/variances should enable x64
+    (JaxOptimizer(enable_x64=True)).
+    """
+    n_flux = initial_fluxes.shape[0]
+
+    templates = _render_source_templates(image_data, batches, n_flux,
+                                         sampling_factor=sampling_factor)
+    data_flat = image_data["data"].ravel()
+    w_flat = image_data["invvar"].ravel()
+    A = templates.reshape(n_flux, -1).T
+
+    Aw = A * w_flat[:, jnp.newaxis]
+    G = Aw.T @ A                       # AtWA
+    b = Aw.T @ data_flat               # AtWd
+    dWd = jnp.sum(data_flat * data_flat * w_flat)
+    n_eff = jnp.sum(w_flat > 0)
+
+    Fjj = jnp.clip(jnp.diag(G), 0.0)
+    live = Fjj > 0
+    reg = rcond * jnp.trace(G) / n_flux
+
+    # penalty weights; background always unpenalized and sign-free
+    if penalty_weights is None:
+        wj = jnp.ones(n_flux)
+    else:
+        wj = jnp.asarray(penalty_weights, dtype=G.dtype)
+    free = jnp.zeros(n_flux)
+    if "Background" in batches:
+        bg_idx = batches["Background"]["flux_idx"][0]
+        wj = wj.at[bg_idx].set(0.0)
+        free = free.at[bg_idx].set(1.0)
+
+    if penalty_mode == "snr":
+        lam1 = wj * jnp.sqrt(jnp.where(live, Fjj, 0.0))
+    else:  # "raw"
+        lam1 = wj
+
+    def support_pinned(s):
+        # identity pinning keeps shapes static under jit/vmap
+        return G * s[:, None] * s[None, :] + jnp.diag(1.0 - s) + reg * jnp.eye(n_flux)
+
+    def solve_one_alpha(a):
+        f_biased, kkt = _lasso_fista(G, b, a * lam1, nonneg=nonneg, free=free,
+                                     n_iter=n_iter, reg=reg)
+        # support: active, or unpenalized (protected/background); never padded
+        s = ((f_biased != 0) | (wj == 0)) & live
+        s = jax.lax.stop_gradient(s.astype(G.dtype))
+
+        # debiased refit on the support
+        f_solve = jnp.linalg.solve(support_pinned(s), b * s)
+        if nonneg:
+            f_deb = jnp.where(free > 0, f_solve, jnp.maximum(f_solve, 0.0)) * s
+        else:
+            f_deb = f_solve * s
+
+        f_out = f_deb if debias else f_biased
+        rss_deb = jnp.maximum(f_deb @ G @ f_deb - 2.0 * (b @ f_deb) + dWd, 1e-30)
+        rss_bia = jnp.maximum(f_biased @ G @ f_biased - 2.0 * (b @ f_biased) + dWd,
+                              1e-30)
+        return f_out, s, kkt, rss_deb, rss_bia
+
+    if selection_mode == "path":
+        if grid is None:
+            grid_vals = jnp.logspace(jnp.log10(0.5), jnp.log10(5.0), 16)
+        else:
+            grid_vals = jnp.asarray(grid)
+        f_p, s_p, kkt_p, rssd_p, rssb_p = jax.vmap(solve_one_alpha)(grid_vals)
+
+        df = jnp.sum(s_p, axis=1)                          # all fitted params
+        n_pen = jnp.sum((wj > 0) & live)                   # candidate pool size
+        k_pen = jnp.sum(s_p * ((wj > 0) & live)[None, :], axis=1)
+        if criterion == "sure":
+            crit = rssb_p + 2.0 * df - n_eff
+        else:
+            gam = 0.0 if criterion == "bic" else ebic_gamma
+            crit = (n_eff * jnp.log(rssd_p / n_eff) + df * jnp.log(n_eff)
+                    + 2.0 * gam * _ln_binom(n_pen, k_pen))
+        k_star = jnp.argmin(crit)
+        fluxes = jnp.take(f_p, k_star, axis=0)
+        support = jnp.take(s_p, k_star, axis=0)
+        kkt = jnp.take(kkt_p, k_star)
+        alpha_star = jnp.take(grid_vals, k_star)
+        aux = {
+            "support": support, "alpha": alpha_star, "alpha_index": k_star,
+            "criterion_values": crit, "kkt": kkt,
+            "n_active": jnp.sum(support),
+        }
+        if return_path:
+            aux["path_fluxes"] = f_p
+    else:
+        a = jnp.asarray(alpha if alpha is not None else 0.0, dtype=G.dtype)
+        fluxes, support, kkt, _, _ = solve_one_alpha(a)
+        aux = {
+            "support": support, "alpha": a,
+            "alpha_index": jnp.asarray(0, dtype=jnp.int32),
+            "criterion_values": jnp.zeros(1, dtype=G.dtype), "kkt": kkt,
+            "n_active": jnp.sum(support),
+        }
+
+    if return_variances:
+        cov = jnp.linalg.inv(support_pinned(support))
+        variances = jnp.where(support > 0, jnp.diag(cov), jnp.inf)
+        if return_aux:
+            return fluxes, variances, aux
+        return fluxes, variances
+
+    if return_aux:
+        return fluxes, aux
+    return fluxes
+
+
 def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=False, sampling_factor=None, use_preconditioner=True, precond_eps=1e-12):
     """
     Pure JAX core optimization logic for a SINGLE image (Newton-CG).
@@ -1493,7 +1748,7 @@ def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=Fals
     return optimized_fluxes
 
 
-def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=False, fit_background=False, update_catalog=False, vmap_images=True, use_sharding=True, bucket_sizes=None, bucket_mode="auto", bucket_shape_mode="square", bucket_base=32, use_tiling=False, tile_size=256, tile_super_halo=None, use_preconditioner=True, precond_eps=1e-12, solver="linear"):
+def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=False, fit_background=False, update_catalog=False, vmap_images=True, use_sharding=True, bucket_sizes=None, bucket_mode="auto", bucket_shape_mode="square", bucket_base=32, use_tiling=False, tile_size=256, tile_super_halo=None, use_preconditioner=True, precond_eps=1e-12, solver="linear", penalty=None, selection=None, debias=True, return_aux=False, lasso_n_iter=1000):
     """
     Optimizes fluxes for forced photometry using JAX.
 
@@ -1514,7 +1769,17 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
         tile_super_halo: optional int, override calculated halo size.
         use_preconditioner: bool, if True (default), use Fisher diagonal preconditioner (CG only).
         precond_eps: float, floor for Fisher diagonal to avoid divide-by-zero.
-        solver: "linear" (direct normal-equations solve) or "cg" (Newton-CG, original).
+        solver: "linear" (direct normal-equations solve), "cg" (Newton-CG, original),
+            or "lasso" (L1-regularized, see solve_fluxes_lasso).
+        penalty: (lasso only) dict, e.g. {"mode": "snr", "alpha": 2.0,
+            "weights": w, "nonneg": True}. weights==0 marks protected sources.
+        selection: (lasso only) dict, e.g. {"mode": "fixed"} or
+            {"mode": "path", "criterion": "ebic", "grid": ..., "ebic_gamma": 0.5,
+             "return_path": False}.
+        debias: (lasso only) refit on the selected support (default True).
+        return_aux: (lasso only) append the per-image aux dict (support, alpha,
+            kkt, ...) as the last element of each result.
+        lasso_n_iter: (lasso only) static FISTA iteration count.
 
     Returns:
         List of results per image.
@@ -1523,16 +1788,42 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
 
     results = []
 
-    _solver_fn = solve_fluxes_linear if solver == "linear" else solve_fluxes_core
+    _solver_map = {"linear": solve_fluxes_linear, "lasso": solve_fluxes_lasso}
+    _solver_fn = _solver_map.get(solver, solve_fluxes_core)
 
     if solver == "linear":
         _solver_kwargs = dict(return_variances=return_variances)
+    elif solver == "lasso":
+        penalty = penalty or {}
+        selection = selection or {}
+        _solver_kwargs = dict(
+            return_variances=return_variances,
+            alpha=penalty.get("alpha"),
+            penalty_mode=penalty.get("mode", "snr"),
+            penalty_weights=penalty.get("weights"),
+            nonneg=penalty.get("nonneg", True),
+            selection_mode=selection.get("mode", "fixed"),
+            criterion=selection.get("criterion", "ebic"),
+            grid=selection.get("grid"),
+            ebic_gamma=selection.get("ebic_gamma", 0.5),
+            return_path=selection.get("return_path", False),
+            debias=debias,
+            return_aux=return_aux,
+            n_iter=lasso_n_iter,
+        )
+        if not getattr(jax.config, "jax_enable_x64", False):
+            print("JAX Optimization: lasso solver running in float32; "
+                  "enable x64 (JaxOptimizer(enable_x64=True)) for "
+                  "calibration-grade fluxes/variances.")
     else:
         _solver_kwargs = dict(
             return_variances=return_variances,
             use_preconditioner=use_preconditioner,
             precond_eps=precond_eps,
         )
+
+    _lasso_aux = solver == "lasso" and return_aux
+    aux_all = [None] * len(tractor_obj.images)
 
     solve_jit = jit(partial(_solver_fn, **_solver_kwargs))
 
@@ -1661,10 +1952,15 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
                 in_axes=(0, 0, batches_in_axes)
             ))
 
+            out = solve_fn(initial_fluxes, images_data, batches)
+            aux_stack = None
+            if _lasso_aux:
+                *out, aux_stack = out if isinstance(out, tuple) else (out,)
+                out = out[0] if len(out) == 1 else tuple(out)
             if return_variances:
-                optimized_fluxes_stack, variances_stack = solve_fn(initial_fluxes, images_data, batches)
+                optimized_fluxes_stack, variances_stack = out
             else:
-                optimized_fluxes_stack = solve_fn(initial_fluxes, images_data, batches)
+                optimized_fluxes_stack = out
 
             res_fluxes = np.array(optimized_fluxes_stack)
             if return_variances:
@@ -1672,11 +1968,12 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
 
             for k, original_idx in enumerate(tile_idxs):
                 f = res_fluxes[k]
+                parts = [f]
                 if return_variances:
-                    v = res_variances[k]
-                    tile_results[original_idx] = (f, v)
-                else:
-                    tile_results[original_idx] = f
+                    parts.append(res_variances[k])
+                if aux_stack is not None:
+                    parts.append({key: np.array(val[k]) for key, val in aux_stack.items()})
+                tile_results[original_idx] = tuple(parts) if len(parts) > 1 else f
 
         # Tiling Done. Results are per tile.
         # We assume update_catalog is False or we warn.
@@ -1771,10 +2068,15 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
                 in_axes=(0, 0, batches_in_axes)
             ))
 
+            out = solve_fn(initial_fluxes, images_data, batches)
+            aux_stack = None
+            if _lasso_aux:
+                *out, aux_stack = out if isinstance(out, tuple) else (out,)
+                out = out[0] if len(out) == 1 else tuple(out)
             if return_variances:
-                optimized_fluxes_stack, variances_stack = solve_fn(initial_fluxes, images_data, batches)
+                optimized_fluxes_stack, variances_stack = out
             else:
-                optimized_fluxes_stack = solve_fn(initial_fluxes, images_data, batches)
+                optimized_fluxes_stack = out
 
             # Map back to original indices
             res_fluxes = np.array(optimized_fluxes_stack)
@@ -1783,6 +2085,9 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
 
             for k, original_idx in enumerate(img_indices):
                 f = res_fluxes[k]
+                if aux_stack is not None:
+                    aux_all[original_idx] = {key: np.array(val[k])
+                                             for key, val in aux_stack.items()}
                 if return_variances:
                     v = res_variances[k]
                     all_results[original_idx] = (f, v)
@@ -1812,7 +2117,7 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
 
         batches = {} # Initialize in case loop doesn't run, to avoid UnboundLocalError for bg check
 
-        for img in tractor_obj.images:
+        for _img_i, img in enumerate(tractor_obj.images):
             # Create a mini Tractor object for extraction
             # extract_model_data works on Tractor objects.
             sub_tractor = Tractor([img], tractor_obj.catalog)
@@ -1847,13 +2152,17 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
 
             single_flux = init_flux[0] # (N_params,)
 
+            out = solve_jit(single_flux, single_data, single_batches)
+            if _lasso_aux:
+                *out, aux_i = out if isinstance(out, tuple) else (out,)
+                out = out[0] if len(out) == 1 else tuple(out)
+                aux_all[_img_i] = {key: np.array(val) for key, val in aux_i.items()}
             if return_variances:
-                f, v = solve_jit(single_flux, single_data, single_batches)
+                f, v = out
                 fluxes_list.append(f)
                 variances_list.append(v)
             else:
-                f = solve_jit(single_flux, single_data, single_batches)
-                fluxes_list.append(f)
+                fluxes_list.append(out)
 
         optimized_fluxes_np = np.array(fluxes_list)
         if return_variances:
@@ -1870,7 +2179,12 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
 
         if return_variances:
             v = variances_np[i]
-            results.append((f, v))
+            if _lasso_aux:
+                results.append((f, v, aux_all[i]))
+            else:
+                results.append((f, v))
+        elif _lasso_aux:
+            results.append((f, aux_all[i]))
         else:
             results.append(f)
 
