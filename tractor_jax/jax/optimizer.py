@@ -996,7 +996,13 @@ def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape, sampling_fa
         stamps = render_fn(fluxes, pos_pix, psf_mix)
         return jnp.sum(stamps, axis=0)
 
-    return jax.lax.cond(psf_data['type_code'] == 0, render_fft, render_mog, None)
+    # Do NOT lax.cond on type_code: under vmap the predicate is batched and the
+    # cond lowers to a select over both branches, which XLA:GPU miscompiles for
+    # the FFT branch (stamps corrupted at the tens-of-percent level; jax 0.5.3).
+    # Computing both branches and selecting with where is what the batched cond
+    # executed anyway, and compiles correctly on CPU and GPU.
+    return jnp.where(psf_data['type_code'] == 0,
+                     render_fft(None), render_mog(None))
 
 
 def render_batch_galaxies(
@@ -1055,7 +1061,9 @@ def render_batch_galaxies(
         weighted_stamps = stamps * fluxes[:, jnp.newaxis, jnp.newaxis]
         return jnp.sum(weighted_stamps, axis=0)
 
-    return jax.lax.cond(psf_data['type_code'] == 0, render_fft, render_mog, None)
+    # See render_batch_point_sources: batched-pred lax.cond miscompiles on GPU.
+    return jnp.where(psf_data['type_code'] == 0,
+                     render_fft(None), render_mog(None))
 
 
 def prepare_sharded_inputs(images_data, batches, initial_fluxes):
@@ -1227,7 +1235,9 @@ def compute_fisher_diagonal(image_data, batches, n_flux):
             stamps = render_fn(unit_fluxes, pos_pix, psf_mix)
             return stamps
 
-        stamps = jax.lax.cond(psf_data['type_code'] == 0, compute_stamps_fft, compute_stamps_mog, None)
+        # See render_batch_point_sources: batched-pred lax.cond miscompiles on GPU.
+        stamps = jnp.where(psf_data['type_code'] == 0,
+                           compute_stamps_fft(None), compute_stamps_mog(None))
 
         # Compute contribution: sum(stamp^2 * invvar)
         contrib = jnp.sum(stamps**2 * invvar[jnp.newaxis, :, :], axis=(1, 2))
@@ -1270,7 +1280,9 @@ def compute_fisher_diagonal(image_data, batches, n_flux):
             stamps = render_fn(gal_mix, psf_mix, shapes, wcs_cd_inv, pos_pix)
             return stamps
 
-        stamps = jax.lax.cond(psf_data['type_code'] == 0, compute_stamps_fft, compute_stamps_mog, None)
+        # See render_batch_point_sources: batched-pred lax.cond miscompiles on GPU.
+        stamps = jnp.where(psf_data['type_code'] == 0,
+                           compute_stamps_fft(None), compute_stamps_mog(None))
 
         if mask is not None:
             stamps = stamps * mask[:, jnp.newaxis, jnp.newaxis]
@@ -1343,8 +1355,9 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None):
                              in_axes=(0, 0, None))
             return render_fn(unit, pos_pix, psf_mix)
 
-        ps_stamps = jax.lax.cond(psf_data['type_code'] == 0,
-                                 _ps_stamps_fft, _ps_stamps_mog, None)
+        # See render_batch_point_sources: batched-pred lax.cond miscompiles on GPU.
+        ps_stamps = jnp.where(psf_data['type_code'] == 0,
+                              _ps_stamps_fft(None), _ps_stamps_mog(None))
         templates = templates.at[f_idx].add(ps_stamps)
 
     if "Galaxy" in batches:
@@ -1393,8 +1406,9 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None):
                              in_axes=((0, 0, 0), None, 0, 0, 0))
             return render_fn(gal_mix, psf_mix, shapes, wcs_cd_inv, pos_pix)
 
-        gal_stamps = jax.lax.cond(psf_data['type_code'] == 0,
-                                  _gal_stamps_fft, _gal_stamps_mog, None)
+        # See render_batch_point_sources: batched-pred lax.cond miscompiles on GPU.
+        gal_stamps = jnp.where(psf_data['type_code'] == 0,
+                               _gal_stamps_fft(None), _gal_stamps_mog(None))
         if mask is not None:
             gal_stamps = gal_stamps * mask[:, jnp.newaxis, jnp.newaxis]
         templates = templates.at[f_idx].add(gal_stamps)
