@@ -1829,18 +1829,17 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
             # batches contain fields like 'pos_pix' which are (1, N_src, 2).
             # We unbatch them to (N_src, 2).
 
+            # All per-source arrays are stacked per image by extract_model_data
+            # (shape (1, N_src, ...) here); slice image 0 off every leaf, as the
+            # vmap path does via in_axes=0.
             single_batches = batches.copy()
             if "PointSource" in batches:
-                # pos_pix is (N_img, N_src, 2).
-                single_batches["PointSource"] = batches["PointSource"].copy()
-                single_batches["PointSource"]["pos_pix"] = batches["PointSource"]["pos_pix"][0]
-                # flux_idx is shared.
+                single_batches["PointSource"] = jax.tree_util.tree_map(
+                    lambda x: x[0], batches["PointSource"])
 
             if "Galaxy" in batches:
-                single_batches["Galaxy"] = batches["Galaxy"].copy()
-                single_batches["Galaxy"]["pos_pix"] = batches["Galaxy"]["pos_pix"][0]
-                single_batches["Galaxy"]["wcs_cd_inv"] = batches["Galaxy"]["wcs_cd_inv"][0]
-                # shapes, profile are shared (attributes of source).
+                single_batches["Galaxy"] = jax.tree_util.tree_map(
+                    lambda x: x[0], batches["Galaxy"])
 
             if "Background" in batches:
                 # flux_idx is (1,) for single image?
