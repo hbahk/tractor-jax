@@ -17,7 +17,8 @@ notebooks/research_notes/paper/03_bootstrap_validation_plan.md):
 
   8. solve_fluxes_lasso_batched == per-replica solve_fluxes_lasso, with
      replica 0 the unperturbed data (reference reproduction)
-  9. batched alpha=0 signed/undebied solve == solve_fluxes_linear per replica
+  9. batched alpha=0 signed/undebiased solve == solve_fluxes_linear per replica
+ 10. stability-margin oracle: aux resid_corr_snr/snr_deb vs independent numpy
 
 Run in the `spherex` conda env:  pytest tests/test_lasso_solver.py -q
 """
