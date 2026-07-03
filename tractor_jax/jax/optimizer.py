@@ -1489,6 +1489,8 @@ def _lasso_fista(G, b, lam, *, nonneg=True, free=None, n_iter=1000, reg=0.0):
     G = A^T W A, b = A^T W d of a whitened linear model; lam_j is the absolute
     per-coordinate penalty (lam_j = 0 leaves coordinate j unpenalized).
     Coordinates with free[j] = 1 are unpenalized AND sign-free (background).
+    reg may be a scalar or a per-coordinate (n,) ridge vector (Jacobi-scaled
+    reg_j = rcond * G_jj becomes exactly rcond on the normalized diagonal).
 
     Runs FISTA with gradient-scheme adaptive restart in Jacobi-normalized
     coordinates beta_j = sqrt(G_jj) * f_j (unit-diagonal system), which removes
@@ -1603,6 +1605,10 @@ def solve_fluxes_lasso(initial_fluxes, image_data, batches,
       (..., aux)                              if return_aux, where aux carries
         support (float mask), alpha, alpha_index, criterion_values, kkt
         (max KKT violation in S/N units - convergence diagnostic), n_active,
+        resid_corr_snr (per-source residual matched-filter correlation at the
+        biased solution, S/N units; entry margin = alpha - c_j for inactive
+        sources), snr_deb (per-source debiased S/N; exit margin = snr - alpha
+        for active ones - together the cheap production stability flag),
         and path_fluxes (n_alpha, n_flux) if return_path.
 
     Note: with jax_enable_x64 off everything runs in float32; the Jacobi
@@ -1624,20 +1630,112 @@ def solve_fluxes_lasso(initial_fluxes, image_data, batches,
     dWd = jnp.sum(data_flat * data_flat * w_flat)
     n_eff = jnp.sum(w_flat > 0)
 
-    Fjj = jnp.clip(jnp.diag(G), 0.0)
-    live = Fjj > 0
-    reg = rcond * jnp.trace(G) / n_flux
+    wj, free = _lasso_penalty_weights(n_flux, batches, penalty_weights, G.dtype)
 
-    # penalty weights; background always unpenalized and sign-free
+    return _lasso_core(G, b, dWd, n_eff, wj, free,
+                       alpha=alpha, penalty_mode=penalty_mode, nonneg=nonneg,
+                       selection_mode=selection_mode, criterion=criterion,
+                       grid=grid, ebic_gamma=ebic_gamma,
+                       return_path=return_path, debias=debias,
+                       return_variances=return_variances,
+                       return_aux=return_aux, n_iter=n_iter, rcond=rcond)
+
+
+def solve_fluxes_lasso_batched(initial_fluxes, image_data, batches, data_stack,
+                               return_variances=False, sampling_factor=None,
+                               alpha=None, penalty_mode="snr",
+                               penalty_weights=None, nonneg=True,
+                               selection_mode="fixed", criterion="ebic",
+                               grid=None, ebic_gamma=0.5, return_path=False,
+                               debias=True, return_aux=False,
+                               n_iter=1000, rcond=1e-12):
+    """LASSO forced photometry for a BATCH of data realizations of ONE image.
+
+    Bootstrap entry point (proj-spherex-gpupipe research note
+    notebooks/research_notes/paper/03_bootstrap_validation_plan.md, stage B1):
+    replicas share the scene — templates, invvar and the penalty structure —
+    and differ only in the pixel data, so the design matrix and G = AtWA are
+    built ONCE and the solve is vmapped over the replica axis (G, weights and
+    the FISTA step size stay unbatched under vmap; only AtWd is per-replica).
+
+    data_stack: (B, H, W) data realizations; image_data["data"] is not used
+    by the solve. All other arguments as solve_fluxes_lasso and shared by
+    every replica (in "path" mode each replica selects its own alpha).
+
+    Returns the same structures as solve_fluxes_lasso, with a leading
+    replica axis B on every array (fluxes: (B, n_flux); aux fields likewise).
+
+    Memory: the pinned refit materializes (n_flux, n_flux) per replica under
+    vmap (B * n_flux^2; ~0.65 GB at B=100, n=900, f64 - x16 more in "path"
+    mode). For larger runs split data_stack into chunks and call repeatedly;
+    the per-call template build is the same work the chunks would share.
+    """
+    n_flux = initial_fluxes.shape[0]
+
+    templates = _render_source_templates(image_data, batches, n_flux,
+                                         sampling_factor=sampling_factor)
+    w_flat = image_data["invvar"].ravel()
+    A = templates.reshape(n_flux, -1).T
+
+    Aw = A * w_flat[:, jnp.newaxis]
+    G = Aw.T @ A
+    n_eff = jnp.sum(w_flat > 0)
+
+    wj, free = _lasso_penalty_weights(n_flux, batches, penalty_weights, G.dtype)
+
+    d_flat = data_stack.reshape(data_stack.shape[0], -1)
+    b_stack = d_flat @ Aw                                  # (B, n_flux)
+    dWd_stack = jnp.sum(d_flat * d_flat * w_flat[None, :], axis=1)
+
+    def _solve_one(b, dWd):
+        return _lasso_core(G, b, dWd, n_eff, wj, free,
+                           alpha=alpha, penalty_mode=penalty_mode,
+                           nonneg=nonneg, selection_mode=selection_mode,
+                           criterion=criterion, grid=grid,
+                           ebic_gamma=ebic_gamma, return_path=return_path,
+                           debias=debias, return_variances=return_variances,
+                           return_aux=return_aux, n_iter=n_iter, rcond=rcond)
+
+    return jax.vmap(_solve_one)(b_stack, dWd_stack)
+
+
+def _lasso_penalty_weights(n_flux, batches, penalty_weights, dtype):
+    """Per-source penalty multipliers wj and the sign-free mask.
+
+    Background (if fit) is always unpenalized and sign-free.
+    """
     if penalty_weights is None:
-        wj = jnp.ones(n_flux)
+        wj = jnp.ones(n_flux, dtype=dtype)
     else:
-        wj = jnp.asarray(penalty_weights, dtype=G.dtype)
-    free = jnp.zeros(n_flux)
+        wj = jnp.asarray(penalty_weights, dtype=dtype)
+    free = jnp.zeros(n_flux, dtype=dtype)
     if "Background" in batches:
         bg_idx = batches["Background"]["flux_idx"][0]
         wj = wj.at[bg_idx].set(0.0)
         free = free.at[bg_idx].set(1.0)
+    return wj, free
+
+
+def _lasso_core(G, b, dWd, n_eff, wj, free, *,
+                alpha=None, penalty_mode="snr", nonneg=True,
+                selection_mode="fixed", criterion="ebic", grid=None,
+                ebic_gamma=0.5, return_path=False, debias=True,
+                return_variances=False, return_aux=False,
+                n_iter=1000, rcond=1e-12):
+    """LASSO solve on prebuilt normal equations (G = AtWA, b = AtWd).
+
+    Shared backend of solve_fluxes_lasso (single image) and
+    solve_fluxes_lasso_batched (many data realizations of one image);
+    vmappable over (b, dWd) with G/wj/free held fixed.
+
+    Ridge is Jacobi-scaled, reg_j = rcond * G_jj: invariant to masked
+    padding and to the number of co-fit sources (in the FISTA-normalized
+    coordinates it is exactly rcond * I on live slots). Dead slots
+    (G_jj = 0) are excluded from the support and pinned in the refit.
+    """
+    Fjj = jnp.clip(jnp.diag(G), 0.0)
+    live = Fjj > 0
+    reg_j = rcond * Fjj
 
     if penalty_mode == "snr":
         lam1 = wj * jnp.sqrt(jnp.where(live, Fjj, 0.0))
@@ -1646,11 +1744,13 @@ def solve_fluxes_lasso(initial_fluxes, image_data, batches,
 
     def support_pinned(s):
         # identity pinning keeps shapes static under jit/vmap
-        return G * s[:, None] * s[None, :] + jnp.diag(1.0 - s) + reg * jnp.eye(n_flux)
+        return G * s[:, None] * s[None, :] + jnp.diag(1.0 - s + reg_j)
+
+    Dn = jnp.sqrt(jnp.where(live, Fjj, 1.0))
 
     def solve_one_alpha(a):
         f_biased, kkt = _lasso_fista(G, b, a * lam1, nonneg=nonneg, free=free,
-                                     n_iter=n_iter, reg=reg)
+                                     n_iter=n_iter, reg=reg_j)
         # support: active, or unpenalized (protected/background); never padded
         s = ((f_biased != 0) | (wj == 0)) & live
         s = jax.lax.stop_gradient(s.astype(G.dtype))
@@ -1666,14 +1766,21 @@ def solve_fluxes_lasso(initial_fluxes, image_data, batches,
         rss_deb = jnp.maximum(f_deb @ G @ f_deb - 2.0 * (b @ f_deb) + dWd, 1e-30)
         rss_bia = jnp.maximum(f_biased @ G @ f_biased - 2.0 * (b @ f_biased) + dWd,
                               1e-30)
-        return f_out, s, kkt, rss_deb, rss_bia
+        # per-source stability diagnostics in S/N units (production flag):
+        # residual matched-filter correlation at the biased solution (entry
+        # margin alpha - c_j for inactive sources) and the debiased S/N
+        # (exit margin snr_deb_j - alpha for active ones)
+        resid_corr_snr = jnp.where(live, (b - G @ f_biased) / Dn, 0.0)
+        snr_deb = jnp.where(live, f_deb * Dn, 0.0)
+        return f_out, s, kkt, rss_deb, rss_bia, resid_corr_snr, snr_deb
 
     if selection_mode == "path":
         if grid is None:
             grid_vals = jnp.logspace(jnp.log10(0.5), jnp.log10(5.0), 16)
         else:
             grid_vals = jnp.asarray(grid)
-        f_p, s_p, kkt_p, rssd_p, rssb_p = jax.vmap(solve_one_alpha)(grid_vals)
+        (f_p, s_p, kkt_p, rssd_p, rssb_p,
+         corr_p, snrd_p) = jax.vmap(solve_one_alpha)(grid_vals)
 
         df = jnp.sum(s_p, axis=1)                          # all fitted params
         n_pen = jnp.sum((wj > 0) & live)                   # candidate pool size
@@ -1693,17 +1800,20 @@ def solve_fluxes_lasso(initial_fluxes, image_data, batches,
             "support": support, "alpha": alpha_star, "alpha_index": k_star,
             "criterion_values": crit, "kkt": kkt,
             "n_active": jnp.sum(support),
+            "resid_corr_snr": jnp.take(corr_p, k_star, axis=0),
+            "snr_deb": jnp.take(snrd_p, k_star, axis=0),
         }
         if return_path:
             aux["path_fluxes"] = f_p
     else:
         a = jnp.asarray(alpha if alpha is not None else 0.0, dtype=G.dtype)
-        fluxes, support, kkt, _, _ = solve_one_alpha(a)
+        fluxes, support, kkt, _, _, resid_corr_snr, snr_deb = solve_one_alpha(a)
         aux = {
             "support": support, "alpha": a,
             "alpha_index": jnp.asarray(0, dtype=jnp.int32),
             "criterion_values": jnp.zeros(1, dtype=G.dtype), "kkt": kkt,
             "n_active": jnp.sum(support),
+            "resid_corr_snr": resid_corr_snr, "snr_deb": snr_deb,
         }
 
     if return_variances:
