@@ -12,6 +12,13 @@ Test plan from proj-spherex-gpupipe/notebooks/research_notes/lasso_alpha/
   6. vmap/sequential parity on a toy scene
   7. f32 vs f64 support agreement (Jacobi normalization sanity)
 
+Batched-RHS entry (bootstrap stage B1, proj-spherex-gpupipe research note
+notebooks/research_notes/paper/03_bootstrap_validation_plan.md):
+
+  8. solve_fluxes_lasso_batched == per-replica solve_fluxes_lasso, with
+     replica 0 the unperturbed data (reference reproduction)
+  9. batched alpha=0 signed/undebied solve == solve_fluxes_linear per replica
+
 Run in the `spherex` conda env:  pytest tests/test_lasso_solver.py -q
 """
 import numpy as np
@@ -28,6 +35,7 @@ from tractor_jax.psf import GaussianMixturePSF
 from tractor_jax.jax.optimizer import (
     _lasso_fista,
     solve_fluxes_lasso,
+    solve_fluxes_lasso_batched,
     solve_fluxes_linear,
     extract_model_data,
     optimize_fluxes,
@@ -266,3 +274,92 @@ def test_f32_support_agreement():
     assert np.array_equal(s64, s32)
     rel = np.max(np.abs(np.array(f32) - np.array(f64))) / max(1.0, np.max(np.abs(np.array(f64))))
     assert rel < 1e-3
+
+
+# --------------------------------------------------------------------------- #
+# 8./9. batched-RHS entry (bootstrap replicas, plan stage B1)
+# --------------------------------------------------------------------------- #
+def _replica_stack(single, n_noisy, seed):
+    """(1 + n_noisy, H, W): replica 0 is the unperturbed data.
+
+    Zero-weight (padded) pixels are not perturbed: the solver contract is
+    finite data everywhere, with invvar=0 pixels carrying no information.
+    """
+    rng = np.random.default_rng(seed)
+    d0 = np.array(single["data"])
+    iv = np.array(single["invvar"])
+    sigma = np.where(iv > 0, 1.0 / np.sqrt(np.where(iv > 0, iv, 1.0)), 0.0)
+    noisy = [d0 + rng.normal(size=d0.shape) * sigma for _ in range(n_noisy)]
+    return np.stack([d0] + noisy)
+
+
+def test_batched_rhs_matches_sequential():
+    tr, _ = toy_scene()
+    single, sb, f0 = single_image_inputs(tr)
+    stack = _replica_stack(single, n_noisy=3, seed=11)
+
+    kw = dict(alpha=1.5, return_variances=True, return_aux=True, n_iter=5000)
+    f_b, v_b, aux_b = solve_fluxes_lasso_batched(f0, single, sb,
+                                                 jnp.array(stack), **kw)
+    f_b, v_b = np.array(f_b), np.array(v_b)
+    assert f_b.shape == (stack.shape[0], f0.shape[0])
+    assert float(np.max(np.array(aux_b["kkt"]))) < 1e-6
+
+    for i in range(stack.shape[0]):
+        sd = dict(single); sd["data"] = jnp.array(stack[i])
+        f_i, v_i, aux_i = solve_fluxes_lasso(f0, sd, sb, **kw)
+        f_i, v_i = np.array(f_i), np.array(v_i)
+        assert np.allclose(f_b[i], f_i, rtol=1e-8, atol=1e-12)
+        assert np.array_equal(np.array(aux_b["support"])[i],
+                              np.array(aux_i["support"]))
+        finite = np.isfinite(v_i)
+        assert np.array_equal(np.isfinite(v_b[i]), finite)
+        assert np.allclose(v_b[i][finite], v_i[finite], rtol=1e-8)
+
+
+def test_stability_margin_oracle():
+    """aux resid_corr_snr / snr_deb match an independent numpy recomputation."""
+    from tractor_jax.jax.optimizer import _render_source_templates
+    tr, _ = toy_scene()
+    single, sb, f0 = single_image_inputs(tr)
+    alpha = 1.5
+
+    f, aux = solve_fluxes_lasso(f0, single, sb, alpha=alpha, debias=False,
+                                return_aux=True, n_iter=20000)
+    f = np.array(f)
+
+    T = np.array(_render_source_templates(single, sb, f0.shape[0]))
+    A = T.reshape(f0.shape[0], -1).T
+    w = np.array(single["invvar"]).ravel()
+    d = np.array(single["data"]).ravel()
+    G = (A * w[:, None]).T @ A
+    b = (A * w[:, None]).T @ d
+    live = np.diag(G) > 0
+    Dn = np.sqrt(np.where(live, np.diag(G), 1.0))
+
+    corr_ref = np.where(live, (b - G @ f) / Dn, 0.0)
+    assert np.allclose(np.array(aux["resid_corr_snr"]), corr_ref,
+                       rtol=1e-8, atol=1e-8)
+    # inactive penalized sources sit inside the entry margin: c_j <= alpha
+    inactive = (f == 0) & live
+    if inactive.any():
+        assert np.all(corr_ref[inactive] <= alpha + 1e-6)
+    # with debias off, snr_deb still reports the debiased refit's S/N: finite
+    # on support, 0 off support
+    snr_deb = np.array(aux["snr_deb"])
+    s = np.array(aux["support"]) > 0
+    assert np.all(snr_deb[~s] == 0.0) and np.all(np.isfinite(snr_deb))
+
+
+def test_batched_rhs_alpha0_equals_linear():
+    tr, _ = toy_scene()
+    single, sb, f0 = single_image_inputs(tr)
+    stack = _replica_stack(single, n_noisy=2, seed=12)
+
+    f_b = np.array(solve_fluxes_lasso_batched(
+        f0, single, sb, jnp.array(stack),
+        alpha=0.0, nonneg=False, debias=False, n_iter=20000))
+    for i in range(stack.shape[0]):
+        sd = dict(single); sd["data"] = jnp.array(stack[i])
+        f_lin = np.array(solve_fluxes_linear(f0, sd, sb))
+        assert np.max(np.abs(f_b[i] - f_lin)) / np.max(np.abs(f_lin)) < 1e-6
