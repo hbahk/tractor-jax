@@ -1428,6 +1428,12 @@ def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=Fa
 
     Builds the design matrix A (template per source), then solves
     the normal equations  (A^T W A) f = A^T W d  via Cholesky/LU.
+
+    Regularization is a Jacobi-scaled ridge, reg_j = rcond * diag(AtWA)_j:
+    each source's ridge depends only on its own template norm, so the
+    solution is invariant to masked padding and to the number of co-fit
+    sources. Dead slots (all-zero template, e.g. shape padding or a source
+    with no unmasked pixels) are pinned to flux 0 with infinite variance.
     """
     n_flux = initial_fluxes.shape[0]
     H, W = image_data['data'].shape
@@ -1443,14 +1449,15 @@ def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=Fa
     AtWA = Aw.T @ A
     AtWd = Aw.T @ data_flat
 
-    reg = rcond * jnp.trace(AtWA) / n_flux
-    AtWA_reg = AtWA + reg * jnp.eye(n_flux)
+    Fjj = jnp.clip(jnp.diag(AtWA), 0.0)
+    live = Fjj > 0
+    AtWA_reg = AtWA + jnp.diag(rcond * Fjj + jnp.where(live, 0.0, 1.0))
 
     optimized_fluxes = jnp.linalg.solve(AtWA_reg, AtWd)
 
     if return_variances:
         cov = jnp.linalg.inv(AtWA_reg)
-        variances = jnp.diag(cov)
+        variances = jnp.where(live, jnp.diag(cov), jnp.inf)
         return optimized_fluxes, variances
 
     return optimized_fluxes
