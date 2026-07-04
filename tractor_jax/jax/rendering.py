@@ -227,11 +227,54 @@ def render_pixelized_psf(psf_img, dx, dy):
     return outimg[0]
 
 
+def _boxcar_downsample_flux(img, out_h, out_w):
+    """Flux-conserving, window-applying downsample for NON-INTEGER factors.
+
+    Integrates the high-res image over each output pixel's footprint (a boxcar
+    of width factor = H_hr/out_h). This is the native-pixel integration window
+    that the detector applies and that `rebin_downsample_int_flux` applies for
+    integer factors; the previous `jax.image.resize(lanczos3)` fallback omitted
+    it (interpolates point values instead of integrating), which made templates
+    too sharp on undersampled PSFs (research note proj-spherex-gpupipe
+    lasso_alpha/11). Exact for a piecewise-constant high-res image: the integral
+    up to a fractional position x equals the linear interpolant of the
+    cumulative sum at x, so each output pixel = cumsum(edge_{i+1}) - cumsum(edge_i).
+    Reduces exactly to the integer block-sum when the factor is an integer, and
+    conserves total flux by construction (telescoping sum).
+    """
+    H, W = img.shape
+    dt = img.dtype
+    # integrate over rows (axis 0): H -> out_h
+    z = jnp.zeros((1, W), dt)
+    Cr = jnp.concatenate([z, jnp.cumsum(img, axis=0)], axis=0)      # (H+1, W)
+    er = (H / out_h) * jnp.arange(out_h + 1, dtype=dt)
+    xr = jnp.arange(H + 1, dtype=dt)
+    Cri = jax.vmap(lambda c: jnp.interp(er, xr, c), in_axes=1,
+                   out_axes=1)(Cr)                                  # (out_h+1, W)
+    rows = Cri[1:] - Cri[:-1]                                       # (out_h, W)
+    # integrate over cols (axis 1): W -> out_w
+    z2 = jnp.zeros((out_h, 1), dt)
+    Cc = jnp.concatenate([z2, jnp.cumsum(rows, axis=1)], axis=1)    # (out_h, W+1)
+    ec = (W / out_w) * jnp.arange(out_w + 1, dtype=dt)
+    xc = jnp.arange(W + 1, dtype=dt)
+    Cci = jax.vmap(lambda r: jnp.interp(ec, xc, r), in_axes=0,
+                   out_axes=0)(Cc)                                  # (out_h, out_w+1)
+    return Cci[:, 1:] - Cci[:, :-1]                                 # (out_h, out_w)
+
+
 def downsample_image(img, target_shape):
     """
-    Downsamples image to target_shape.
-    If factors are integers, uses flux-conserving rebinning (summation).
-    Otherwise uses Lanczos3 interpolation with flux scaling.
+    Downsamples image to target_shape, flux-conservingly, applying the native
+    output-pixel integration window (so a rendered PSF is integrated over each
+    detector pixel, not point-sampled).
+
+    Integer factors use fast block-sum rebinning; non-integer factors use the
+    exact boxcar integral (`_boxcar_downsample_flux`), which agrees with the
+    block-sum at integer factors. NOTE: the previous non-integer path used
+    `jax.image.resize(lanczos3)`, which band-limits but does NOT apply the
+    pixel window — biasing forced-photometry templates on undersampled PSFs
+    (proj-spherex-gpupipe lasso_alpha/11). Integer-factor (e.g. production
+    SPHEREx cutouts at OVERSAMP 10/5) rendering is unchanged.
 
     Args:
         img: (H_hr, W_hr) image
@@ -253,17 +296,7 @@ def downsample_image(img, target_shape):
         k_x = int(W_hr // W)
         return rebin_downsample_int_flux(img, k_y, k_x)
 
-    # Fallback
-    scale_y = H_hr / H
-    scale_x = W_hr / W
-
-    # Resize using jax.image.resize
-    out = jax.image.resize(img, target_shape, method='lanczos3')
-
-    # Flux conservation
-    out = out * (scale_y * scale_x)
-
-    return out
+    return _boxcar_downsample_flux(img, H, W)
 
 
 def render_galaxy_fft(
