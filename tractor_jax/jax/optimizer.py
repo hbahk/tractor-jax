@@ -1467,6 +1467,62 @@ def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=Fa
     return optimized_fluxes
 
 
+def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
+                          return_variances=False, sampling_factor=None,
+                          floor=1e-4):
+    """Direct linear solve with an eigenvalue floor on AtWA (SINGLE image).
+
+    Same normal equations as solve_fluxes_linear, but instead of a Jacobi
+    ridge the spectrum of AtWA is clamped from below at floor * lambda_max
+    (Tikhonov in the eigenbasis): only the (near-)degenerate directions -
+    the anti-correlated flux splits of blended groups - are damped, while
+    well-constrained modes are solved exactly. Symmetric and SIGN-FREE:
+    no non-negativity clip and no per-band selection, so faint fluxes keep
+    their negative excursions (no rectification bias, no selection-
+    conditioning bias; research note lasso_alpha/12). Candidate default
+    estimator for blind multi-target SED photometry; scatter sits between
+    the plain linear solve and the nonneg lasso
+    (proj-spherex-gpupipe analysis/bench_solver_ridge.py).
+
+    floor is relative to the largest eigenvalue (dimensionless), so the
+    damping is invariant to flux units and image count.
+
+    Dead slots (all-zero template, e.g. shape padding or a fully-masked
+    source) are pinned to flux 0 with infinite variance. Designed to be
+    vmapped, like solve_fluxes_linear.
+    """
+    n_flux = initial_fluxes.shape[0]
+
+    templates = _render_source_templates(image_data, batches, n_flux,
+                                         sampling_factor=sampling_factor)
+
+    data_flat = image_data["data"].ravel()
+    w_flat = image_data["invvar"].ravel()
+    A = templates.reshape(n_flux, -1).T
+
+    Aw = A * w_flat[:, jnp.newaxis]
+    AtWA = Aw.T @ A
+    AtWd = Aw.T @ data_flat
+
+    Fjj = jnp.clip(jnp.diag(AtWA), 0.0)
+    live = Fjj > 0
+
+    evals, evecs = jnp.linalg.eigh(AtWA)      # ascending eigenvalues
+    emax = jnp.clip(evals[-1], 1e-30)
+    evals_f = jnp.maximum(evals, floor * emax)
+
+    optimized_fluxes = evecs @ ((evecs.T @ AtWd) / evals_f)
+    optimized_fluxes = jnp.where(live, optimized_fluxes, 0.0)
+
+    if return_variances:
+        # diag of V diag(1/evals_f) V^T
+        variances = jnp.sum(evecs * evecs / evals_f[jnp.newaxis, :], axis=1)
+        variances = jnp.where(live, variances, jnp.inf)
+        return optimized_fluxes, variances
+
+    return optimized_fluxes
+
+
 def _power_iter_lmax(G, n_steps=16):
     """Largest eigenvalue of a symmetric PSD matrix via power iteration.
 
@@ -1563,7 +1619,7 @@ def solve_fluxes_lasso(initial_fluxes, image_data, batches,
                        alpha=None, penalty_mode="snr", penalty_weights=None,
                        nonneg=True, selection_mode="fixed", criterion="ebic",
                        grid=None, ebic_gamma=0.5, return_path=False,
-                       debias=True, return_aux=False,
+                       debias=True, debias_signfree="none", return_aux=False,
                        n_iter=1000, rcond=1e-12):
     """L1-regularized (LASSO) forced photometry on a SINGLE image.
 
@@ -1603,6 +1659,13 @@ def solve_fluxes_lasso(initial_fluxes, image_data, batches,
       diag(inv(AtWA_S + reg)) of the refit, inf off-support (conditional on
       the selected support - not post-selection corrected).
 
+    debias_signfree: which refit coordinates skip the nonneg clip -
+      "none" (default; background only, original behavior), "protected"
+      (background + wj==0 sources: protected SED/photo-z targets keep
+      negative excursions - no faint-end rectification bias, research note
+      lasso_alpha/12), or "all". Selection is unaffected (the FISTA prox
+      still uses `nonneg`); no-op when nonneg=False or debias=False.
+
     Returns (matching solve_fluxes_linear unless return_aux):
       fluxes                                  if not return_variances
       (fluxes, variances)                     if return_variances
@@ -1641,6 +1704,7 @@ def solve_fluxes_lasso(initial_fluxes, image_data, batches,
                        selection_mode=selection_mode, criterion=criterion,
                        grid=grid, ebic_gamma=ebic_gamma,
                        return_path=return_path, debias=debias,
+                       debias_signfree=debias_signfree,
                        return_variances=return_variances,
                        return_aux=return_aux, n_iter=n_iter, rcond=rcond)
 
@@ -1651,7 +1715,8 @@ def solve_fluxes_lasso_batched(initial_fluxes, image_data, batches, data_stack,
                                penalty_weights=None, nonneg=True,
                                selection_mode="fixed", criterion="ebic",
                                grid=None, ebic_gamma=0.5, return_path=False,
-                               debias=True, return_aux=False,
+                               debias=True, debias_signfree="none",
+                               return_aux=False,
                                n_iter=1000, rcond=1e-12):
     """LASSO forced photometry for a BATCH of data realizations of ONE image.
 
@@ -1697,7 +1762,8 @@ def solve_fluxes_lasso_batched(initial_fluxes, image_data, batches, data_stack,
                            nonneg=nonneg, selection_mode=selection_mode,
                            criterion=criterion, grid=grid,
                            ebic_gamma=ebic_gamma, return_path=return_path,
-                           debias=debias, return_variances=return_variances,
+                           debias=debias, debias_signfree=debias_signfree,
+                           return_variances=return_variances,
                            return_aux=return_aux, n_iter=n_iter, rcond=rcond)
 
     return jax.vmap(_solve_one)(b_stack, dWd_stack)
@@ -1724,6 +1790,7 @@ def _lasso_core(G, b, dWd, n_eff, wj, free, *,
                 alpha=None, penalty_mode="snr", nonneg=True,
                 selection_mode="fixed", criterion="ebic", grid=None,
                 ebic_gamma=0.5, return_path=False, debias=True,
+                debias_signfree="none",
                 return_variances=False, return_aux=False,
                 n_iter=1000, rcond=1e-12):
     """LASSO solve on prebuilt normal equations (G = AtWA, b = AtWd).
@@ -1736,10 +1803,29 @@ def _lasso_core(G, b, dWd, n_eff, wj, free, *,
     padding and to the number of co-fit sources (in the FISTA-normalized
     coordinates it is exactly rcond * I on live slots). Dead slots
     (G_jj = 0) are excluded from the support and pinned in the refit.
+
+    debias_signfree controls the sign convention of the DEBIASED refit only
+    (selection keeps the `nonneg` prox): which coordinates skip the
+    max(f, 0) clip. "none" (default) - background only (the `free` mask;
+    original behavior); "protected" - background + unpenalized sources
+    (wj == 0), so a protected science target keeps negative excursions
+    (no faint-end rectification bias; research note lasso_alpha/12);
+    "all" - every refit coordinate is sign-free. Irrelevant when
+    nonneg=False (refit already unclipped) or debias=False.
     """
+    if debias_signfree not in ("none", "protected", "all"):
+        raise ValueError(f"debias_signfree must be 'none', 'protected' or "
+                         f"'all'; got {debias_signfree!r}")
     Fjj = jnp.clip(jnp.diag(G), 0.0)
     live = Fjj > 0
     reg_j = rcond * Fjj
+
+    if debias_signfree == "all":
+        signfree = jnp.ones_like(live)
+    elif debias_signfree == "protected":
+        signfree = (free > 0) | (wj == 0)
+    else:  # "none"
+        signfree = free > 0
 
     if penalty_mode == "snr":
         lam1 = wj * jnp.sqrt(jnp.where(live, Fjj, 0.0))
@@ -1759,10 +1845,12 @@ def _lasso_core(G, b, dWd, n_eff, wj, free, *,
         s = ((f_biased != 0) | (wj == 0)) & live
         s = jax.lax.stop_gradient(s.astype(G.dtype))
 
-        # debiased refit on the support
+        # debiased refit on the support; the sign clip is skipped on
+        # `signfree` coordinates (see debias_signfree in the docstring)
         f_solve = jnp.linalg.solve(support_pinned(s), b * s)
         if nonneg:
-            f_deb = jnp.where(free > 0, f_solve, jnp.maximum(f_solve, 0.0)) * s
+            f_deb = jnp.where(signfree, f_solve,
+                              jnp.maximum(f_solve, 0.0)) * s
         else:
             f_deb = f_solve * s
 
@@ -1883,7 +1971,7 @@ def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=Fals
     return optimized_fluxes
 
 
-def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=False, fit_background=False, update_catalog=False, vmap_images=True, use_sharding=True, bucket_sizes=None, bucket_mode="auto", bucket_shape_mode="square", bucket_base=32, use_tiling=False, tile_size=256, tile_super_halo=None, use_preconditioner=True, precond_eps=1e-12, solver="linear", penalty=None, selection=None, debias=True, return_aux=False, lasso_n_iter=1000):
+def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=False, fit_background=False, update_catalog=False, vmap_images=True, use_sharding=True, bucket_sizes=None, bucket_mode="auto", bucket_shape_mode="square", bucket_base=32, use_tiling=False, tile_size=256, tile_super_halo=None, use_preconditioner=True, precond_eps=1e-12, solver="linear", penalty=None, selection=None, debias=True, debias_signfree="none", return_aux=False, lasso_n_iter=1000, eig_floor=1e-4):
     """
     Optimizes fluxes for forced photometry using JAX.
 
@@ -1904,17 +1992,24 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
         tile_super_halo: optional int, override calculated halo size.
         use_preconditioner: bool, if True (default), use Fisher diagonal preconditioner (CG only).
         precond_eps: float, floor for Fisher diagonal to avoid divide-by-zero.
-        solver: "linear" (direct normal-equations solve), "cg" (Newton-CG, original),
-            or "lasso" (L1-regularized, see solve_fluxes_lasso).
+        solver: "linear" (direct normal-equations solve), "eigfloor" (linear
+            solve with an eigenvalue floor on AtWA - sign-free, no selection;
+            see solve_fluxes_eigfloor), "cg" (Newton-CG, original), or
+            "lasso" (L1-regularized, see solve_fluxes_lasso).
         penalty: (lasso only) dict, e.g. {"mode": "snr", "alpha": 2.0,
             "weights": w, "nonneg": True}. weights==0 marks protected sources.
         selection: (lasso only) dict, e.g. {"mode": "fixed"} or
             {"mode": "path", "criterion": "ebic", "grid": ..., "ebic_gamma": 0.5,
              "return_path": False}.
         debias: (lasso only) refit on the selected support (default True).
+        debias_signfree: (lasso only) which refit coordinates skip the nonneg
+            clip - "none" (default), "protected" (background + weight-0
+            sources), or "all". See solve_fluxes_lasso.
         return_aux: (lasso only) append the per-image aux dict (support, alpha,
             kkt, ...) as the last element of each result.
         lasso_n_iter: (lasso only) static FISTA iteration count.
+        eig_floor: (eigfloor only) relative eigenvalue floor, in units of the
+            largest eigenvalue of AtWA (default 1e-4).
 
     Returns:
         List of results per image.
@@ -1923,11 +2018,16 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
 
     results = []
 
-    _solver_map = {"linear": solve_fluxes_linear, "lasso": solve_fluxes_lasso}
+    _solver_map = {"linear": solve_fluxes_linear,
+                   "eigfloor": solve_fluxes_eigfloor,
+                   "lasso": solve_fluxes_lasso}
     _solver_fn = _solver_map.get(solver, solve_fluxes_core)
 
     if solver == "linear":
         _solver_kwargs = dict(return_variances=return_variances)
+    elif solver == "eigfloor":
+        _solver_kwargs = dict(return_variances=return_variances,
+                              floor=eig_floor)
     elif solver == "lasso":
         penalty = penalty or {}
         selection = selection or {}
@@ -1943,6 +2043,7 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
             ebic_gamma=selection.get("ebic_gamma", 0.5),
             return_path=selection.get("return_path", False),
             debias=debias,
+            debias_signfree=debias_signfree,
             return_aux=return_aux,
             n_iter=lasso_n_iter,
         )
