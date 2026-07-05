@@ -180,11 +180,14 @@ def test_eigfloor_matches_numpy_reference():
     f_eng, v_eng = solve_fluxes_eigfloor(f0, single, sb,
                                          return_variances=True, floor=floor)
 
+    # Jacobi-normalized (unit-diagonal) eigen-floor oracle
     G, b = normal_equations(single, sb, n)
-    evals, evecs = np.linalg.eigh(G)
+    D = np.sqrt(np.diag(G))
+    Ghat = G / np.outer(D, D)
+    evals, evecs = np.linalg.eigh(Ghat)
     evals_f = np.maximum(evals, floor * max(evals[-1], 1e-30))
-    f_ref = evecs @ ((evecs.T @ b) / evals_f)
-    v_ref = np.sum(evecs**2 / evals_f[None, :], axis=1)
+    f_ref = (evecs @ ((evecs.T @ (b / D)) / evals_f)) / D
+    v_ref = np.sum(evecs**2 / evals_f[None, :], axis=1) / D**2
 
     assert np.allclose(np.array(f_eng), f_ref, rtol=1e-9, atol=1e-11)
     assert np.allclose(np.array(v_eng), v_ref, rtol=1e-9, atol=1e-11)
@@ -279,3 +282,25 @@ def test_optimize_fluxes_eigfloor_smoke():
     assert np.all(np.isfinite(f_ef))
     finite = np.isfinite(v_lin) & np.isfinite(v_ef)
     assert np.allclose(v_ef[finite], v_lin[finite], rtol=1e-4)
+
+
+# --------------------------------------------------------------------------- #
+# B6. a dominant-norm column (fit background) must NOT drag the floor up and
+#     shrink the source fluxes — the field-sim failure mode that motivated the
+#     Jacobi normalization (raw-AtWA flooring gave −50..−99% bias at high S/N
+#     because lambda_max was the background mode)
+# --------------------------------------------------------------------------- #
+def test_eigfloor_immune_to_background_column_domination():
+    tr, truth = toy_scene()
+    res_lin = optimize_fluxes(tr, return_variances=True, solver="linear",
+                              fit_background=True, use_sharding=False)
+    res_ef = optimize_fluxes(tr, return_variances=True, solver="eigfloor",
+                             eig_floor=1e-4, fit_background=True,
+                             use_sharding=False)
+    f_lin = np.array(res_lin[0][0])
+    f_ef = np.array(res_ef[0][0])
+    # sources are well separated: with the background column present, the
+    # floored solve must still agree with the plain solve to sub-percent
+    bright = np.abs(f_lin) > 1.0
+    rel = np.abs(f_ef[bright] - f_lin[bright]) / np.abs(f_lin[bright])
+    assert np.max(rel) < 1e-2, rel

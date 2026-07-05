@@ -1470,22 +1470,34 @@ def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=Fa
 def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
                           return_variances=False, sampling_factor=None,
                           floor=1e-4):
-    """Direct linear solve with an eigenvalue floor on AtWA (SINGLE image).
+    """Direct linear solve with an eigenvalue floor on the JACOBI-NORMALIZED
+    AtWA (SINGLE image).
 
-    Same normal equations as solve_fluxes_linear, but instead of a Jacobi
-    ridge the spectrum of AtWA is clamped from below at floor * lambda_max
-    (Tikhonov in the eigenbasis): only the (near-)degenerate directions -
-    the anti-correlated flux splits of blended groups - are damped, while
-    well-constrained modes are solved exactly. Symmetric and SIGN-FREE:
-    no non-negativity clip and no per-band selection, so faint fluxes keep
-    their negative excursions (no rectification bias, no selection-
-    conditioning bias; research note lasso_alpha/12). Candidate default
-    estimator for blind multi-target SED photometry; scatter sits between
-    the plain linear solve and the nonneg lasso
-    (proj-spherex-gpupipe analysis/bench_solver_ridge.py).
+    Same normal equations as solve_fluxes_linear, but the solve happens in
+    Jacobi-normalized coordinates beta_j = sqrt(AtWA_jj) * f_j, where the
+    Gram Ghat = D^{-1/2} AtWA D^{-1/2} has UNIT diagonal (a correlation
+    matrix): its spectrum is clamped from below at floor * lambda_max(Ghat)
+    (Tikhonov in the eigenbasis). In these coordinates only the genuinely
+    correlation-degenerate directions - the anti-correlated flux splits of
+    blended groups - sit near zero eigenvalue and get damped, while
+    well-constrained sources (eigenvalue ~ 1) are solved exactly.
 
-    floor is relative to the largest eigenvalue (dimensionless), so the
-    damping is invariant to flux units and image count.
+    The normalization is essential, not cosmetic: on the RAW AtWA the
+    largest eigenvalue is dominated by whichever column has the largest
+    norm - typically the constant BACKGROUND column (~n_pix * w) or a
+    bright galaxy - so floor * lambda_max would exceed most source
+    eigenvalues and shrink every flux toward zero (verified on the field
+    sim: -50..-99% bias at high S/N before normalization; research note
+    lasso_alpha/08 §5 item 8). After normalization lambda_max(Ghat) <= n
+    regardless of units, background, or depth, and `floor` is a pure
+    correlation-degeneracy threshold, invariant to flux units and image
+    count - the same reasoning as the S/N-units lasso penalty.
+
+    Symmetric and SIGN-FREE: no non-negativity clip and no per-band
+    selection, so faint fluxes keep their negative excursions (no
+    rectification bias, no selection-conditioning bias; research note
+    lasso_alpha/12). Candidate default estimator for blind multi-target SED
+    photometry.
 
     Dead slots (all-zero template, e.g. shape padding or a fully-masked
     source) are pinned to flux 0 with infinite variance. Designed to be
@@ -1506,18 +1518,22 @@ def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
 
     Fjj = jnp.clip(jnp.diag(AtWA), 0.0)
     live = Fjj > 0
+    D = jnp.where(live, jnp.sqrt(jnp.where(live, Fjj, 1.0)), 1.0)
 
-    evals, evecs = jnp.linalg.eigh(AtWA)      # ascending eigenvalues
+    Ghat = AtWA / (D[:, jnp.newaxis] * D[jnp.newaxis, :])
+    bhat = AtWd / D
+
+    evals, evecs = jnp.linalg.eigh(Ghat)      # ascending eigenvalues
     emax = jnp.clip(evals[-1], 1e-30)
     evals_f = jnp.maximum(evals, floor * emax)
 
-    optimized_fluxes = evecs @ ((evecs.T @ AtWd) / evals_f)
-    optimized_fluxes = jnp.where(live, optimized_fluxes, 0.0)
+    xhat = evecs @ ((evecs.T @ bhat) / evals_f)
+    optimized_fluxes = jnp.where(live, xhat / D, 0.0)
 
     if return_variances:
-        # diag of V diag(1/evals_f) V^T
-        variances = jnp.sum(evecs * evecs / evals_f[jnp.newaxis, :], axis=1)
-        variances = jnp.where(live, variances, jnp.inf)
+        # diag of D^{-1} V diag(1/evals_f) V^T D^{-1}
+        var_hat = jnp.sum(evecs * evecs / evals_f[jnp.newaxis, :], axis=1)
+        variances = jnp.where(live, var_hat / (D * D), jnp.inf)
         return optimized_fluxes, variances
 
     return optimized_fluxes
