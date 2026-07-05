@@ -181,22 +181,26 @@ def compute_target_stats(images, oversample_rendering=False):
 
         # Use r_eff for padding if available
         if hasattr(psf, 'get_r_eff'):
-            r_eff = psf.get_r_eff(0.999)
-
             if isinstance(psf, PixelizedPSF):
-                 # r_eff is in PSF pixels. Convert to Image Pixels.
-                 s = getattr(psf, "sampling", 1.0)
-                 r_eff_img = r_eff / s
+                # Pad to the FULL finite kernel support (half-diagonal). The
+                # kernel is at PSF-pixel resolution, which IS the target(HR)-grid
+                # resolution (the HR grid renders the PSF at its own sampling),
+                # so the kernel half-diagonal in PSF pixels is the target-pixel
+                # radius that contains the whole kernel for any sub-pixel shift.
+                # (The old `r_eff / s` was a unit error that over-padded by
+                # ~1/s^2 -> a ~25x-area HR grid, e.g. ~1669px for an 85px tile at
+                # sampling 0.224, making field fits OOM/intractable. An r_eff
+                # enclosure fraction instead slightly UNDER-pads undersampled
+                # kernels via a grid-alignment reshuffle. Full-support is
+                # deterministic; the rendered template is padding-invariant to
+                # <2e-5 and well-sampled/production PSFs change <0.05%.)
+                r_eff_target = 0.5 * math.hypot(psf.H, psf.W)
             else:
-                 # Analytic PSF (Gaussian), r_eff is in Image Pixels.
-                 r_eff_img = r_eff
+                # Analytic PSF (Gaussian): r_eff is in image pixels -> target.
+                r_eff_target = psf.get_r_eff(0.999) * max_factor
 
-            # Convert to Target Pixels
-            r_eff_target = r_eff_img * max_factor
-
-            # Diameter in Target Pixels (padded to be safe)
-            # We want the padding to be enough such that a source at the edge
-            # fully contains the PSF on the padded grid.
+            # Diameter in Target Pixels (padded to be safe): enough that a
+            # source at the tile edge fully contains its PSF on the padded grid.
             size_target = math.ceil(2.0 * r_eff_target)
 
             max_psf_h = max(max_psf_h, size_target)
