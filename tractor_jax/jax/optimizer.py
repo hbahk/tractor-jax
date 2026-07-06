@@ -316,6 +316,13 @@ def extract_model_data(
         if oversample_rendering and max_factor > 1.0:
             target_H = int(round(padded_H * max_factor))
             target_W = int(round(padded_W * max_factor))
+            # The HR width must be EVEN: downstream the true width is
+            # reconstructed from the rfft2 array as (shape[1]-1)*2, which is
+            # wrong for odd widths (e.g. 487 -> 486) and silently evaluates
+            # the phase gradient on the wrong frequency grid — a
+            # position-dependent registration drift (proj research note
+            # lasso_alpha/15 render-mismatch diagnosis).
+            target_W += target_W % 2
             target_sampling = float(max_factor)
         else:
             target_H = padded_H
@@ -748,6 +755,13 @@ def extract_model_data_direct(
 
     if fixed_target_shape is not None:
         target_H, target_W = fixed_target_shape
+        if target_W % 2:
+            # odd HR widths are ambiguous after rfft2 (see the even-width
+            # note in extract_model_data) — bump to even; callers only
+            # consume LR-shaped outputs, the HR grid is internal.
+            print(f"extract_model_data_direct: bumping odd fixed target "
+                  f"width {target_W} -> {target_W + 1}")
+            target_W += 1
         padded_H = int(math.floor(target_H / max_factor))
         padded_W = int(math.floor(target_W / max_factor))
     else:
@@ -761,6 +775,7 @@ def extract_model_data_direct(
         padded_W = max_W + fft_pad_w_lr
         target_H = int(round(padded_H * max_factor))
         target_W = int(round(padded_W * max_factor))
+        target_W += target_W % 2          # even width (rfft round-trip)
 
     # Pre-scan catalog for max MoG K
     max_gal_mog_K = 1
@@ -974,18 +989,27 @@ def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape, sampling_fa
     def render_fft(operand):
         render_shape = (H_hr_grid, W_hr_grid)
 
-        pos_pix_scaled = pos_pix * s + (s - 1.0) / 2.0
+        # Effective per-axis HR->LR factors. Placement MUST use the same
+        # factors the boxcar downsample integrates with (valid/H after the
+        # crop, or the full-grid ratio otherwise) — using the nominal `s`
+        # (e.g. 4.46371 while the grid maps at 487/109) accumulates a
+        # position-dependent registration drift of up to ~0.05 native px
+        # across a tile (proj research note lasso_alpha/15 render diagnosis).
+        if sampling_factor is not None and s > 1.001:
+            valid_H = min(int(round(H * s)), H_hr_grid)
+            valid_W = min(int(round(W * s)), W_hr_grid)
+        else:
+            valid_H, valid_W = H_hr_grid, W_hr_grid
+        f_x = valid_W / W
+        f_y = valid_H / H
+        f_xy = jnp.array([f_x, f_y])
+        pos_pix_scaled = pos_pix * f_xy + (f_xy - 1.0) / 2.0
 
         render_fn = vmap(partial(render_point_source_fft, image_shape=render_shape), in_axes=(0, 0, None))
         stamps = render_fn(fluxes, pos_pix_scaled, psf_data['fft'])
         combined = jnp.sum(stamps, axis=0)
 
         if sampling_factor is not None and s > 1.001:
-            valid_H = int(round(H * s))
-            valid_W = int(round(W * s))
-            valid_H = min(valid_H, H_hr_grid)
-            valid_W = min(valid_W, W_hr_grid)
-
             combined = combined[:valid_H, :valid_W]
             combined = downsample_image(combined, img_shape)
         elif sampling_factor is None:
@@ -1030,8 +1054,20 @@ def render_batch_galaxies(
     def render_fft(operand):
         render_shape = (H_hr_grid, W_hr_grid)
 
-        pos_pix_scaled = pos_pix * s + (s - 1.0) / 2.0
-        wcs_cd_inv_scaled = wcs_cd_inv * s
+        # effective per-axis HR->LR factors — see render_batch_point_sources
+        # (registration-drift fix; placement must match the boxcar factors)
+        if sampling_factor is not None and s > 1.001:
+            valid_H = min(int(round(H * s)), H_hr_grid)
+            valid_W = min(int(round(W * s)), W_hr_grid)
+        else:
+            valid_H, valid_W = H_hr_grid, W_hr_grid
+        f_x = valid_W / W
+        f_y = valid_H / H
+        f_xy = jnp.array([f_x, f_y])
+        pos_pix_scaled = pos_pix * f_xy + (f_xy - 1.0) / 2.0
+        # pixel_hr = diag(f_x, f_y) @ pixel_lr, so the (world -> pixel)
+        # inverse-CD rows scale per axis (row 0 = x, row 1 = y)
+        wcs_cd_inv_scaled = wcs_cd_inv * f_xy[:, jnp.newaxis]
 
         gal_mix = (profiles["amp"], profiles["mean"], profiles["var"])
 
@@ -1042,11 +1078,6 @@ def render_batch_galaxies(
         combined = jnp.sum(weighted_stamps, axis=0)
 
         if sampling_factor is not None and s > 1.001:
-            valid_H = int(round(H * s))
-            valid_W = int(round(W * s))
-            valid_H = min(valid_H, H_hr_grid)
-            valid_W = min(valid_W, W_hr_grid)
-
             combined = combined[:valid_H, :valid_W]
             combined = downsample_image(combined, img_shape)
         elif sampling_factor is None:
@@ -1220,10 +1251,12 @@ def compute_fisher_diagonal(image_data, batches, n_flux):
         scale = float(H_hr) / float(H)
 
         def compute_stamps_fft(op):
-            W_hr = int(round(W * scale))
+            # true grid width from the rfft array (even by construction);
+            # per-axis effective factors (registration-drift fix)
+            W_hr = (psf_data['fft'].shape[1] - 1) * 2
             render_shape = (H_hr, W_hr)
-            s = scale
-            pos_pix_scaled = pos_pix * s + (s - 1.0) / 2.0
+            f_xy = jnp.array([W_hr / W, H_hr / H])
+            pos_pix_scaled = pos_pix * f_xy + (f_xy - 1.0) / 2.0
 
             render_fn = vmap(partial(render_point_source_fft, image_shape=render_shape), in_axes=(0, 0, None))
             stamps = render_fn(unit_fluxes, pos_pix_scaled, psf_data['fft'])
@@ -1262,11 +1295,13 @@ def compute_fisher_diagonal(image_data, batches, n_flux):
         scale = float(H_hr) / float(H)
 
         def compute_stamps_fft(op):
-            W_hr = int(round(W * scale))
+            # true grid width from the rfft array (even by construction);
+            # per-axis effective factors (registration-drift fix)
+            W_hr = (psf_data['fft'].shape[1] - 1) * 2
             render_shape = (H_hr, W_hr)
-            s = scale
-            pos_pix_scaled = pos_pix * s + (s - 1.0) / 2.0
-            wcs_cd_inv_scaled = wcs_cd_inv * s
+            f_xy = jnp.array([W_hr / W, H_hr / H])
+            pos_pix_scaled = pos_pix * f_xy + (f_xy - 1.0) / 2.0
+            wcs_cd_inv_scaled = wcs_cd_inv * f_xy[:, jnp.newaxis]
 
             gal_mix = (profiles["amp"], profiles["mean"], profiles["var"])
             render_fn = vmap(partial(render_galaxy_fft, image_shape=render_shape), in_axes=((0, 0, 0), None, 0, 0, 0))
@@ -1329,7 +1364,15 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None):
 
         def _ps_stamps_fft(op):
             render_shape = (H_hr_grid, W_hr_grid)
-            pos_scaled = pos_pix * s + (s - 1.0) / 2.0
+            # effective per-axis factors (registration-drift fix; see
+            # render_batch_point_sources)
+            if sampling_factor is not None and s > 1.001:
+                valid_H = min(int(round(H * s)), H_hr_grid)
+                valid_W = min(int(round(W * s)), W_hr_grid)
+            else:
+                valid_H, valid_W = H_hr_grid, W_hr_grid
+            f_xy = jnp.array([valid_W / W, valid_H / H])
+            pos_scaled = pos_pix * f_xy + (f_xy - 1.0) / 2.0
             unit = jnp.ones(pos_pix.shape[0])
             if mask is not None:
                 unit = unit * mask
@@ -1337,10 +1380,6 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None):
                              in_axes=(0, 0, None))
             stamps = render_fn(unit, pos_scaled, psf_data['fft'])
             if sampling_factor is not None and s > 1.001:
-                valid_H = int(round(H * s))
-                valid_W = int(round(W * s))
-                valid_H = min(valid_H, H_hr_grid)
-                valid_W = min(valid_W, W_hr_grid)
                 stamps = stamps[:, :valid_H, :valid_W]
                 ds_fn = vmap(partial(downsample_image, target_shape=(H, W)))
                 stamps = ds_fn(stamps)
@@ -1383,17 +1422,21 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None):
 
         def _gal_stamps_fft(op):
             render_shape = (H_hr_grid, W_hr_grid)
-            pos_scaled = pos_pix * s + (s - 1.0) / 2.0
-            wcs_scaled = wcs_cd_inv * s
+            # effective per-axis factors (registration-drift fix; see
+            # render_batch_galaxies)
+            if sampling_factor is not None and s > 1.001:
+                valid_H = min(int(round(H * s)), H_hr_grid)
+                valid_W = min(int(round(W * s)), W_hr_grid)
+            else:
+                valid_H, valid_W = H_hr_grid, W_hr_grid
+            f_xy = jnp.array([valid_W / W, valid_H / H])
+            pos_scaled = pos_pix * f_xy + (f_xy - 1.0) / 2.0
+            wcs_scaled = wcs_cd_inv * f_xy[:, jnp.newaxis]
             gal_mix = (profiles["amp"], profiles["mean"], profiles["var"])
             render_fn = vmap(partial(render_galaxy_fft, image_shape=render_shape),
                              in_axes=((0, 0, 0), None, 0, 0, 0))
             stamps = render_fn(gal_mix, psf_data['fft'], shapes, wcs_scaled, pos_scaled)
             if sampling_factor is not None and s > 1.001:
-                valid_H = int(round(H * s))
-                valid_W = int(round(W * s))
-                valid_H = min(valid_H, H_hr_grid)
-                valid_W = min(valid_W, W_hr_grid)
                 stamps = stamps[:, :valid_H, :valid_W]
                 ds_fn = vmap(partial(downsample_image, target_shape=(H, W)))
                 stamps = ds_fn(stamps)
