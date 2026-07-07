@@ -297,7 +297,8 @@ def extract_model_data(
     fit_background=False,
     fixed_target_shape=None,
     fixed_max_factor=None,
-    img_source_indices=None
+    img_source_indices=None,
+    compact_fluxes=False,
 ):
     """
     Extract all data needed for JAX optimization from a Tractor object.
@@ -324,6 +325,13 @@ def extract_model_data(
     img_source_indices : sequence or dict, optional
         Per-image collection of catalog indices to include; if None, all
         supported catalog sources are used for every image.
+    compact_fluxes : bool, optional
+        If True (requires ``img_source_indices``), each image row gets its
+        own compact flux vector containing only that image's sources, padded
+        to the largest per-image parameter count. The background slot (when
+        fit) sits at the shared last column. Used by the tiling path, where
+        every "image" is a tile seeing a small catalog subset; a shared
+        full-catalog vector would grow quadratically in the solver.
 
     Returns
     -------
@@ -334,8 +342,12 @@ def extract_model_data(
         Batched source data. Shapes are (N_img, N_src, ...).
     initial_fluxes : jax.numpy.ndarray
         Initial fluxes of shape (N_img, N_params). Source fluxes are
-        broadcast/shared across images; the background parameter (if fit)
-        is per-image.
+        broadcast/shared across images (or per-image compact slots when
+        ``compact_fluxes``); the background parameter (if fit) is per-image.
+    slot_maps : list of dict
+        Only returned when ``compact_fluxes`` is True: per image, a dict
+        mapping catalog index -> (slot offset, n_params) in that image's
+        flux row.
     """
     from tractor_jax.sky import ConstantSky
     images = tractor_obj.images
@@ -552,6 +564,10 @@ def extract_model_data(
 
     max_gal_mog_K = 0
 
+    if compact_fluxes and img_source_indices is None:
+        raise ValueError("compact_fluxes=True requires img_source_indices")
+    slot_maps = []
+
     N_img = len(images)
     for i_img in range(N_img):
         img = images[i_img]
@@ -561,6 +577,20 @@ def extract_model_data(
             indices = img_source_indices[i_img]
         else:
             indices = sorted(cat_idx_to_flux_idx.keys())
+
+        # Per-image compact slots: this image's sources packed contiguously
+        # in catalog order, instead of the shared full-catalog offsets.
+        slot_map = {}
+        if compact_fluxes:
+            off = 0
+            for cat_idx in indices:
+                cat_idx = int(cat_idx)
+                if cat_idx not in cat_idx_to_flux_idx:
+                    continue
+                n_p = len(catalog[cat_idx].brightness.getParams())
+                slot_map[cat_idx] = (off, n_p)
+                off += n_p
+        slot_maps.append(slot_map)
 
         ps_flux = []
         ps_pos = []
@@ -572,11 +602,15 @@ def extract_model_data(
         gal_prof = [] # (amp, mean, var)
 
         for cat_idx in indices:
+            cat_idx = int(cat_idx)
             if cat_idx not in cat_idx_to_flux_idx:
                 continue
 
             src = catalog[cat_idx]
-            f_idx = cat_idx_to_flux_idx[cat_idx]
+            if compact_fluxes:
+                f_idx = slot_map[cat_idx][0]
+            else:
+                f_idx = cat_idx_to_flux_idx[cat_idx]
 
             if hasattr(src, "getSourceType"):
                 src_type = src.getSourceType()
@@ -735,8 +769,20 @@ def extract_model_data(
 
     src_fluxes = np.array(src_fluxes, dtype=np.float32)
 
-    # Broadcast src_fluxes to (N_img, N_src_params)
-    initial_fluxes_matrix = np.tile(src_fluxes, (N_img, 1))
+    if compact_fluxes:
+        # Per-image compact rows padded to the widest image; padded slots
+        # never appear in any flux_idx and stay dead in the solver.
+        n_src_max = max((sum(n_p for (_, n_p) in m.values()) for m in slot_maps),
+                        default=0)
+        n_src_max = max(n_src_max, 1)
+        initial_fluxes_matrix = np.zeros((N_img, n_src_max), dtype=np.float32)
+        for i_img, slot_map in enumerate(slot_maps):
+            for cat_idx, (off, n_p) in slot_map.items():
+                params = catalog[cat_idx].brightness.getParams()
+                initial_fluxes_matrix[i_img, off:off + n_p] = params
+    else:
+        # Broadcast src_fluxes to (N_img, N_src_params)
+        initial_fluxes_matrix = np.tile(src_fluxes, (N_img, 1))
 
     if fit_background:
         bg_vals = []
@@ -753,12 +799,15 @@ def extract_model_data(
 
         # Each row carries its own bg param at the end, so the index is a
         # single row-relative scalar shared by all images.
-        bg_idx = len(src_fluxes)
+        bg_idx = initial_fluxes_matrix.shape[1] - 1
         batches["Background"] = {
             "flux_idx": jnp.array([bg_idx], dtype=jnp.int32)
         }
 
-    return images_data, batches, jnp.array(initial_fluxes_matrix, dtype=jnp.float32)
+    initial_fluxes_matrix = jnp.array(initial_fluxes_matrix, dtype=jnp.float32)
+    if compact_fluxes:
+        return images_data, batches, initial_fluxes_matrix, slot_maps
+    return images_data, batches, initial_fluxes_matrix
 
 
 def extract_model_data_direct(
@@ -2511,7 +2560,14 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
     bucket_base : int, optional
         Rounding base for auto mode.
     use_tiling : bool, optional
-        If True, splits images into tiles and processes them.
+        If True, splits each image into core tiles padded by a PSF-sized
+        halo, solves every tile independently with a compact per-tile flux
+        vector, and merges the results back into one catalog-layout vector
+        per image: each source is read from the tile whose core box
+        contains it (halo overlaps never double-count), and the background
+        (if fit) is reported as the core-area weighted mean of the per-tile
+        backgrounds. The return format matches the non-tiled path;
+        ``return_aux`` is not supported.
     tile_size : int, optional
         Size of tiles (default 256).
     tile_super_halo : int, optional
@@ -2629,10 +2685,17 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
         all_tiles = []
         all_indices = []
         original_img_indices = [] # Map tile -> original image index (if needed)
+        all_meta = []
+        pos_cat_per_img = []
+
+        if _lasso_aux:
+            raise NotImplementedError(
+                "return_aux is not supported in tiling mode")
 
         for i_img, img in enumerate(tractor_obj.images):
             # Project catalog to this image's pixel coords
             pos_cat = project_catalog(tractor_obj.catalog, img.getWcs())
+            pos_cat_per_img.append(pos_cat)
 
             tiles_with_meta = tile_image(img, tile_size, halo)
 
@@ -2646,6 +2709,7 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
 
                 # Keep tiles with no sources: the background can still be fit.
                 all_tiles.append(tile_img)
+                all_meta.append(meta)
                 all_indices.append(indices)
                 original_img_indices.append(i_img)
 
@@ -2658,8 +2722,10 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
 
         print(f"JAX Optimization: {len(all_tiles)} tiles -> {len(bucket_map)} buckets")
 
-        # results per tile, in 'all_tiles' order
-        tile_results = [None] * len(all_tiles)
+        # Per-tile solved rows and slot maps, in 'all_tiles' order
+        tile_fluxes = [None] * len(all_tiles)
+        tile_vars = [None] * len(all_tiles)
+        tile_slots = [None] * len(all_tiles)
 
         for shape, tile_idxs in bucket_map.items():
             if not tile_idxs:
@@ -2671,14 +2737,17 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
             # sub_tractor needs same catalog
             sub_tractor = Tractor(sub_tiles, tractor_obj.catalog)
 
-            # Extract Data (Sparse)
-            images_data, batches, initial_fluxes = extract_model_data(
+            # Compact per-tile flux rows: each tile solves only its own
+            # sources, so the solver's normal matrix stays
+            # (n_tile_src)^2 instead of (n_catalog)^2.
+            images_data, batches, initial_fluxes, bucket_slots = extract_model_data(
                 sub_tractor,
                 oversample_rendering=oversample_rendering,
                 fit_background=fit_background,
                 fixed_target_shape=shape,
                 fixed_max_factor=max_factor,
-                img_source_indices=sub_source_indices
+                img_source_indices=sub_source_indices,
+                compact_fluxes=True,
             )
 
             # Define in_axes
@@ -2710,10 +2779,6 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
             ))
 
             out = solve_fn(initial_fluxes, images_data, batches)
-            aux_stack = None
-            if _lasso_aux:
-                *out, aux_stack = out if isinstance(out, tuple) else (out,)
-                out = out[0] if len(out) == 1 else tuple(out)
             if return_variances:
                 optimized_fluxes_stack, variances_stack = out
             else:
@@ -2724,18 +2789,95 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
                 res_variances = np.array(variances_stack)
 
             for k, original_idx in enumerate(tile_idxs):
-                f = res_fluxes[k]
-                parts = [f]
+                tile_fluxes[original_idx] = res_fluxes[k]
                 if return_variances:
-                    parts.append(res_variances[k])
-                if aux_stack is not None:
-                    parts.append({key: np.array(val[k]) for key, val in aux_stack.items()})
-                tile_results[original_idx] = tuple(parts) if len(parts) > 1 else f
+                    tile_vars[original_idx] = res_variances[k]
+                tile_slots[original_idx] = bucket_slots[k]
+
+        # 4. Merge the per-tile solutions into one catalog-layout flux
+        # vector per image. Each source is read from the tile whose CORE box
+        # contains its position, so halo overlaps never double-count a
+        # source; sources projecting outside every core fall back to the
+        # nearest core centre.
+        catalog = tractor_obj.catalog
+        global_offsets = {}
+        g_off = 0
+        for ci, src in enumerate(catalog):
+            if isinstance(src, (CompositeGalaxy, FixedCompositeGalaxy)):
+                continue
+            if hasattr(src, "brightness"):
+                n_p = len(src.brightness.getParams())
+                global_offsets[ci] = (g_off, n_p)
+                g_off += n_p
+        n_src_params = g_off
+
+        tiles_of_img = defaultdict(list)
+        for t_i, i_img in enumerate(original_img_indices):
+            tiles_of_img[i_img].append(t_i)
+
+        results = []
+        for i_img in range(len(tractor_obj.images)):
+            t_list = tiles_of_img[i_img]
+            metas = [all_meta[t] for t in t_list]
+            core_cx = np.array([m['x0'] + 0.5 * m['core_w'] for m in metas])
+            core_cy = np.array([m['y0'] + 0.5 * m['core_h'] for m in metas])
+
+            n_flux = n_src_params + (1 if fit_background else 0)
+            merged_f = np.zeros(n_flux, dtype=np.float32)
+            merged_v = np.zeros(n_flux, dtype=np.float32) if return_variances else None
+
+            pos_cat = pos_cat_per_img[i_img]
+            for ci, (f_off, n_p) in global_offsets.items():
+                x, y = pos_cat[ci]
+                if not (np.isfinite(x) and np.isfinite(y)):
+                    continue  # unprojectable source: left at 0
+                owner = None
+                for k, m in enumerate(metas):
+                    if (m['x0'] <= x < m['x0'] + m['core_w']
+                            and m['y0'] <= y < m['y0'] + m['core_h']):
+                        owner = k
+                        break
+                if owner is None:
+                    owner = int(np.argmin((core_cx - x) ** 2
+                                          + (core_cy - y) ** 2))
+                t_i = t_list[owner]
+                slot = tile_slots[t_i].get(ci)
+                if slot is None:
+                    continue  # outside the owner tile's padded box: left at 0
+                s_off = slot[0]
+                merged_f[f_off:f_off + n_p] = tile_fluxes[t_i][s_off:s_off + n_p]
+                if return_variances:
+                    merged_v[f_off:f_off + n_p] = tile_vars[t_i][s_off:s_off + n_p]
+
+            if fit_background:
+                # Tile backgrounds are independent fits; report the
+                # core-area weighted mean (variance likewise, approximate).
+                w = np.array([m['core_w'] * m['core_h'] for m in metas],
+                             dtype=np.float64)
+                w = w / w.sum()
+                bgs = np.array([tile_fluxes[t][-1] for t in t_list])
+                merged_f[-1] = float((w * bgs).sum())
+                if return_variances:
+                    bgv = np.array([tile_vars[t][-1] for t in t_list])
+                    merged_v[-1] = float((w * bgv).sum())
+
+            results.append((merged_f, merged_v) if return_variances else merged_f)
 
         if update_catalog:
-            print("Warning: update_catalog=True is ignored in Tiling mode (ambiguous results).")
+            if len(tractor_obj.images) == 1:
+                f_vec = results[0][0] if return_variances else results[0]
+                ptr = 0
+                for src in tractor_obj.catalog:
+                    if isinstance(src, (CompositeGalaxy, FixedCompositeGalaxy)):
+                        continue
+                    if hasattr(src, "brightness"):
+                        n = src.brightness.numberOfParams()
+                        src.brightness.setParams(f_vec[ptr:ptr + n])
+                        ptr += n
+            else:
+                print("Warning: update_catalog=True but N_img > 1. Catalog not updated to avoid ambiguity.")
 
-        return tile_results
+        return results
 
     elif vmap_images:
         # Determine buckets

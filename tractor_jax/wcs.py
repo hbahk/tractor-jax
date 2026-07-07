@@ -59,7 +59,9 @@ class NullWCS(BaseParams, ducks.WCS):
         return self.pixscale
 
     def shifted(self, x, y):
-        return self.copy()
+        # New pixel (0, 0) corresponds to old pixel (x, y).
+        return NullWCS(pixscale=self.pixscale,
+                       dx=self.dx - x, dy=self.dy - y)
 
 
 class AstropyWCS(BaseParams, ducks.WCS):
