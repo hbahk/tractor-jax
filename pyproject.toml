@@ -1,12 +1,25 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "tractor-jax"
-version = "0.0.1"
+dynamic = ["version"]
 description = "JAX-accelerated astronomical image modeling and forced photometry"
+readme = "README.md"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Hyeonguk Bahk", email = "bahkhyeonguk@gmail.com" },
+]
 requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
 dependencies = [
     "numpy",
     "scipy",
@@ -14,6 +27,11 @@ dependencies = [
     "astropy",
     "photutils",
 ]
+
+[project.urls]
+Homepage = "https://github.com/hbahk/tractor-jax"
+Documentation = "https://tractor-jax.readthedocs.io"
+Source = "https://github.com/hbahk/tractor-jax"
 
 [project.optional-dependencies]
 docs = [
@@ -28,9 +46,9 @@ dev = [
     "pyarrow",  # for parquet I/O in tests
 ]
 
+[tool.setuptools.dynamic]
+version = { attr = "tractor_jax.version.__version__" }
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["tractor_jax*"]
-
-[tool.setuptools.package-data]
-tractor_jax = ["*.c", "Makefile"]
