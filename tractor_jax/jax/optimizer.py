@@ -1415,11 +1415,9 @@ def compute_fisher_diagonal(image_data, batches, n_flux):
 
         psf_data = image_data["psf"]
 
-        stamps = render_batch_point_sources(unit_fluxes, pos_pix, psf_data, (H, W), mask=mask)
         # render_batch_point_sources sums the stamps internally, but the Fisher
         # diagonal needs each per-source stamp squared, so the stamp rendering
-        # is re-implemented inline below (the summed result above is unused).
-
+        # is implemented inline here.
         H_hr = psf_data['fft'].shape[0]
         scale = float(H_hr) / float(H)
 
@@ -2923,11 +2921,10 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
             f_vec = optimized_fluxes_np[0] # Single image
 
             if "PointSource" in batches:
-                idxs = batches["PointSource"]["flux_idx"]
                 # Fluxes are packed [src1_params, src2_params, ...] in catalog
                 # iteration order with the same filtering as extract_model_data
                 # (composites skipped), so re-iterating the catalog in order
-                # recovers the source <-> flux mapping. (idxs above is unused.)
+                # recovers the source <-> flux mapping.
                 ptr = 0
                 for src in tractor_obj.catalog:
                     if isinstance(src, (CompositeGalaxy, FixedCompositeGalaxy)):
@@ -3020,20 +3017,9 @@ class JaxOptimizer(Optimizer):
                 # catalog params); a robust flux -> full-parameter mapping
                 # would need extract_model_data to export one. In the simple
                 # case (sky and positions fixed, fluxes thawed) the lengths
-                # match and vars is the full vector.
-                full_var = np.zeros_like(X)
-
-                # (mapping via these pointers was never implemented; only the
-                # length check below is used)
-                ptr_flux = 0
-                ptr_param = 0
-
-                if len(X) == len(vars):
-                     full_var = vars
-                else:
-                    # No robust mapping: pass vars through unchanged
-                    # (length mismatch likely if positions are thawed).
-                    full_var = vars
+                # match and vars is the full vector; otherwise vars is passed
+                # through unchanged (length mismatch if positions are thawed).
+                full_var = vars
             else:
                 full_var = None
 
