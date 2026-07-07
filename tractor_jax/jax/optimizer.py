@@ -1256,8 +1256,29 @@ def prepare_sharded_inputs(images_data, batches, initial_fluxes):
         Device-placed batched source data.
     initial_fluxes : jax.numpy.ndarray
         Device-placed initial fluxes.
+
+    Notes
+    -----
+    NamedSharding requires the batch axis to be divisible by the device
+    count. When it is not, every per-image leaf (leading dim == N_img) is
+    padded by repeating its last entry; the padded rows are solved
+    redundantly and simply ignored by callers, which only read results
+    for the original image indices.
     """
     devices = jax.devices()
+
+    n_img = int(initial_fluxes.shape[0])
+    pad = (-n_img) % len(devices)
+    if pad:
+        def _pad(x):
+            x = jnp.asarray(x)
+            if x.ndim and x.shape[0] == n_img:
+                return jnp.concatenate([x, jnp.repeat(x[-1:], pad, axis=0)], axis=0)
+            return x
+        images_data = jax.tree_util.tree_map(_pad, images_data)
+        batches = jax.tree_util.tree_map(_pad, batches)
+        initial_fluxes = _pad(initial_fluxes)
+
     # Create a mesh for data parallelism over images
     mesh = Mesh(devices, axis_names=('img_batch',))
 
