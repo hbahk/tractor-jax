@@ -16,6 +16,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+docs = [
+    "sphinx>=7",
+    "pydata-sphinx-theme",
+    "myst-parser",
+    "sphinx-copybutton",
+]
 dev = [
     "matplotlib",
     "tqdm",

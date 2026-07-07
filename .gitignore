@@ -232,3 +232,4 @@ outlier_cutout_plots/
 .vscode/
 .env
 .claude/
+docs/api/
