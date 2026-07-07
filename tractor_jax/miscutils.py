@@ -113,8 +113,37 @@ def batch_correlate1d(a, b, axis=1, mode='constant'):
         return c[:, :, start:end]
 
 def lanczos3_interpolate_grid(xstart, xstep, ystart, ystep, out_img, in_img):
-    """
-    Numpy implementation of Lanczos-3 grid interpolation, with support for downsampling.
+    """Interpolate an image onto a regular grid using a Lanczos-3 kernel.
+
+    NumPy implementation of Lanczos-3 grid interpolation, with support
+    for downsampling (the kernel is widened and renormalized when the
+    step size exceeds 1).
+
+    Parameters
+    ----------
+    xstart : float
+        x coordinate (in input-image pixels) of the first output
+        column.
+    xstep : float
+        x spacing (in input-image pixels) between output columns.
+    ystart : float
+        y coordinate (in input-image pixels) of the first output row.
+    ystep : float
+        y spacing (in input-image pixels) between output rows.
+    out_img : numpy.ndarray
+        Output image, filled in place.
+    in_img : numpy.ndarray
+        Input image to interpolate.
+
+    Returns
+    -------
+    numpy.ndarray
+        The filled output image `out_img`.
+
+    Notes
+    -----
+    This is primarily for verification/tests/legacy CPU paths; it uses
+    Python loops over output rows and columns.
     """
     H_out, W_out = out_img.shape
     H_in, W_in = in_img.shape

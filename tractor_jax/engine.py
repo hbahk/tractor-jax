@@ -1,12 +1,9 @@
 '''
+Core image modeling and fitting.
+
 This file is part of the Tractor project.
 Copyright 2011, 2012 Dustin Lang and David W. Hogg.
 Licensed under the GPLv2; see the file COPYING for details.
-
-`engine.py`
-===========
-
-Core image modeling and fitting.
 '''
 from __future__ import print_function
 import logging
@@ -30,32 +27,39 @@ def isverbose():
     return logger.isEnabledFor(logging.DEBUG)
 
 def set_fp_err():
-    '''Cause all floating-point errors to raise exceptions.
-    Returns the current error state so you can revert via:
+    '''
+    Cause all floating-point errors to raise exceptions.
 
-        olderr = set_fp_err()
-        # do stuff
-        np.seterr(**olderr)
+    Returns
+    -------
+    olderr : dict
+        The previous NumPy error state, so you can revert via::
+
+            olderr = set_fp_err()
+            # do stuff
+            np.seterr(**olderr)
     '''
     return np.seterr(all='raise')
 
 
 class Catalog(MultiParams):
     '''
-    A list of Source objects.  This class allows the Tractor to treat
-    a set of astronomical sources as a single object with a bunch of
-    parameters.  Most of the functionality comes from the base class.
+    A list of Source objects.
 
+    This class allows the Tractor to treat a set of astronomical
+    sources as a single object with a bunch of parameters.  Most of
+    the functionality comes from the base class.
 
-    Constructor syntax:
+    Notes
+    -----
+    Constructor syntax::
 
-    cat = Catalog(src1, src2, src3)
+        cat = Catalog(src1, src2, src3)
 
-    so if you have a list of sources,
+    so if you have a list of sources::
 
-    srcs = [src1, src2, src3]
-    cat = Catalog(*srcs)
-
+        srcs = [src1, src2, src3]
+        cat = Catalog(*srcs)
     '''
     deepcopy = MultiParams.copy
 
@@ -80,11 +84,13 @@ class Catalog(MultiParams):
 
 class Images(MultiParams):
     """
-    This is a class for holding a list of `Image` objects, each which
-    contains data and metadata.  This class allows the Tractor to
-    treat a list of `Image`s as a single object that has a set of
-    parameters.  Basically all the functionality comes from the base
-    class.
+    A list of :class:`~tractor_jax.image.Image` objects.
+
+    This is a class for holding a list of
+    :class:`~tractor_jax.image.Image` objects, each of which contains
+    data and metadata.  This class allows the Tractor to treat a list
+    of images as a single object that has a set of parameters.
+    Basically all the functionality comes from the base class.
     """
 
     def getNamedParamName(self, j):
@@ -101,10 +107,10 @@ class Tractor(MultiParams):
     Heavy farm machinery.
 
     As you might guess from the name, this is the main class of the
-    Tractor framework.  A Tractor has a set of Images and a set of
-    Sources, and has methods to optimize the parameters of those
-    Images and Sources.
-
+    Tractor framework.  A Tractor has a set of
+    :class:`~tractor_jax.engine.Images` and a set of Sources
+    (a :class:`~tractor_jax.engine.Catalog`), and has methods to
+    optimize the parameters of those Images and Sources.
     '''
     @staticmethod
     def getName():
@@ -117,8 +123,20 @@ class Tractor(MultiParams):
     def __init__(self, images=None, catalog=None, optimizer=None,
                  model_kwargs=None):
         '''
-        - `images:` list of Image objects (data)
-        - `catalog:` list of Source objects
+        Create a new Tractor.
+
+        Parameters
+        ----------
+        images : list of :class:`~tractor_jax.image.Image`, optional
+            The data images.
+        catalog : list of Source objects, optional
+            The sources to be fit.
+        optimizer : optional
+            The optimizer to use; defaults to ``LsqrOptimizer`` if
+            available, otherwise the JAX optimizer.
+        model_kwargs : dict, optional
+            Default keyword arguments passed to model-image and
+            optimization methods.
         '''
         self.blobid = None
         if images is None:
@@ -227,24 +245,32 @@ class Tractor(MultiParams):
 
     def optimize_forced_photometry(self, **kwargs):
         '''
-        Returns an "OptResult" duck with fields:
+        Perform forced photometry, fitting source brightnesses only.
 
-        .ims0, .ims1         (if wantims=True)
-        .IV                  (if variance=True)
-        .fitstats            (if fitstats=True)
+        Parameters
+        ----------
+        **kwargs
+            Passed through (merged with ``model_kwargs``) to the
+            optimizer's ``forced_photometry`` method.
 
-        ims0, ims1:
-        [ (img_data, mod, ie, chi, roi), ... ]
+        Returns
+        -------
+        result : OptResult
+            An "OptResult" duck with fields:
 
+            - ``ims0``, ``ims1`` (if ``wantims=True``): lists of
+              ``(img_data, mod, ie, chi, roi)`` tuples.
+            - ``IV`` (if ``variance=True``)
+            - ``fitstats`` (if ``fitstats=True``)
 
+        Notes
+        -----
         ASSUMES linear brightnesses!
 
         ASSUMES all source parameters except brightness are frozen.
 
-        If sky=False,
-        ASSUMES image parameters are frozen.
-        If sky=True,
-        ASSUMES only the sky parameters are unfrozen
+        If ``sky=False``, ASSUMES image parameters are frozen.
+        If ``sky=True``, ASSUMES only the sky parameters are unfrozen.
 
         ASSUMES the PSF and Sky models are position-independent!!
 
@@ -259,21 +285,27 @@ class Tractor(MultiParams):
     # shared_params=True, variance=False, just_variance=False):
     def optimize(self, **kwargs):
         '''
-        Performs *one step* of optimization.
+        Perform *one step* of optimization.
 
-        (Exactly what that entails depends on the optimizer; by
-        default (LsqrOptimizer) it means one linearized least-squares
-        + line search iteration.)
+        Exactly what that entails depends on the optimizer; by
+        default (``LsqrOptimizer``) it means one linearized
+        least-squares + line search iteration.
 
-        Returns (delta-logprob, parameter update X, alpha stepsize)
+        Parameters
+        ----------
+        **kwargs
+            Passed through (merged with ``model_kwargs``) to the
+            optimizer's ``optimize`` method.
 
-        If variance=True,
+        Returns
+        -------
+        result : tuple
+            ``(delta-logprob, parameter update X, alpha stepsize)``.
 
-        Returns (delta-logprob, parameter update X, alpha stepsize, variance)
+            If ``variance=True``, returns
+            ``(delta-logprob, parameter update X, alpha stepsize, variance)``.
 
-        If just_variance=True,
-        Returns variance.
-
+            If ``just_variance=True``, returns ``variance``.
         '''
         '''
         If rois is not None, it must be a list of [x0,x1,y0,y1] the
@@ -286,9 +318,18 @@ class Tractor(MultiParams):
 
     def optimize_loop(self, **kwargs):
         '''
-        Performs multiple steps of optimization until convergence.
+        Perform multiple steps of optimization until convergence.
 
-        Returns a dict of results (exact contents varying by optimizer).
+        Parameters
+        ----------
+        **kwargs
+            Passed through (merged with ``model_kwargs``) to the
+            optimizer's ``optimize_loop`` method.
+
+        Returns
+        -------
+        result : dict
+            A dict of results (exact contents varying by optimizer).
         '''
         kw = self.model_kwargs.copy()
         kw.update(kwargs)
@@ -297,18 +338,29 @@ class Tractor(MultiParams):
 
     def getDerivs(self, **kwargs):
         '''
-        Computes model-image derivatives for each parameter.
+        Compute model-image derivatives for each parameter.
 
-        Returns a nested list of tuples:
+        Parameters
+        ----------
+        **kwargs
+            Passed through (merged with ``model_kwargs``) to the
+            per-image and per-source derivative methods.
 
-        allderivs: [
-           (param0:)  [  (deriv, img), (deriv, img), ... ],
-           (param1:)  [],
-           (param2:)  [  (deriv, img), ],
-        ]
+        Returns
+        -------
+        allderivs : list of list of tuple
+            A nested list of tuples, one outer entry per thawed
+            parameter::
 
-        Where the *derivs* are *Patch* objects and *imgs* are *Image*
-        objects.
+                allderivs = [
+                    (param0:)  [ (deriv, img), (deriv, img), ... ],
+                    (param1:)  [],
+                    (param2:)  [ (deriv, img), ],
+                ]
+
+            where the ``deriv`` entries are
+            :class:`~tractor_jax.patch.Patch` objects and the ``img``
+            entries are :class:`~tractor_jax.image.Image` objects.
         '''
         t = time.time()
         allderivs = []
@@ -364,21 +416,31 @@ class Tractor(MultiParams):
 
     def setModelMasks(self, masks, assumeMasks=True):
         '''
+        Set the "model masks" defining which pixels are evaluated.
+
         A "model mask" is used to define the pixels that are evaluated
         when computing the model patch for a source in an image.  This
         allows for consistent computation of derivatives and
         optimization, without introducing errors due to approximating
         the profiles differently given different parameter settings.
 
-        *masks*: if None, this masking is disabled, and normal
-        approximation rules apply.
+        Parameters
+        ----------
+        masks : list of dict or None
+            If None, this masking is disabled, and normal
+            approximation rules apply.
 
-        Otherwise, *masks* must be a list, with length equal to the
-        number of images.  Each list element must be a dictionary with
-        Source objects for keys and ModelMask objects for values.
-        Sources that do not touch the image should not exist in the
-        dictionary; all the ModelMask objects should be non-None and
-        non-empty.
+            Otherwise, `masks` must be a list, with length equal to
+            the number of images.  Each list element must be a
+            dictionary with Source objects for keys and
+            :class:`~tractor_jax.patch.ModelMask` objects for values.
+            Sources that do not touch the image should not exist in
+            the dictionary; all the ModelMask objects should be
+            non-None and non-empty.
+        assumeMasks : bool, optional
+            If True (default) and `masks` is not None, sources without
+            an entry in the mask dictionary are assumed not to overlap
+            the image.
         '''
         self.modelMasks = masks
         assert((masks is None) or (len(masks) == len(self.images)))
@@ -456,10 +518,29 @@ class Tractor(MultiParams):
 
     def getModelImage(self, img, srcs=None, sky=True, minsb=None, **kwargs):
         '''
-        Create a model image for the given "tractor image", including
-        the sky level.  If "srcs" is specified (a list of sources),
-        then only those sources will be rendered into the image.
-        Otherwise, the whole catalog will be.
+        Create a model image for the given "tractor image".
+
+        Parameters
+        ----------
+        img : :class:`~tractor_jax.image.Image` or int
+            The image to render the model for, or its index in this
+            Tractor's image list.
+        srcs : list of Source objects, optional
+            If specified, only those sources will be rendered into the
+            image.  Otherwise, the whole catalog will be.
+        sky : bool, optional
+            If True (default), include the sky level in the model.
+        minsb : float, optional
+            Minimum surface-brightness level; passed to the per-source
+            model-patch computation.
+        **kwargs
+            Additional arguments passed to the per-source model-patch
+            computation.
+
+        Returns
+        -------
+        mod : numpy.ndarray
+            The rendered model image.
         '''
         if _isint(img):
             img = self.getImage(img)
@@ -547,6 +628,13 @@ class Tractor(MultiParams):
     def getLogProbGPU(self, **kwargs):
         '''
         Return the posterior log PDF, evaluated at the current parameters.
+
+        Returns
+        -------
+        lnp : float
+            The log posterior (log prior plus log likelihood, the
+            latter computed on the GPU); ``-inf`` if the prior is
+            ``-inf`` or the result is NaN.
         '''
         import jax.numpy as cp
         lnprior = self.getLogPrior()
@@ -568,6 +656,12 @@ class Tractor(MultiParams):
     def getLogProb(self, **kwargs):
         '''
         Return the posterior log PDF, evaluated at the current parameters.
+
+        Returns
+        -------
+        lnp : float
+            The log posterior (log prior plus log likelihood); ``-inf``
+            if the prior is ``-inf`` or the result is NaN.
         '''
         lnprior = self.getLogPrior()
         if lnprior == -np.inf:

@@ -1,15 +1,12 @@
-"""
+"""Utility classes for the Tractor parameter framework.
+
+Low-level, useful implementations of ducks the Tractor needs: sets of
+parameters stored in lists and such.  This framework could be useful
+outside the Tractor context.
+
 This file is part of the Tractor project.
 Copyright 2011, 2012, 2013 Dustin Lang and David W. Hogg.
 Licensed under the GPLv2; see the file COPYING for details.
-
-`utils.py`
-===========
-
-Utility classes: low-level useful implementations of ducks the Tractor
-needs: sets of parameters stored in lists and such.  This framework
-could be useful outside the Tractor context.
-
 """
 from __future__ import print_function
 import numpy as np
@@ -75,11 +72,17 @@ def getClassName(obj):
 
 
 class _GaussianPriors(object):
-    '''
-    A class to support Gaussian priors in ParamList objects.  This
-    class holds the actual list of terms in the prior and computes the
-    required logProb and derivatives.  The GaussianPriorsMixin class
-    below glues this to the Params interface.
+    '''Support class for Gaussian priors in `ParamList` objects.
+
+    This class holds the actual list of terms in the prior and computes
+    the required log-probability and derivatives.  The
+    `GaussianPriorsMixin` class below glues this to the ``Params``
+    interface.
+
+    Parameters
+    ----------
+    param : ParamList-like
+        The parameter object the priors apply to.
     '''
 
     def __init__(self, param):
@@ -114,12 +117,26 @@ class _GaussianPriors(object):
         return [(i, mu, sigma) for name, i, mu, sigma in self.terms]
 
     def getDerivs(self, param=None):
-        '''
-        This has to return
-        r,c,v,b,mu
-        where
-        c is a list-of-ints
-        r,v,b,mu are each a list-of-iterables-of-{int,float}
+        '''Compute the sparse derivatives of the Gaussian prior terms.
+
+        Parameters
+        ----------
+        param : ParamList-like, optional
+            Parameter object to evaluate; defaults to the one given at
+            construction.
+
+        Returns
+        -------
+        r : list of iterable of int
+            Row indices.
+        c : list of int
+            Column indices.
+        v : list of iterable of float
+            Derivative values.
+        b : list of iterable of float
+            Right-hand-side values.
+        mu : list of iterable of float
+            Prior means.
         '''
         if param is None:
             param = self.param
@@ -146,9 +163,9 @@ class _GaussianPriors(object):
 
 
 class GaussianPriorsMixin(object):
-    '''
-    A mix-in class for ParamList-like classes, to make it easy to support
-    Gaussian priors.
+    '''Mix-in class for `ParamList`-like classes supporting Gaussian priors.
+
+    Makes it easy to attach Gaussian priors to named parameters.
     '''
 
     def __init__(self, *args, **kwargs):
@@ -159,15 +176,17 @@ class GaussianPriorsMixin(object):
         self.gpriors.add(name, mu, sigma, param=self)
 
     def getLogPriorDerivatives(self):
-        '''
-        Returns the log prior derivatives in a sparse matrix form as
-        required by the Tractor when optimizing.
+        '''Return the log prior derivatives in sparse matrix form.
 
-        You might want to override like this:
+        The form is as required by the Tractor when optimizing.
 
-        X = self.getGaussianLogPriorDerivatives()
-        Y = << other log prior derivatives >>
-        return [x+y for x,y in zip(X,Y)]
+        Notes
+        -----
+        You might want to override like this::
+
+            X = self.getGaussianLogPriorDerivatives()
+            Y = <<other log prior derivatives>>
+            return [x + y for x, y in zip(X, Y)]
         '''
         return self.getGaussianLogPriorDerivatives()
 
@@ -178,22 +197,34 @@ class GaussianPriorsMixin(object):
         return self.gpriors.getGaussianPriors()
 
     def isLegal(self):
-        '''
-        Returns True if the current parameter values are legal; ie,
-        have > 0 prior.
+        '''Return True if the current parameter values are legal.
+
+        Legal means having prior probability greater than zero.
+
+        Returns
+        -------
+        bool
+            True if the current parameter values are legal.
         '''
         return True
 
     def getLogPrior(self):
-        '''
-        Returns the log prior at the current parameter values.
+        '''Return the log prior at the current parameter values.
 
-        If you want to disallow entirely regions of parameter space,
-        override the isLegal() method; this method will then return
-        -np.inf .
+        Returns
+        -------
+        float
+            The log prior; ``-numpy.inf`` if the current parameters
+            are not legal.
+
+        Notes
+        -----
+        If you want to disallow entire regions of parameter space,
+        override the `isLegal` method; this method will then return
+        ``-numpy.inf``.
 
         If you need to do something more elaborate, you probably want
-        to add getGaussianLogPrior() to your fancy prior so that
+        to add `getGaussianLogPrior` to your fancy prior so that
         Gaussian priors still work.
         '''
         if not self.isLegal():
@@ -205,9 +236,7 @@ class GaussianPriorsMixin(object):
 
 
 class BaseParams(object):
-    '''
-    A basic implementation of the `Params` duck type.
-    '''
+    '''Basic implementation of the ``Params`` duck type.'''
 
     def __repr__(self):
         return getClassName(self) + repr(self.getParams())
@@ -226,17 +255,33 @@ class BaseParams(object):
     #    return hash(self.hashkey()) == hash(other.hashkey())
 
     def getParamNames(self):
-        ''' Returns a list containing the names of the parameters. '''
+        '''Return a list containing the names of the parameters.
+
+        Returns
+        -------
+        list of str
+            The parameter names.
+        '''
         return []
 
     def numberOfParams(self):
-        ''' Returns the number of parameters (ie, number of scalar
-        values).'''
+        '''Return the number of parameters.
+
+        Returns
+        -------
+        int
+            The number of parameters (i.e., number of scalar values).
+        '''
         return len(self.getParams())
 
     def getParams(self):
-        ''' Returns a *copy* of the current parameter values as an
-        iterable (eg, list)'''
+        '''Return a *copy* of the current parameter values.
+
+        Returns
+        -------
+        iterable of float
+            A copy of the current parameter values (e.g., a list).
+        '''
         return []
 
     def getAllParams(self):
@@ -246,8 +291,12 @@ class BaseParams(object):
         return self.getStepSizes(*args, **kwargs)
 
     def getStepSizes(self, *args, **kwargs):
-        '''
-        Returns "reasonable" step sizes for the parameters.
+        '''Return "reasonable" step sizes for the parameters.
+
+        Returns
+        -------
+        list of float
+            One step size per parameter.
         '''
         ss = getattr(self, 'stepsizes', None)
         if ss is not None:
@@ -261,13 +310,20 @@ class BaseParams(object):
         self.stepsizes = ss
 
     def setParams(self, p):
-        '''
-        NOTE, you MUST implement either "setParams" or "setParam",
-        because the default implementation causes an infinite loop!
+        '''Set the parameter values to the values in the iterable `p`.
 
-        Sets the parameter values to the values in the given iterable
-        `p`.  The base class implementation just calls `setParam` for
-        each element.
+        The base class implementation just calls `setParam` for each
+        element.
+
+        Parameters
+        ----------
+        p : iterable of float
+            New parameter values; must have length `numberOfParams`.
+
+        Notes
+        -----
+        You MUST implement either `setParams` or `setParam`, because
+        the default implementation causes an infinite loop!
         '''
         assert(len(p) == self.numberOfParams())
         for ii, pp in enumerate(p):
@@ -277,16 +333,24 @@ class BaseParams(object):
         return self.setParams(p)
 
     def setParam(self, i, p):
-        '''
-        NOTE, you MUST implement either "setParams" or "setParam",
-        because the default implementation causes an infinite loop!
+        '''Set parameter index `i` to new value `p`.
 
-        Sets parameter index `i` to new value `p`.
+        Parameters
+        ----------
+        i : int
+            Parameter index, in the range ``[0, numberOfParams())``.
+        p : float
+            New parameter value.
 
-        i: integer in the range [0, numberOfParams()).
-        p: float
+        Returns
+        -------
+        float
+            The old value of the parameter.
 
-        Returns the old value.
+        Notes
+        -----
+        You MUST implement either `setParams` or `setParam`, because
+        the default implementation causes an infinite loop!
         '''
         P = self.getParams()
         old = P[i]
@@ -294,9 +358,13 @@ class BaseParams(object):
         return old
 
     def getLogPrior(self):
-        '''
-        Return the prior PDF, evaluated at the current value
-        of the paramters.
+        '''Return the log prior, evaluated at the current parameter values.
+
+        Returns
+        -------
+        float
+            The log of the prior PDF, evaluated at the current value
+            of the parameters.
         '''
         return 0.
 
@@ -318,9 +386,14 @@ class BaseParams(object):
 
 @total_ordering
 class ScalarParam(BaseParams):
-    '''
-    Implementation of "Params" for a single scalar (float) parameter,
-    stored in self.val
+    '''Implementation of ``Params`` for a single scalar (float) parameter.
+
+    The value is stored in ``self.val``.
+
+    Parameters
+    ----------
+    val : float, optional
+        Initial parameter value (default 0).
     '''
     stepsize = 1.
     strformat = '%g'
@@ -399,18 +472,22 @@ def _isint(i):
 
 
 class NamedParams(object):
-    '''
-    A mix-in class for Params subclassers.
+    '''Mix-in class for ``Params`` subclassers.
 
     Allows names to be attached to parameters.
 
-    Also allows parameters to be set "Active" or "Inactive".
+    Also allows parameters to be set "Active" or "Inactive"
+    (thawed or frozen).
     '''
 
     @staticmethod
     def getNamedParams():
-        '''
-        Returns a dict of name->index mappings.
+        '''Return a dict of parameter name-to-index mappings.
+
+        Returns
+        -------
+        dict of str to int
+            Mapping from parameter name to parameter index.
         '''
         return {}
 
@@ -428,12 +505,18 @@ class NamedParams(object):
         self.liquid = [True] * self._numberOfThings()
 
     def getAllParams(self):
-        ''' Returns all params, regardless of thawed/frozen status. '''
+        '''Return all params, regardless of thawed/frozen status.'''
         raise RuntimeError(
             "Unimplemented getAllParams in " + str(self.__class__))
 
     def setAllParams(self, p):
-        ''' Returns all params, regardless of thawed/frozen status. '''
+        '''Set all params, regardless of thawed/frozen status.
+
+        Parameters
+        ----------
+        p : iterable of float
+            New values for all parameters.
+        '''
         raise RuntimeError(
             "Unimplemented setAllParams in " + str(self.__class__))
 
@@ -444,9 +527,14 @@ class NamedParams(object):
         return list(self._getLiquidArray(ss))
 
     def getAllStepSizes(self, *args, **kwargs):
-        '''
-        Returns "reasonable" step sizes for the parameters, ignoring
-        frozen/thawed state.
+        '''Return "reasonable" step sizes for all the parameters.
+
+        The frozen/thawed state is ignored.
+
+        Returns
+        -------
+        list of float
+            One step size per parameter.
         '''
         ss = getattr(self, 'stepsizes', None)
         if ss is not None:
@@ -511,8 +599,12 @@ class NamedParams(object):
         self._addNamedParams(alias=True, **d)
 
     def addNamedParams(self, **d):
-        '''
-        d: dict of (string, int) parameter names->indices
+        '''Add named parameters.
+
+        Parameters
+        ----------
+        **d : dict of str to int
+            Mapping of parameter names to indices.
         '''
         self._addNamedParams(alias=False, **d)
 
@@ -523,8 +615,13 @@ class NamedParams(object):
         return self._setThing(self.namedparams[nm], v)
 
     def _iterNamesAndVals(self):
-        '''
-        Yields  (name,val) tuples, where "name" is None if the parameter is not named.
+        '''Yield ``(name, val)`` tuples for all parameters.
+
+        Yields
+        ------
+        tuple of (str or None, object)
+            The parameter name (None if the parameter is not named)
+            and its value.
         '''
         pvals = self._getThings()
         #print('_iterNamesAndVals: pvals types', [type(x) for x in pvals])
@@ -582,8 +679,19 @@ class NamedParams(object):
         self.thawParams(*args)
 
     def thawPathsTo(self, *pnames):
-        '''
-        This is a (non-recursive) basic implementation
+        '''Thaw the parameters with the given names.
+
+        This is a (non-recursive) basic implementation.
+
+        Parameters
+        ----------
+        *pnames : str
+            Names of the parameters to thaw.
+
+        Returns
+        -------
+        bool
+            True if any parameter was thawed.
         '''
         thawed = False
         for nm in pnames:
@@ -651,25 +759,48 @@ class NamedParams(object):
         return self.liquid[i]
 
     def getLiquidIndexOfIndex(self, i):
-        '''
-        Return the index, among the thawed parameters, of the given
-        parameter index (in all parameters).  Returns -1 if the
-        parameter is frozen.
+        '''Return the thawed-parameter index of a full-parameter index.
+
+        Parameters
+        ----------
+        i : int
+            Parameter index among all parameters.
+
+        Returns
+        -------
+        int
+            The index among the thawed parameters, or -1 if the
+            parameter is frozen.
         '''
         if not self.liquid[i]:
             return -1
         return sum(self.liquid[:i])
 
     def getLiquidIndex(self, paramname):
-        '''
-        Returns the index, among the thawed parameters, of the given
-        named parameter.  Returns -1 if the parameter is frozen.
-        Raises KeyError if the parameter is not found.
+        '''Return the thawed-parameter index of the given named parameter.
 
-        For example, if names 'a','c', and 'e' are thawed,
+        Parameters
+        ----------
+        paramname : str
+            Name of the parameter.
 
-        getLiquidIndex('c') returns 1
-        getLiquidIndex('b') returns -1
+        Returns
+        -------
+        int
+            The index among the thawed parameters, or -1 if the
+            parameter is frozen.
+
+        Raises
+        ------
+        KeyError
+            If the parameter is not found.
+
+        Examples
+        --------
+        If names 'a', 'c', and 'e' are thawed::
+
+            getLiquidIndex('c') returns 1
+            getLiquidIndex('b') returns -1
         '''
         i = self.getNamedParamIndex(paramname)
         if i is None:
@@ -702,7 +833,23 @@ class NamedParams(object):
         return sum(self.liquid)
 
     def _indexLiquid(self, j):
-        ''' Returns the raw index of the i-th liquid parameter.'''
+        '''Return the raw index of the `j`-th liquid parameter.
+
+        Parameters
+        ----------
+        j : int
+            Index among the liquid (thawed) parameters.
+
+        Returns
+        -------
+        int
+            The raw index among all parameters.
+
+        Raises
+        ------
+        IndexError
+            If `j` exceeds the number of liquid parameters.
+        '''
         for i, v in enumerate(self.liquid):
             if v:
                 if j == 0:
@@ -711,7 +858,14 @@ class NamedParams(object):
         raise IndexError
 
     def _indexBoth(self):
-        ''' Yields (i,j), for i, the liquid parameter and j, the raw index. '''
+        '''Yield ``(i, j)`` index pairs for liquid parameters.
+
+        Yields
+        ------
+        tuple of (int, int)
+            ``i`` is the liquid-parameter index and ``j`` is the raw
+            index among all parameters.
+        '''
         i = 0
         for j, v in enumerate(self.liquid):
             if v:
@@ -720,8 +874,12 @@ class NamedParams(object):
 
 
 class ParamList(GaussianPriorsMixin, NamedParams, BaseParams):
-    '''
-    An implementation of Params that holds values in a list.
+    '''Implementation of ``Params`` that holds values in a list.
+
+    Parameters
+    ----------
+    *args : float
+        Initial parameter values.
     '''
 
     def __init__(self, *args):
@@ -792,8 +950,12 @@ class ParamList(GaussianPriorsMixin, NamedParams, BaseParams):
         return self._countLiquid()
 
     def getParams(self):
-        '''
-        Returns a *copy* of the current active parameter values (list)
+        '''Return a *copy* of the current active parameter values.
+
+        Returns
+        -------
+        list of float
+            A copy of the current active (thawed) parameter values.
         '''
         return list(self._getLiquidArray(self._getThings()))
 
@@ -818,11 +980,11 @@ class ParamList(GaussianPriorsMixin, NamedParams, BaseParams):
         return list(self._getLiquidArray(self.maxstep))
 
     def __len__(self):
-        ''' len(): of liquid params '''
+        '''Return the number of liquid (thawed) params.'''
         return self.numberOfParams()
 
     def __getitem__(self, i):
-        ''' index into liquid params '''
+        '''Index into the liquid (thawed) params.'''
         return self.getParam(i)
 
     # iterable -- of liquid params.
@@ -851,7 +1013,7 @@ class ParamList(GaussianPriorsMixin, NamedParams, BaseParams):
 class ArithmeticParams(object):
 
     def __add__(self, other):
-        ''' + '''
+        '''Element-wise parameter addition (``+``).'''
         res = self.copy()
         if hasattr(other, 'getAllParams'):
             res.setAllParams([x + y for x, y in zip(res.getAllParams(),
@@ -861,7 +1023,7 @@ class ArithmeticParams(object):
         return res
 
     def __sub__(self, other):
-        ''' - '''
+        '''Element-wise parameter subtraction (``-``).'''
         res = self.copy()
         if hasattr(other, 'getAllParams'):
             res.setAllParams([x - y for x, y in zip(res.getAllParams(),
@@ -871,7 +1033,7 @@ class ArithmeticParams(object):
         return res
 
     def __mul__(self, other):
-        ''' *= '''
+        '''Element-wise parameter multiplication (``*``).'''
         res = self.copy()
         if hasattr(other, 'getAllParams'):
             res.setAllParams([x * y for x, y in zip(res.getAllParams(),
@@ -881,7 +1043,7 @@ class ArithmeticParams(object):
         return res
 
     def __div__(self, other):
-        ''' /= '''
+        '''Element-wise parameter division (``/``).'''
         res = self.copy()
         if hasattr(other, 'getAllParams'):
             res.setAllParams([x / y for x, y in zip(res.getAllParams(),
@@ -891,7 +1053,7 @@ class ArithmeticParams(object):
         return res
 
     def __iadd__(self, other):
-        ''' += '''
+        '''In-place element-wise parameter addition (``+=``).'''
         if hasattr(other, 'getAllParams'):
             self.setAllParams([x + y for x, y in zip(self.getAllParams(),
                                                      other.getAllParams())])
@@ -900,7 +1062,7 @@ class ArithmeticParams(object):
         return self
 
     def __isub__(self, other):
-        ''' -= '''
+        '''In-place element-wise parameter subtraction (``-=``).'''
         if hasattr(other, 'getAllParams'):
             self.setAllParams([x - y for x, y in zip(self.getAllParams(),
                                                      other.getAllParams())])
@@ -909,7 +1071,7 @@ class ArithmeticParams(object):
         return self
 
     def __imul__(self, other):
-        ''' *= '''
+        '''In-place element-wise parameter multiplication (``*=``).'''
         if hasattr(other, 'getAllParams'):
             self.setAllParams([x * y for x, y in zip(self.getAllParams(),
                                                      other.getAllParams())])
@@ -918,7 +1080,7 @@ class ArithmeticParams(object):
         return self
 
     def __idiv__(self, other):
-        ''' /= '''
+        '''In-place element-wise parameter division (``/=``).'''
         if hasattr(other, 'getAllParams'):
             self.setAllParams([x / y for x, y in zip(self.getAllParams(),
                                                      other.getAllParams())])
@@ -933,8 +1095,12 @@ class ArithmeticParams(object):
 
 
 class MultiParams(BaseParams, NamedParams):
-    '''
-    An implementation of Params that combines component sub-Params.
+    '''Implementation of ``Params`` that combines component sub-``Params``.
+
+    Parameters
+    ----------
+    *args : Params-like
+        The component sub-``Params`` objects.
     '''
 
     def __init__(self, *args):
@@ -1052,9 +1218,13 @@ class MultiParams(BaseParams, NamedParams):
                 yield s
 
     def _enumerateActiveSubs(self):
-        '''
-        Yields *index-ignoring-freeze-state*,sub
-        for unfrozen subs.
+        '''Yield ``(index, sub)`` pairs for unfrozen subs.
+
+        Yields
+        ------
+        tuple of (int, Params-like)
+            The index (ignoring freeze state) and the sub-``Params``
+            object, for each unfrozen sub.
         '''
         for i, s in self._enumerateLiquidArray(self.subs):
             # Should 'subs' be allowed to contain None values?
@@ -1137,8 +1307,12 @@ class MultiParams(BaseParams, NamedParams):
         return n
 
     def numberOfParams(self):
-        '''
-        Count unpinned (active) params.
+        '''Count unpinned (active) params.
+
+        Returns
+        -------
+        int
+            The number of active parameters.
         '''
         return sum(s.numberOfParams() for s in self._getActiveSubs())
 
@@ -1147,8 +1321,13 @@ class MultiParams(BaseParams, NamedParams):
         return cp.asarray(self.getParams())
 
     def getParams(self):
-        '''
-        Returns a *copy* of the current active parameter values (as a flat list)
+        '''Return a *copy* of the current active parameter values.
+
+        Returns
+        -------
+        list of float
+            A copy of the current active parameter values, as a flat
+            list.
         '''
         p = []
         for s in self._getActiveSubs():
@@ -1269,8 +1448,14 @@ class MultiParams(BaseParams, NamedParams):
         return cp.asarray(rA), cp.asarray(cA), cp.asarray(vA), cp.asarray(pb), cp.asarray(mub)
 
     def getLogPriorDerivatives(self):
-        """
-        Return prior formatted so that it can be used in least square fitting
+        """Return the prior derivatives formatted for least-squares fitting.
+
+        Returns
+        -------
+        tuple or None
+            A tuple ``(rA, cA, vA, pb, mub)`` of the combined sparse
+            prior derivatives of the active subs, or None if no active
+            sub contributes prior derivatives.
         """
         rA, cA, vA, pb, mub = [], [], [], [], []
 
@@ -1298,8 +1483,12 @@ class MultiParams(BaseParams, NamedParams):
 
 
 class NpArrayParams(ParamList):
-    '''
-    An implementation of Params that holds values in an np.ndarray
+    '''Implementation of ``Params`` that holds values in a `numpy.ndarray`.
+
+    Parameters
+    ----------
+    a : array_like
+        Initial parameter values.
     '''
 
     def __init__(self, a):
@@ -1323,25 +1512,33 @@ class NpArrayParams(ParamList):
 
 
 class MogParams(ParamList):
-    '''
-    A class that wraps a mixture_profile.MixtureOfGaussians class as a
-    Params object.
+    '''Wrap a ``mixture_profiles.MixtureOfGaussians`` as a ``Params`` object.
 
-    NOTE that this only works for 2-D Gaussians at present.
+    Notes
+    -----
+    This only works for 2-D Gaussians at present.
     '''
 
     def __init__(self, *args):
-        '''
-        MogParams(amp, mean, var)
+        '''Initialize from mixture-of-Gaussians components.
 
-        or
+        Can be called either as::
 
-        MogParams(a0,a1,a2, mx0,my0,mx1,my1,mx2,my2,
-                  vxx0,vyy0,vxy0, vxx1,vyy1,vxy1, vxx2,vyy2,vxy2)
+            MogParams(amp, mean, var)
 
-        amp:  np array (size K) of Gaussian amplitudes
-        mean: np array (size K,2) of means
-        var:  np array (size K,2,2) of variances
+        or with 6 * K flat scalar arguments::
+
+            MogParams(a0,a1,a2, mx0,my0,mx1,my1,mx2,my2,
+                      vxx0,vyy0,vxy0, vxx1,vyy1,vxy1, vxx2,vyy2,vxy2)
+
+        Parameters
+        ----------
+        amp : numpy.ndarray
+            Array (size K) of Gaussian amplitudes.
+        mean : numpy.ndarray
+            Array (size K, 2) of means.
+        var : numpy.ndarray
+            Array (size K, 2, 2) of variances.
         '''
         from tractor import mixture_profiles as mp
 

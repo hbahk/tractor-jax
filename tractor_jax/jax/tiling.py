@@ -4,21 +4,37 @@ from tractor_jax.image import Image
 from tractor_jax.sky import ConstantSky
 
 def tile_image(image, tile_size, halo):
-    """
-    Splits an image into tiles with halo padding.
+    """Split an image into tiles with halo padding.
 
-    Args:
-        image: tractor.Image object.
-        tile_size: int, size of the core tile (e.g. 256).
-        halo: int, padding to add on each side.
+    Covers the image with a grid of core tiles of size ``tile_size``,
+    each extended by ``halo`` pixels on every side. Regions of the halo
+    that fall outside the original image are zero-padded (data and
+    inverse variance). Each tile carries a shifted WCS whose pixel
+    ``(0, 0)`` corresponds to pixel ``(x_start, y_start)`` of the
+    original image; the PSF and sky models are shared with the parent
+    image.
 
-    Returns:
-        List of (tile_image, metadata).
-        metadata is a dict containing:
-            'x0', 'y0': Origin of the tile core in original image.
-            'core_w', 'core_h': Size of the tile core.
-            'pad_left', 'pad_right', 'pad_top', 'pad_bottom': Padding applied.
-            'x_start', 'y_start', 'x_end', 'y_end': Extent in original image.
+    Parameters
+    ----------
+    image : tractor_jax.image.Image
+        Input image object.
+    tile_size : int
+        Size of the core tile in pixels (e.g. 256).
+    halo : int
+        Padding to add on each side, in pixels.
+
+    Returns
+    -------
+    list of tuple
+        List of ``(tile_image, metadata)`` pairs. ``tile_image`` is a
+        ``tractor_jax.image.Image``; ``metadata`` is a dict containing:
+
+        - ``'x0'``, ``'y0'`` : origin of the tile core in the original
+          image.
+        - ``'core_w'``, ``'core_h'`` : size of the tile core.
+        - ``'halo'`` : the halo padding applied on each side.
+        - ``'x_start'``, ``'y_start'``, ``'x_end'``, ``'y_end'`` :
+          extent of the padded tile in original-image coordinates.
     """
     H, W = image.shape
     tiles = []
@@ -103,12 +119,21 @@ def tile_image(image, tile_size, halo):
     return tiles
 
 def project_catalog(catalog, wcs):
-    """
-    Projects all sources in the catalog to pixel coordinates using the given WCS.
+    """Project all catalog sources to pixel coordinates with a given WCS.
 
-    Returns:
-        numpy array of shape (N, 2) containing (x, y) pixel coordinates.
-        Rows corresponding to sources that failed projection will have NaN.
+    Parameters
+    ----------
+    catalog : iterable
+        Iterable of source objects providing ``getPosition()``.
+    wcs
+        WCS object providing ``positionToPixel(position, source)``.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of shape ``(N, 2)`` containing ``(x, y)`` pixel
+        coordinates. Rows corresponding to sources that failed
+        projection are set to NaN.
     """
     positions = []
     # Try to verify if we can vectorize
@@ -124,9 +149,32 @@ def project_catalog(catalog, wcs):
     return np.array(positions)
 
 def filter_sources_by_box(positions, x_min, x_max, y_min, y_max, margin=0):
-    """
-    Returns indices of positions that fall within the box [x_min, x_max) x [y_min, y_max)
-    padded by margin.
+    """Select positions falling within a (margin-padded) bounding box.
+
+    Returns the indices of positions inside the half-open box
+    ``[x_min - margin, x_max + margin) x [y_min - margin, y_max + margin)``.
+    Positions containing NaN (sources that failed projection) are
+    excluded.
+
+    Parameters
+    ----------
+    positions : numpy.ndarray
+        Array of shape ``(N, 2)`` of ``(x, y)`` pixel coordinates.
+    x_min : float
+        Lower x bound of the box.
+    x_max : float
+        Upper x bound of the box.
+    y_min : float
+        Lower y bound of the box.
+    y_max : float
+        Upper y bound of the box.
+    margin : float, optional
+        Padding applied to each side of the box (default 0).
+
+    Returns
+    -------
+    numpy.ndarray
+        Integer indices of the positions inside the padded box.
     """
     x = positions[:, 0]
     y = positions[:, 1]

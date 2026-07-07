@@ -2,12 +2,21 @@ import numpy as np
 
 class ModelMask(object):
     def __init__(self, x0, y0, *args):
-        '''
-        ModelMask(x0, y0, w, h)
-        ModelMask(x0, y0, mask)
+        '''Create a ModelMask.
 
-        *mask* is assumed to be a binary image, True for pixels we're
-         interested in.
+        Can be called as ``ModelMask(x0, y0, w, h)`` or
+        ``ModelMask(x0, y0, mask)``.
+
+        Parameters
+        ----------
+        x0 : int
+            X pixel coordinate of the mask origin.
+        y0 : int
+            Y pixel coordinate of the mask origin.
+        *args
+            Either the width `w` and height `h` (two ints), or a
+            single `mask` array.  `mask` is assumed to be a binary
+            image, True for pixels we're interested in.
         '''
         self.x0 = x0
         self.y0 = y0
@@ -69,11 +78,11 @@ def add_patches(pa, pb):
 
 
 class Patch(object):
-    '''
-    An image patch; a subimage.  In the Tractor we use these to hold
-    synthesized (ie, model) images.  The patch is a rectangular grid
-    of pixels and it knows its offset (2-d position) in some larger
-    image.
+    '''An image patch; a subimage.
+
+    In the Tractor we use these to hold synthesized (ie, model)
+    images.  The patch is a rectangular grid of pixels and it knows
+    its offset (2-d position) in some larger image.
 
     This class overloads arithmetic operations (like add and multiply)
     relevant to synthetic image patches.
@@ -205,9 +214,18 @@ class Patch(object):
         return Patch(self.x0, self.y0, self.patch.copy())
 
     def getExtent(self, margin=0):
-        '''
-        Return (x0, x1, y0, y1) of the region covered by this patch;
-        NON-inclusive upper bounds, ie, [x0, x1), [y0, y1).
+        '''Return the extent of the region covered by this patch.
+
+        Parameters
+        ----------
+        margin : int, optional
+            Margin to add around the patch extent, in pixels.
+
+        Returns
+        -------
+        tuple of int
+            ``(x0, x1, y0, y1)`` of the region covered by this patch;
+            NON-inclusive upper bounds, ie, ``[x0, x1)``, ``[y0, y1)``.
         '''
         (h, w) = self.shape
         return (self.x0 - margin, self.x0 + w + margin,
@@ -331,11 +349,20 @@ class Patch(object):
                 slice(self.x0, self.x0 + pw))
 
     def getSlices(self, shape):
-        '''
-        shape = (H,W).
+        '''Return slices yielding the overlapping regions of this Patch
+        and an image of the given shape.
 
-        Returns (spatch, sparent), slices that yield the overlapping regions
-        in this Patch and the given image.
+        Parameters
+        ----------
+        shape : tuple of int
+            The image shape, ``(H, W)``.
+
+        Returns
+        -------
+        spatch : tuple of slice
+            Slices into this Patch.
+        sparent : tuple of slice
+            Slices into the given image.
         '''
         from tractor_jax.miscutils import get_overlapping_region
         (ph, pw) = self.shape

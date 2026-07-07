@@ -4,16 +4,14 @@ from tractor_jax import ducks
 
 
 class NullSky(BaseParams, ducks.Sky):
-    '''
-    A Sky implementation that does nothing; the background level is
+    '''A Sky implementation that does nothing; the background level is
     zero.
     '''
     pass
 
 
 class ConstantSky(ScalarParam, ducks.ImageCalibration):
-    '''
-    A simple constant sky level across the whole image.
+    '''A simple constant sky level across the whole image.
 
     This sky object has one parameter, the constant level.
 
@@ -42,8 +40,12 @@ class ConstantSky(ScalarParam, ducks.ImageCalibration):
         self.val -= con
 
     def scale(self, s):
-        '''
-        Scales this sky model by a factor of *s*.
+        '''Scale this sky model by a factor of `s`.
+
+        Parameters
+        ----------
+        s : float
+            The scale factor.
         '''
         self.val *= s
 

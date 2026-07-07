@@ -16,10 +16,11 @@ class BasicSource(ducks.Source):
 
 
 class SingleProfileSource(BasicSource):
-    '''
-    A mix-in class for Source objects that have a single profile, eg, PointSources,
-    Dev, Exp, and Sersic galaxies, and also FixedCompositeGalaxy (surprising but true)
-    but not CompositeGalaxy.
+    '''A mix-in class for Source objects that have a single profile.
+
+    Examples include PointSources, Dev, Exp, and Sersic galaxies, and
+    also FixedCompositeGalaxy (surprising but true) but not
+    CompositeGalaxy.
     '''
 
     def getBrightness(self):
@@ -64,14 +65,19 @@ class SingleProfileSource(BasicSource):
 
 
 class PointSource(MultiParams, SingleProfileSource):
-    '''
-    An implementation of a point source, characterized by its position
-    and brightness.
+    '''An implementation of a point source, characterized by its
+    position and brightness.
     '''
 
     def __init__(self, pos, br):
-        '''
-        PointSource(pos, brightness)
+        '''Create a PointSource.
+
+        Parameters
+        ----------
+        pos : Position
+            The position of the source.
+        br : Brightness
+            The brightness of the source.
         '''
         super(PointSource, self).__init__(pos, br)
         # if not None, fixedRadius determines the size of unit-flux
@@ -142,8 +148,22 @@ class PointSource(MultiParams, SingleProfileSource):
 
     def getParamDerivatives(self, img, fastPosDerivs=True, modelMask=None,
                             **kwargs):
-        '''
-        returns [ Patch, Patch, ... ] of length numberOfParams().
+        '''Return the derivatives of this source in the given image.
+
+        Parameters
+        ----------
+        img : Image
+            The image in which to evaluate the derivatives.
+        fastPosDerivs : bool, optional
+            If True (and the position is not frozen), use the PSF's
+            analytic pixel derivatives rather than finite differences.
+        modelMask : ModelMask, optional
+            Describes the rectangular region of interest (image pixels).
+
+        Returns
+        -------
+        list of Patch
+            ``[ Patch, Patch, ... ]`` of length ``numberOfParams()``.
         '''
         # Short-cut the case where we're only fitting fluxes, and the
         # band of the image is not being fit.

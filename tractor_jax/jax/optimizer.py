@@ -34,7 +34,21 @@ from tractor_jax.jax.tiling import tile_image, project_catalog, filter_sources_b
 
 def compute_image_shapes(images, stats):
     """
-    Computes required target shape for each image.
+    Compute the required target-grid shape for each image.
+
+    Parameters
+    ----------
+    images : list
+        Image objects with a ``shape`` attribute giving (H, W).
+    stats : dict
+        Global statistics from `compute_target_stats`, with keys
+        ``max_factor``, ``fft_pad_h_lr`` and ``fft_pad_w_lr``.
+
+    Returns
+    -------
+    shapes : list of tuple of int
+        Per-image ``(target_h, target_w)``: the FFT-padded input shape
+        scaled by ``max_factor``.
     """
     max_factor = stats["max_factor"]
     fft_pad_h_lr = stats["fft_pad_h_lr"]
@@ -62,8 +76,33 @@ def assign_buckets(
     max_buckets=5
 ):
     """
-    Assigns images to buckets based on required shapes.
-    Returns a dict: { bucket_shape: [img_indices] }
+    Assign images to shape buckets based on their required grid shapes.
+
+    Parameters
+    ----------
+    required_shapes : list of tuple of int
+        Required (H, W) target grid shape per image.
+    bucket_sizes : list, optional
+        Allowed bucket sizes when ``bucket_mode="fixed"``; entries may be
+        ints (square buckets) or (H, W) tuples. Defaults to powers of two
+        from 32 to 4096.
+    bucket_mode : {"auto", "fixed"}, optional
+        "auto" derives the buckets from the shape distribution; "fixed"
+        uses ``bucket_sizes`` as the allowed grid.
+    bucket_shape_mode : {"square", "independent"}, optional
+        Whether auto-mode buckets are forced square or may have independent
+        height and width.
+    bucket_base : int, optional
+        Quantization base: required shapes are rounded up to multiples of
+        this value.
+    max_buckets : int, optional
+        Maximum number of distinct buckets in auto mode.
+
+    Returns
+    -------
+    bucket_map : dict
+        Mapping ``{bucket_shape: [img_indices]}``, where each bucket shape
+        is an (H, W) tuple large enough for all its assigned images.
     """
 
     # 1. Determine available buckets
@@ -162,7 +201,28 @@ def assign_buckets(
 
 def compute_target_stats(images, oversample_rendering=False):
     """
-    Computes global statistics for a set of images to determine required grid sizes.
+    Compute global statistics for a set of images to size the rendering grids.
+
+    Determines the common oversampling factor and the FFT padding (derived
+    from the PSF support) shared by every image in the set.
+
+    Parameters
+    ----------
+    images : list
+        Image objects; each PSF (via ``getPsf``) is inspected for its
+        sampling and effective radius / kernel support.
+    oversample_rendering : bool, optional
+        If True, undersampled ``PixelizedPSF`` instances (sampling < 1)
+        raise the common oversampling factor so rendering happens at PSF
+        resolution.
+
+    Returns
+    -------
+    stats : dict
+        Keys ``max_factor`` (common oversampling factor), ``max_psf_h`` and
+        ``max_psf_w`` (maximum PSF support in target pixels), and
+        ``fft_pad_h_lr`` and ``fft_pad_w_lr`` (padding in input-resolution
+        pixels).
     """
     max_factor = 1.0
     # First pass: max_factor
@@ -253,25 +313,42 @@ def extract_model_data(
     img_source_indices=None
 ):
     """
-    Extracts all necessary data from a Tractor object for JAX optimization,
-    grouping sources into batches and stacking image data with padding for vectorized rendering.
+    Extract all data needed for JAX optimization from a Tractor object.
 
-    Args:
-        tractor_obj: Tractor object.
-        oversample_rendering: If True, handles oversampled PixelizedPSF by rendering at high resolution.
-        fit_background: If True, includes background level in optimization parameters.
-        fixed_target_shape: (H, W) tuple. If provided, forces the target grid size to this shape.
-                            Useful for bucketing.
-        fixed_max_factor: float. Required if fixed_target_shape is provided.
-                          The oversampling factor assumed for the bucket.
+    Groups sources into batches and stacks image data with padding for
+    vectorized rendering.
 
-    Returns:
-        images_data: dict containing stacked image data (data, invvar, psf).
-                     Shapes are (N_img, max_H, max_W) or (N_img, ...).
-        batches: dict containing batched source data.
-                 Shapes are (N_img, N_src, ...).
-        initial_fluxes: JAX array of initial fluxes of shape (N_img, N_params).
-                        Sources are broadcast/shared, background is per-image.
+    Parameters
+    ----------
+    tractor_obj : Tractor
+        Tractor object providing ``images`` and ``catalog``.
+    oversample_rendering : bool, optional
+        If True, handles oversampled ``PixelizedPSF`` by rendering at high
+        resolution.
+    fit_background : bool, optional
+        If True, includes a per-image constant background level in the
+        optimization parameters.
+    fixed_target_shape : tuple of int, optional
+        (H, W) tuple. If provided, forces the target grid size to this
+        shape. Useful for bucketing.
+    fixed_max_factor : float, optional
+        The oversampling factor assumed for the bucket. Required if
+        ``fixed_target_shape`` is provided.
+    img_source_indices : sequence or dict, optional
+        Per-image collection of catalog indices to include; if None, all
+        supported catalog sources are used for every image.
+
+    Returns
+    -------
+    images_data : dict
+        Stacked image data (``data``, ``invvar``, ``psf``). Shapes are
+        (N_img, max_H, max_W) or (N_img, ...).
+    batches : dict
+        Batched source data. Shapes are (N_img, N_src, ...).
+    initial_fluxes : jax.numpy.ndarray
+        Initial fluxes of shape (N_img, N_params). Source fluxes are
+        broadcast/shared across images; the background parameter (if fit)
+        is per-image.
     """
     from tractor import ConstantSky
     images = tractor_obj.images
@@ -724,28 +801,44 @@ def extract_model_data_direct(
     profile_lookup_fn=None,
 ):
     """
-    Build JAX arrays directly from raw frame data and a catalog table,
-    bypassing Tractor/Image/Source object construction.
+    Build JAX arrays directly from raw frame data and a catalog table.
 
-    Args:
-        frames: list of dicts, each with keys:
-            'data': 2-D ndarray, background-subtracted image
-            'invvar': 2-D ndarray, inverse-variance
-            'psf': 2-D ndarray, pixelized PSF image
-            'wcs': astropy.wcs.WCS object
-        catalog_table: astropy Table (or similar) with columns:
-            'ra', 'dec', 'shape_r', 'shape_ab', 'shape_phi', 'sersic'
-            (shape_r == 0 marks point sources).
-        psf_sampling: float, pixel scale of PSF relative to science pixel
-            (e.g. 0.2 means PSF is oversampled 5x).
-        fit_background: bool.
-        fixed_target_shape: (H, W) for the padded rendering grid.
-        fixed_max_factor: float, oversampling factor.
-        profile_lookup_fn: callable(sersic_index) -> MoG object with
-            .amp, .mean, .var attributes.  Required if catalog has galaxies.
+    Bypasses Tractor/Image/Source object construction.
 
-    Returns:
-        Same (images_data, batches, initial_fluxes) tuple as extract_model_data.
+    Parameters
+    ----------
+    frames : list of dict
+        One dict per frame with keys ``'data'`` (2-D ndarray,
+        background-subtracted image), ``'invvar'`` (2-D ndarray,
+        inverse-variance), ``'psf'`` (2-D ndarray, pixelized PSF image) and
+        ``'wcs'`` (`astropy.wcs.WCS` object).
+    catalog_table : astropy.table.Table or similar
+        Catalog with columns ``'ra'``, ``'dec'``, ``'shape_r'``,
+        ``'shape_ab'``, ``'shape_phi'`` and ``'sersic'``
+        (``shape_r == 0`` marks point sources).
+    psf_sampling : float
+        Pixel scale of the PSF relative to the science pixel (e.g. 0.2
+        means the PSF is oversampled 5x).
+    fit_background : bool, optional
+        If True, includes a per-image constant background parameter.
+    fixed_target_shape : tuple of int, optional
+        (H, W) for the padded rendering grid.
+    fixed_max_factor : float, optional
+        Oversampling factor.
+    profile_lookup_fn : callable, optional
+        ``profile_lookup_fn(sersic_index)`` returning a MoG object with
+        ``.amp``, ``.mean``, ``.var`` attributes. Required if the catalog
+        has galaxies.
+
+    Returns
+    -------
+    images_data : dict
+        Stacked image data, as returned by `extract_model_data`.
+    batches : dict
+        Batched source data, as returned by `extract_model_data`.
+    initial_fluxes : jax.numpy.ndarray
+        Initial fluxes of shape (N_img, N_params), as returned by
+        `extract_model_data`.
     """
     from astropy.coordinates import SkyCoord
 
@@ -972,7 +1065,40 @@ def extract_model_data_direct(
 
 def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape, sampling_factor=None, mask=None):
     """
-    Renders a batch of Point Sources.
+    Render a batch of point sources onto a single image grid.
+
+    Parameters
+    ----------
+    fluxes : jax.numpy.ndarray
+        Per-source fluxes, shape (N_src,).
+    pos_pix : jax.numpy.ndarray
+        Pixel positions (x, y) per source, shape (N_src, 2).
+    psf_data : dict
+        Per-image PSF data with keys ``type_code``, ``sampling``, ``fft``,
+        ``amp``, ``mean`` and ``var``.
+    img_shape : tuple of int
+        Output shape (H, W) at native image resolution.
+    sampling_factor : float, optional
+        High-resolution oversampling factor; if None, taken from
+        ``psf_data['sampling']``.
+    mask : jax.numpy.ndarray, optional
+        Per-source validity mask (1 for real sources, 0 for padding);
+        multiplied into the fluxes.
+
+    Returns
+    -------
+    jax.numpy.ndarray
+        Combined model image of shape ``img_shape``.
+
+    Notes
+    -----
+    The PSF-type branch (pixelized/FFT vs. Gaussian mixture) is selected
+    with ``jnp.where`` rather than ``lax.cond``: under ``vmap`` a
+    batched-predicate ``cond`` lowers to a select over both branches, which
+    XLA:GPU miscompiles for the FFT branch (stamps corrupted at the
+    tens-of-percent level; jax 0.5.3). Computing both branches and
+    selecting with ``where`` is what the batched cond executed anyway, and
+    compiles correctly on CPU and GPU.
     """
     if sampling_factor is not None:
         s = sampling_factor
@@ -1037,7 +1163,41 @@ def render_batch_galaxies(
     fluxes, pos_pix, wcs_cd_inv, shapes, profiles, psf_data, img_shape, sampling_factor=None, mask=None
 ):
     """
-    Renders a batch of Galaxies.
+    Render a batch of galaxies onto a single image grid.
+
+    Parameters
+    ----------
+    fluxes : jax.numpy.ndarray
+        Per-source fluxes, shape (N_src,).
+    pos_pix : jax.numpy.ndarray
+        Pixel positions (x, y) per source, shape (N_src, 2).
+    wcs_cd_inv : jax.numpy.ndarray
+        Inverse CD (world-to-pixel) matrices per source, shape
+        (N_src, 2, 2).
+    shapes : jax.numpy.ndarray
+        Galaxy shape parameters (re, ab, phi) per source, shape (N_src, 3).
+    profiles : dict
+        Galaxy mixture-of-Gaussians profiles with keys ``amp``, ``mean``
+        and ``var``.
+    psf_data : dict
+        Per-image PSF data (see `render_batch_point_sources`).
+    img_shape : tuple of int
+        Output shape (H, W) at native image resolution.
+    sampling_factor : float, optional
+        High-resolution oversampling factor; if None, taken from
+        ``psf_data['sampling']``.
+    mask : jax.numpy.ndarray, optional
+        Per-source validity mask; multiplied into the fluxes.
+
+    Returns
+    -------
+    jax.numpy.ndarray
+        Combined model image of shape ``img_shape``.
+
+    Notes
+    -----
+    See `render_batch_point_sources` for why the PSF-type branch uses
+    ``jnp.where`` instead of a batched-predicate ``lax.cond``.
     """
     if sampling_factor is not None:
         s = sampling_factor
@@ -1103,8 +1263,29 @@ def render_batch_galaxies(
 
 def prepare_sharded_inputs(images_data, batches, initial_fluxes):
     """
-    Distributes data across available devices using NamedSharding (GSPMD).
-    Shards image-based arrays along axis 0 and replicates shared source parameters.
+    Distribute data across available devices using NamedSharding (GSPMD).
+
+    Shards image-based arrays along axis 0 (the image batch axis) and
+    replicates shared source parameters on all devices.
+
+    Parameters
+    ----------
+    images_data : dict
+        Stacked image data; every leaf has shape (N_img, ...).
+    batches : dict
+        Batched source data; per-image leaves (``pos_pix``,
+        ``wcs_cd_inv``) are sharded, the others replicated.
+    initial_fluxes : jax.numpy.ndarray
+        Initial fluxes of shape (N_img, N_params).
+
+    Returns
+    -------
+    images_data : dict
+        Device-placed image data.
+    batches : dict
+        Device-placed batched source data.
+    initial_fluxes : jax.numpy.ndarray
+        Device-placed initial fluxes.
     """
     devices = jax.devices()
     # Create a mesh for data parallelism over images
@@ -1149,7 +1330,27 @@ def prepare_sharded_inputs(images_data, batches, initial_fluxes):
 
 def render_image(fluxes, image_data, batches, sampling_factor=None):
     """
-    Renders a single image using sliced batch data.
+    Render a single model image from sliced batch data.
+
+    Sums point-source, galaxy and (optionally) constant-background
+    contributions.
+
+    Parameters
+    ----------
+    fluxes : jax.numpy.ndarray
+        Flux parameter vector for this image, shape (N_flux,).
+    image_data : dict
+        Single-image data with keys ``data`` and ``psf``.
+    batches : dict
+        Per-image slices of the batched source data (keys ``PointSource``,
+        ``Galaxy``, ``Background``).
+    sampling_factor : float, optional
+        High-resolution oversampling factor forwarded to the renderers.
+
+    Returns
+    -------
+    jax.numpy.ndarray
+        Model image of shape (H, W).
     """
     H, W = image_data['data'].shape
     img_model = jnp.zeros((H, W))
@@ -1205,8 +1406,24 @@ def render_image(fluxes, image_data, batches, sampling_factor=None):
 
 def compute_fisher_diagonal(image_data, batches, n_flux):
     """
-    Computes the diagonal of the Fisher Information Matrix for a single image.
-    F_ss = sum_pixels ( (dModel/dFlux_s)^2 * invvar )
+    Compute the diagonal of the Fisher information matrix for a single image.
+
+    For each flux parameter s,
+    ``F_ss = sum_pixels ( (dModel/dFlux_s)^2 * invvar )``.
+
+    Parameters
+    ----------
+    image_data : dict
+        Single-image data with keys ``data``, ``invvar`` and ``psf``.
+    batches : dict
+        Per-image slices of the batched source data.
+    n_flux : int
+        Total number of flux parameters.
+
+    Returns
+    -------
+    jax.numpy.ndarray
+        Fisher diagonal of shape (n_flux,).
     """
     fisher_diag = jnp.zeros(n_flux)
 
@@ -1341,8 +1558,25 @@ def compute_fisher_diagonal(image_data, batches, n_flux):
 
 def _render_source_templates(image_data, batches, n_flux, sampling_factor=None):
     """
-    Renders unit-flux template images for every source (and background).
-    Returns a design matrix A of shape (N_flux, H, W).
+    Render unit-flux template images for every source (and background).
+
+    Parameters
+    ----------
+    image_data : dict
+        Single-image data with keys ``data`` and ``psf``.
+    batches : dict
+        Per-image slices of the batched source data.
+    n_flux : int
+        Total number of flux parameters.
+    sampling_factor : float, optional
+        High-resolution oversampling factor; if None, taken from
+        ``psf_data['sampling']``.
+
+    Returns
+    -------
+    jax.numpy.ndarray
+        Design matrix A of shape (N_flux, H, W): one unit-flux template
+        per flux parameter.
     """
     H, W = image_data['data'].shape
     psf_data = image_data["psf"]
@@ -1471,12 +1705,39 @@ def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=Fa
                         sampling_factor=None, rcond=1e-12):
     """
     Direct linear solve for forced photometry on a SINGLE image.
-    Designed to be vmapped.
 
-    Builds the design matrix A (template per source), then solves
-    the normal equations  (A^T W A) f = A^T W d  via Cholesky/LU.
+    Designed to be vmapped. Builds the design matrix A (one unit-flux
+    template per source), then solves the normal equations
+    ``(A^T W A) f = A^T W d`` via Cholesky/LU.
 
-    Regularization is a Jacobi-scaled ridge, reg_j = rcond * diag(AtWA)_j:
+    Parameters
+    ----------
+    initial_fluxes : jax.numpy.ndarray
+        Flux parameter vector, shape (n_flux,); only its length is used.
+    image_data : dict
+        Single-image data with keys ``data``, ``invvar`` and ``psf``.
+    batches : dict
+        Per-image slices of the batched source data.
+    return_variances : bool, optional
+        If True, also return flux variances (diagonal of the inverse
+        regularized normal matrix).
+    sampling_factor : float, optional
+        High-resolution oversampling factor forwarded to the template
+        renderer.
+    rcond : float, optional
+        Jacobi-scaled ridge strength (see Notes).
+
+    Returns
+    -------
+    optimized_fluxes : jax.numpy.ndarray
+        Solved fluxes, shape (n_flux,).
+    variances : jax.numpy.ndarray
+        Flux variances, shape (n_flux,). Only returned if
+        ``return_variances`` is True.
+
+    Notes
+    -----
+    Regularization is a Jacobi-scaled ridge, ``reg_j = rcond * diag(AtWA)_j``:
     each source's ridge depends only on its own template norm, so the
     solution is invariant to masked padding and to the number of co-fit
     sources. Dead slots (all-zero template, e.g. shape padding or a source
@@ -1513,18 +1774,48 @@ def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=Fa
 def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
                           return_variances=False, sampling_factor=None,
                           floor=1e-4):
-    """Direct linear solve with an eigenvalue floor on the JACOBI-NORMALIZED
-    AtWA (SINGLE image).
+    """
+    Direct linear solve with an eigenvalue floor on the Jacobi-normalized AtWA.
 
-    Same normal equations as solve_fluxes_linear, but the solve happens in
-    Jacobi-normalized coordinates beta_j = sqrt(AtWA_jj) * f_j, where the
-    Gram Ghat = D^{-1/2} AtWA D^{-1/2} has UNIT diagonal (a correlation
-    matrix): its spectrum is clamped from below at floor * lambda_max(Ghat)
-    (Tikhonov in the eigenbasis). In these coordinates only the genuinely
-    correlation-degenerate directions - the anti-correlated flux splits of
-    blended groups - sit near zero eigenvalue and get damped, while
-    well-constrained sources (eigenvalue ~ 1) are solved exactly.
+    Operates on a SINGLE image; designed to be vmapped, like
+    `solve_fluxes_linear`. Same normal equations as `solve_fluxes_linear`,
+    but the solve happens in Jacobi-normalized coordinates
+    ``beta_j = sqrt(AtWA_jj) * f_j``, where the Gram
+    ``Ghat = D^{-1/2} AtWA D^{-1/2}`` has UNIT diagonal (a correlation
+    matrix): its spectrum is clamped from below at
+    ``floor * lambda_max(Ghat)`` (Tikhonov in the eigenbasis). In these
+    coordinates only the genuinely correlation-degenerate directions - the
+    anti-correlated flux splits of blended groups - sit near zero
+    eigenvalue and get damped, while well-constrained sources
+    (eigenvalue ~ 1) are solved exactly.
 
+    Parameters
+    ----------
+    initial_fluxes : jax.numpy.ndarray
+        Flux parameter vector, shape (n_flux,); only its length is used.
+    image_data : dict
+        Single-image data with keys ``data``, ``invvar`` and ``psf``.
+    batches : dict
+        Per-image slices of the batched source data.
+    return_variances : bool, optional
+        If True, also return flux variances.
+    sampling_factor : float, optional
+        High-resolution oversampling factor forwarded to the template
+        renderer.
+    floor : float, optional
+        Relative eigenvalue floor, in units of the largest eigenvalue of
+        the normalized Gram matrix.
+
+    Returns
+    -------
+    optimized_fluxes : jax.numpy.ndarray
+        Solved fluxes, shape (n_flux,).
+    variances : jax.numpy.ndarray
+        Flux variances, shape (n_flux,). Only returned if
+        ``return_variances`` is True.
+
+    Notes
+    -----
     The normalization is essential, not cosmetic: on the RAW AtWA the
     largest eigenvalue is dominated by whichever column has the largest
     norm - typically the constant BACKGROUND column (~n_pix * w) or a
@@ -1532,7 +1823,7 @@ def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
     eigenvalues and shrink every flux toward zero (verified on the field
     sim: -50..-99% bias at high S/N before normalization; research note
     lasso_alpha/08 §5 item 8). After normalization lambda_max(Ghat) <= n
-    regardless of units, background, or depth, and `floor` is a pure
+    regardless of units, background, or depth, and ``floor`` is a pure
     correlation-degeneracy threshold, invariant to flux units and image
     count - the same reasoning as the S/N-units lasso penalty.
 
@@ -1543,8 +1834,7 @@ def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
     photometry.
 
     Dead slots (all-zero template, e.g. shape padding or a fully-masked
-    source) are pinned to flux 0 with infinite variance. Designed to be
-    vmapped, like solve_fluxes_linear.
+    source) are pinned to flux 0 with infinite variance.
     """
     n_flux = initial_fluxes.shape[0]
 
@@ -1583,9 +1873,23 @@ def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
 
 
 def _power_iter_lmax(G, n_steps=16):
-    """Largest eigenvalue of a symmetric PSD matrix via power iteration.
+    """
+    Largest eigenvalue of a symmetric PSD matrix via power iteration.
 
-    Deterministic init (ones vector) so results are reproducible under jit/vmap.
+    Deterministic init (ones vector) so results are reproducible under
+    jit/vmap.
+
+    Parameters
+    ----------
+    G : jax.numpy.ndarray
+        Symmetric positive semi-definite matrix, shape (n, n).
+    n_steps : int, optional
+        Number of power-iteration steps.
+
+    Returns
+    -------
+    jax.numpy.ndarray
+        Rayleigh-quotient estimate of the largest eigenvalue (scalar).
     """
     n = G.shape[0]
     v0 = jnp.ones(n) / jnp.sqrt(n)
@@ -1600,24 +1904,48 @@ def _power_iter_lmax(G, n_steps=16):
 
 
 def _lasso_fista(G, b, lam, *, nonneg=True, free=None, n_iter=1000, reg=0.0):
-    """Per-coordinate L1-penalized quadratic solve on the normal equations.
+    """
+    Per-coordinate L1-penalized quadratic solve on the normal equations.
+
+    Solves::
 
         minimize  1/2 f^T (G + reg*I) f - b^T f + sum_j lam_j |f_j|
         subject to f_j >= 0 for penalized coordinates (if nonneg)
 
-    G = A^T W A, b = A^T W d of a whitened linear model; lam_j is the absolute
-    per-coordinate penalty (lam_j = 0 leaves coordinate j unpenalized).
-    Coordinates with free[j] = 1 are unpenalized AND sign-free (background).
-    reg may be a scalar or a per-coordinate (n,) ridge vector (Jacobi-scaled
-    reg_j = rcond * G_jj becomes exactly rcond on the normalized diagonal).
-
     Runs FISTA with gradient-scheme adaptive restart in Jacobi-normalized
-    coordinates beta_j = sqrt(G_jj) * f_j (unit-diagonal system), which removes
-    the dynamic-range part of the conditioning; with lam_j = alpha*sqrt(G_jj)
-    the normalized threshold is uniform and dimensionless (S/N units).
+    coordinates ``beta_j = sqrt(G_jj) * f_j`` (unit-diagonal system), which
+    removes the dynamic-range part of the conditioning; with
+    ``lam_j = alpha*sqrt(G_jj)`` the normalized threshold is uniform and
+    dimensionless (S/N units).
 
-    Returns (f, kkt): the solution in original coordinates and the maximum KKT
-    violation in normalized (S/N) units - the convergence diagnostic.
+    Parameters
+    ----------
+    G : jax.numpy.ndarray
+        ``A^T W A`` of a whitened linear model, shape (n, n).
+    b : jax.numpy.ndarray
+        ``A^T W d`` of a whitened linear model, shape (n,).
+    lam : jax.numpy.ndarray
+        Absolute per-coordinate penalty ``lam_j``, shape (n,);
+        ``lam_j = 0`` leaves coordinate j unpenalized.
+    nonneg : bool, optional
+        If True, penalized coordinates are constrained to ``f_j >= 0``.
+    free : jax.numpy.ndarray, optional
+        Coordinates with ``free[j] = 1`` are unpenalized AND sign-free
+        (background). Defaults to all zeros.
+    n_iter : int, optional
+        Number of FISTA iterations.
+    reg : float or jax.numpy.ndarray, optional
+        Scalar or per-coordinate (n,) ridge vector (Jacobi-scaled
+        ``reg_j = rcond * G_jj`` becomes exactly ``rcond`` on the
+        normalized diagonal).
+
+    Returns
+    -------
+    f : jax.numpy.ndarray
+        The solution in original coordinates, shape (n,).
+    kkt : jax.numpy.ndarray
+        The maximum KKT violation in normalized (S/N) units - the
+        convergence diagnostic.
     """
     n = G.shape[0]
     if free is None:
@@ -1668,7 +1996,23 @@ def _lasso_fista(G, b, lam, *, nonneg=True, free=None, n_iter=1000, reg=0.0):
 
 
 def _ln_binom(p, k):
-    """log C(p, k) via gammaln (exact; valid for traced float k)."""
+    """
+    Log binomial coefficient ``log C(p, k)`` via gammaln.
+
+    Exact; valid for traced float ``k``.
+
+    Parameters
+    ----------
+    p : float or jax.numpy.ndarray
+        Total count.
+    k : float or jax.numpy.ndarray
+        Number chosen; may be a traced float.
+
+    Returns
+    -------
+    jax.numpy.ndarray
+        ``log C(p, k)``.
+    """
     from jax.scipy.special import gammaln
     return gammaln(p + 1.0) - gammaln(k + 1.0) - gammaln(p - k + 1.0)
 
@@ -1680,67 +2024,113 @@ def solve_fluxes_lasso(initial_fluxes, image_data, batches,
                        grid=None, ebic_gamma=0.5, return_path=False,
                        debias=True, debias_signfree="none", return_aux=False,
                        n_iter=1000, rcond=1e-12):
-    """L1-regularized (LASSO) forced photometry on a SINGLE image.
+    """
+    L1-regularized (LASSO) forced photometry on a SINGLE image.
 
-    Designed to be vmapped, like solve_fluxes_linear. Builds the same design
-    matrix A (unit-flux templates) and solves
+    Designed to be vmapped, like `solve_fluxes_linear`. Builds the same
+    design matrix A (unit-flux templates) and solves::
 
         min 1/2 || W^{1/2} (d - A f) ||^2 + sum_j lambda_j |f_j|,   f >= 0
 
-    Penalty parameterization (see proj-spherex-gpupipe research note
-    notebooks/research_notes/lasso_alpha/01):
-      penalty_mode="snr":  lambda_j = alpha * w_j * sqrt(F_jj), with
-        F_jj = diag(A^T W A) the squared matched-filter norm of template j,
-        TAKEN FROM THE SAME TEMPLATES USED FOR THE SOLVE (not from
-        compute_fisher_diagonal, which deviates in the oversampled-FFT path).
-        alpha is then a dimensionless residual matched-filter S/N entry
-        threshold, invariant across images, bands, depth and cutout size.
-      penalty_mode="raw":  lambda_j = alpha * w_j (absolute units; sklearn
-        conversion: lambda_raw = n_pix * alpha_sklearn).
+    Parameters
+    ----------
+    initial_fluxes : jax.numpy.ndarray
+        Flux parameter vector, shape (n_flux,); only its length is used.
+    image_data : dict
+        Single-image data with keys ``data``, ``invvar`` and ``psf``.
+    batches : dict
+        Per-image slices of the batched source data.
+    return_variances : bool, optional
+        If True, also return flux variances,
+        ``diag(inv(AtWA_S + reg))`` of the debiased refit, inf off-support
+        (conditional on the selected support - not post-selection
+        corrected).
+    sampling_factor : float, optional
+        High-resolution oversampling factor forwarded to the template
+        renderer.
+    alpha : float, optional
+        Penalty strength; its meaning depends on ``penalty_mode``. Used
+        directly when ``selection_mode="fixed"``.
+    penalty_mode : {"snr", "raw"}, optional
+        Penalty parameterization (see proj-spherex-gpupipe research note
+        notebooks/research_notes/lasso_alpha/01). ``"snr"``:
+        ``lambda_j = alpha * w_j * sqrt(F_jj)``, with
+        ``F_jj = diag(A^T W A)`` the squared matched-filter norm of
+        template j, TAKEN FROM THE SAME TEMPLATES USED FOR THE SOLVE (not
+        from `compute_fisher_diagonal`, which deviates in the
+        oversampled-FFT path); ``alpha`` is then a dimensionless residual
+        matched-filter S/N entry threshold, invariant across images, bands,
+        depth and cutout size. ``"raw"``: ``lambda_j = alpha * w_j``
+        (absolute units; sklearn conversion:
+        ``lambda_raw = n_pix * alpha_sklearn``).
+    penalty_weights : array_like, optional
+        (n_flux,) per-source multiplier; 0 = PROTECTED source (never
+        shrunk, never zeroed, always refit - use for the forced-photometry
+        target list). None = ones. The background parameter (if fit) is
+        always forced unpenalized and sign-free.
+    nonneg : bool, optional
+        If True, penalized coordinates are constrained to be non-negative.
+    selection_mode : {"fixed", "path"}, optional
+        ``"fixed"``: solve at the given ``alpha`` (production; inject the
+        sim-calibrated value here). ``"path"``: solve on ``grid``, score
+        with ``criterion`` on the DEBIASED refit, pick the argmin. No CV,
+        deliberately: pixel folds violate independence and select overfit
+        alphas (research note lasso_alpha/02 section 5).
+    criterion : {"ebic", "bic", "sure"}, optional
+        Path-selection criterion: ``"ebic"`` (default; exact
+        ``2*gamma*ln C(p,k)`` multiplicity term), ``"bic"`` (gamma=0), or
+        ``"sure"`` (biased RSS + 2*df - n_eff).
+    grid : array_like, optional
+        Alpha grid for ``selection_mode="path"`` (default
+        ``logspace(0.5..5, 16)`` in S/N units).
+    ebic_gamma : float, optional
+        EBIC multiplicity weight gamma.
+    return_path : bool, optional
+        If True (path mode), include ``path_fluxes`` of shape
+        (n_alpha, n_flux) in the aux dict.
+    debias : bool, optional
+        If True, exact re-solve on the selected support (identity pinning,
+        static shapes), nonneg-clipped for penalized coordinates.
+    debias_signfree : {"none", "protected", "all"}, optional
+        Which refit coordinates skip the nonneg clip: ``"none"`` (default;
+        background only, original behavior), ``"protected"`` (background +
+        ``wj==0`` sources: protected SED/photo-z targets keep negative
+        excursions - no faint-end rectification bias, research note
+        lasso_alpha/12), or ``"all"``. Selection is unaffected (the FISTA
+        prox still uses ``nonneg``); no-op when ``nonneg=False`` or
+        ``debias=False``.
+    return_aux : bool, optional
+        If True, append the aux diagnostics dict to the returned tuple
+        (see Returns).
+    n_iter : int, optional
+        Number of FISTA iterations.
+    rcond : float, optional
+        Jacobi-scaled ridge strength.
 
-    penalty_weights: (n_flux,) per-source multiplier; 0 = PROTECTED source
-      (never shrunk, never zeroed, always refit - use for the forced-photometry
-      target list). None = ones. The background parameter (if fit) is always
-      forced unpenalized and sign-free.
+    Returns
+    -------
+    result
+        Matching `solve_fluxes_linear` unless ``return_aux``:
 
-    Selection:
-      selection_mode="fixed": solve at the given alpha (production; inject the
-        sim-calibrated value here).
-      selection_mode="path":  solve on `grid` (default logspace(0.5..5, 16) in
-        S/N units), score with `criterion` on the DEBIASED refit
-        ("ebic" [default; exact 2*gamma*ln C(p,k) multiplicity term],
-        "bic" [gamma=0], "sure" [biased RSS + 2*df - n_eff]), pick the argmin.
-        No CV, deliberately: pixel folds violate independence and select
-        overfit alphas (research note lasso_alpha/02 section 5).
+        - ``fluxes`` if not ``return_variances``;
+        - ``(fluxes, variances)`` if ``return_variances``;
+        - ``(..., aux)`` if ``return_aux``, where ``aux`` carries
+          ``support`` (float mask), ``alpha``, ``alpha_index``,
+          ``criterion_values``, ``kkt`` (max KKT violation in S/N units -
+          convergence diagnostic), ``n_active``, ``resid_corr_snr``
+          (per-source residual matched-filter correlation at the biased
+          solution, S/N units; entry margin = alpha - c_j for inactive
+          sources), ``snr_deb`` (per-source debiased S/N; exit margin =
+          snr - alpha for active ones - together the cheap production
+          stability flag), and ``path_fluxes`` (n_alpha, n_flux) if
+          ``return_path``.
 
-    debias=True: exact re-solve on the selected support (identity pinning,
-      static shapes), nonneg-clipped for penalized coordinates; variances are
-      diag(inv(AtWA_S + reg)) of the refit, inf off-support (conditional on
-      the selected support - not post-selection corrected).
-
-    debias_signfree: which refit coordinates skip the nonneg clip -
-      "none" (default; background only, original behavior), "protected"
-      (background + wj==0 sources: protected SED/photo-z targets keep
-      negative excursions - no faint-end rectification bias, research note
-      lasso_alpha/12), or "all". Selection is unaffected (the FISTA prox
-      still uses `nonneg`); no-op when nonneg=False or debias=False.
-
-    Returns (matching solve_fluxes_linear unless return_aux):
-      fluxes                                  if not return_variances
-      (fluxes, variances)                     if return_variances
-      (..., aux)                              if return_aux, where aux carries
-        support (float mask), alpha, alpha_index, criterion_values, kkt
-        (max KKT violation in S/N units - convergence diagnostic), n_active,
-        resid_corr_snr (per-source residual matched-filter correlation at the
-        biased solution, S/N units; entry margin = alpha - c_j for inactive
-        sources), snr_deb (per-source debiased S/N; exit margin = snr - alpha
-        for active ones - together the cheap production stability flag),
-        and path_fluxes (n_alpha, n_flux) if return_path.
-
-    Note: with jax_enable_x64 off everything runs in float32; the Jacobi
-    normalization inside _lasso_fista makes support recovery reliable in f32,
-    but calibration-grade fluxes/variances should enable x64
-    (JaxOptimizer(enable_x64=True)).
+    Notes
+    -----
+    With jax_enable_x64 off everything runs in float32; the Jacobi
+    normalization inside `_lasso_fista` makes support recovery reliable in
+    f32, but calibration-grade fluxes/variances should enable x64
+    (``JaxOptimizer(enable_x64=True)``).
     """
     n_flux = initial_fluxes.shape[0]
 
@@ -1777,26 +2167,44 @@ def solve_fluxes_lasso_batched(initial_fluxes, image_data, batches, data_stack,
                                debias=True, debias_signfree="none",
                                return_aux=False,
                                n_iter=1000, rcond=1e-12):
-    """LASSO forced photometry for a BATCH of data realizations of ONE image.
+    """
+    LASSO forced photometry for a BATCH of data realizations of ONE image.
 
     Bootstrap entry point (proj-spherex-gpupipe research note
-    notebooks/research_notes/paper/03_bootstrap_validation_plan.md, stage B1):
-    replicas share the scene — templates, invvar and the penalty structure —
-    and differ only in the pixel data, so the design matrix and G = AtWA are
-    built ONCE and the solve is vmapped over the replica axis (G, weights and
-    the FISTA step size stay unbatched under vmap; only AtWd is per-replica).
+    notebooks/research_notes/paper/03_bootstrap_validation_plan.md, stage
+    B1): replicas share the scene — templates, invvar and the penalty
+    structure — and differ only in the pixel data, so the design matrix and
+    G = AtWA are built ONCE and the solve is vmapped over the replica axis
+    (G, weights and the FISTA step size stay unbatched under vmap; only
+    AtWd is per-replica).
 
-    data_stack: (B, H, W) data realizations; image_data["data"] is not used
-    by the solve. All other arguments as solve_fluxes_lasso and shared by
-    every replica (in "path" mode each replica selects its own alpha).
+    Parameters
+    ----------
+    initial_fluxes : jax.numpy.ndarray
+        Flux parameter vector, shape (n_flux,); only its length is used.
+    image_data : dict
+        Single-image data; ``image_data["data"]`` is not used by the solve.
+    batches : dict
+        Per-image slices of the batched source data.
+    data_stack : jax.numpy.ndarray
+        (B, H, W) data realizations.
+    return_variances, sampling_factor, alpha, penalty_mode, penalty_weights, nonneg, selection_mode, criterion, grid, ebic_gamma, return_path, debias, debias_signfree, return_aux, n_iter, rcond
+        As `solve_fluxes_lasso`; shared by every replica (in "path" mode
+        each replica selects its own alpha).
 
-    Returns the same structures as solve_fluxes_lasso, with a leading
-    replica axis B on every array (fluxes: (B, n_flux); aux fields likewise).
+    Returns
+    -------
+    result
+        Same structures as `solve_fluxes_lasso`, with a leading replica
+        axis B on every array (fluxes: (B, n_flux); aux fields likewise).
 
-    Memory: the pinned refit materializes (n_flux, n_flux) per replica under
-    vmap (B * n_flux^2; ~0.65 GB at B=100, n=900, f64 - x16 more in "path"
-    mode). For larger runs split data_stack into chunks and call repeatedly;
-    the per-call template build is the same work the chunks would share.
+    Notes
+    -----
+    Memory: the pinned refit materializes (n_flux, n_flux) per replica
+    under vmap (B * n_flux^2; ~0.65 GB at B=100, n=900, f64 - x16 more in
+    "path" mode). For larger runs split ``data_stack`` into chunks and call
+    repeatedly; the per-call template build is the same work the chunks
+    would share.
     """
     n_flux = initial_fluxes.shape[0]
 
@@ -1829,9 +2237,29 @@ def solve_fluxes_lasso_batched(initial_fluxes, image_data, batches, data_stack,
 
 
 def _lasso_penalty_weights(n_flux, batches, penalty_weights, dtype):
-    """Per-source penalty multipliers wj and the sign-free mask.
+    """
+    Per-source penalty multipliers ``wj`` and the sign-free mask.
 
     Background (if fit) is always unpenalized and sign-free.
+
+    Parameters
+    ----------
+    n_flux : int
+        Total number of flux parameters.
+    batches : dict
+        Batched source data; only the ``Background`` entry is inspected.
+    penalty_weights : array_like or None
+        Per-source penalty multipliers of shape (n_flux,); None means ones.
+    dtype : dtype
+        Dtype of the returned arrays.
+
+    Returns
+    -------
+    wj : jax.numpy.ndarray
+        Per-source penalty multipliers, shape (n_flux,).
+    free : jax.numpy.ndarray
+        Sign-free mask (1 for the background coordinate, if fit), shape
+        (n_flux,).
     """
     if penalty_weights is None:
         wj = jnp.ones(n_flux, dtype=dtype)
@@ -1852,25 +2280,51 @@ def _lasso_core(G, b, dWd, n_eff, wj, free, *,
                 debias_signfree="none",
                 return_variances=False, return_aux=False,
                 n_iter=1000, rcond=1e-12):
-    """LASSO solve on prebuilt normal equations (G = AtWA, b = AtWd).
+    """
+    LASSO solve on prebuilt normal equations (G = AtWA, b = AtWd).
 
-    Shared backend of solve_fluxes_lasso (single image) and
-    solve_fluxes_lasso_batched (many data realizations of one image);
-    vmappable over (b, dWd) with G/wj/free held fixed.
+    Shared backend of `solve_fluxes_lasso` (single image) and
+    `solve_fluxes_lasso_batched` (many data realizations of one image);
+    vmappable over ``(b, dWd)`` with ``G``/``wj``/``free`` held fixed.
 
-    Ridge is Jacobi-scaled, reg_j = rcond * G_jj: invariant to masked
+    Parameters
+    ----------
+    G : jax.numpy.ndarray
+        Normal matrix ``A^T W A``, shape (n_flux, n_flux).
+    b : jax.numpy.ndarray
+        Right-hand side ``A^T W d``, shape (n_flux,).
+    dWd : jax.numpy.ndarray
+        Scalar data quadratic term ``d^T W d`` (for the RSS).
+    n_eff : jax.numpy.ndarray
+        Effective number of pixels (count of positive weights).
+    wj : jax.numpy.ndarray
+        Per-source penalty multipliers, shape (n_flux,).
+    free : jax.numpy.ndarray
+        Sign-free/unpenalized mask (background), shape (n_flux,).
+    alpha, penalty_mode, nonneg, selection_mode, criterion, grid, ebic_gamma, return_path, debias, debias_signfree, return_variances, return_aux, n_iter, rcond
+        As `solve_fluxes_lasso`.
+
+    Returns
+    -------
+    result
+        Same structures as `solve_fluxes_lasso`.
+
+    Notes
+    -----
+    Ridge is Jacobi-scaled, ``reg_j = rcond * G_jj``: invariant to masked
     padding and to the number of co-fit sources (in the FISTA-normalized
-    coordinates it is exactly rcond * I on live slots). Dead slots
-    (G_jj = 0) are excluded from the support and pinned in the refit.
+    coordinates it is exactly ``rcond * I`` on live slots). Dead slots
+    (``G_jj = 0``) are excluded from the support and pinned in the refit.
 
-    debias_signfree controls the sign convention of the DEBIASED refit only
-    (selection keeps the `nonneg` prox): which coordinates skip the
-    max(f, 0) clip. "none" (default) - background only (the `free` mask;
-    original behavior); "protected" - background + unpenalized sources
-    (wj == 0), so a protected science target keeps negative excursions
-    (no faint-end rectification bias; research note lasso_alpha/12);
-    "all" - every refit coordinate is sign-free. Irrelevant when
-    nonneg=False (refit already unclipped) or debias=False.
+    ``debias_signfree`` controls the sign convention of the DEBIASED refit
+    only (selection keeps the ``nonneg`` prox): which coordinates skip the
+    ``max(f, 0)`` clip. ``"none"`` (default) - background only (the
+    ``free`` mask; original behavior); ``"protected"`` - background +
+    unpenalized sources (``wj == 0``), so a protected science target keeps
+    negative excursions (no faint-end rectification bias; research note
+    lasso_alpha/12); ``"all"`` - every refit coordinate is sign-free.
+    Irrelevant when ``nonneg=False`` (refit already unclipped) or
+    ``debias=False``.
     """
     if debias_signfree not in ("none", "protected", "all"):
         raise ValueError(f"debias_signfree must be 'none', 'protected' or "
@@ -1982,13 +2436,33 @@ def _lasso_core(G, b, dWd, n_eff, wj, free, *,
 def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=False, sampling_factor=None, use_preconditioner=True, precond_eps=1e-12):
     """
     Pure JAX core optimization logic for a SINGLE image (Newton-CG).
+
     Designed to be vmapped.
 
-    Args:
-        initial_fluxes: JAX array (N_flux,)
-        image_data: dict containing single image data (slices).
-        batches: dict of batched source data (slices).
-        return_variances: bool
+    Parameters
+    ----------
+    initial_fluxes : jax.numpy.ndarray
+        Initial flux parameter vector, shape (N_flux,).
+    image_data : dict
+        Single image data (slices).
+    batches : dict
+        Batched source data (slices).
+    return_variances : bool, optional
+        If True, also return flux variances (inverse Fisher diagonal).
+    sampling_factor : float, optional
+        High-resolution oversampling factor forwarded to the renderer.
+    use_preconditioner : bool, optional
+        If True, precondition CG with the inverse Fisher diagonal.
+    precond_eps : float, optional
+        Floor for the Fisher diagonal to avoid division by zero.
+
+    Returns
+    -------
+    optimized_fluxes : jax.numpy.ndarray
+        Optimized fluxes, shape (N_flux,).
+    variances : jax.numpy.ndarray
+        Flux variances (inverse Fisher diagonal), shape (N_flux,). Only
+        returned if ``return_variances`` is True.
     """
 
     def loss_fn(fluxes):
@@ -2032,45 +2506,76 @@ def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=Fals
 
 def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=False, fit_background=False, update_catalog=False, vmap_images=True, use_sharding=True, bucket_sizes=None, bucket_mode="auto", bucket_shape_mode="square", bucket_base=32, use_tiling=False, tile_size=256, tile_super_halo=None, use_preconditioner=True, precond_eps=1e-12, solver="linear", penalty=None, selection=None, debias=True, debias_signfree="none", return_aux=False, lasso_n_iter=1000, eig_floor=1e-4):
     """
-    Optimizes fluxes for forced photometry using JAX.
+    Optimize fluxes for forced photometry using JAX.
 
-    Args:
-        tractor_obj: Tractor object with images and catalog.
-        oversample_rendering: bool, if True use oversampled rendering for PixelizedPSF with sampling != 1.
-        return_variances: bool, if True, return variances of fluxes.
-        fit_background: bool, if True, includes background level in optimization parameters.
-        update_catalog: bool, if True, updates the source catalog with optimized fluxes.
-        vmap_images: bool, if True (default), stacks all images and processes them in a single vmap call.
-        use_sharding: bool, if True (default), distributes the batch across available devices.
-        bucket_sizes: List of bucket sizes. Used if bucket_mode="fixed".
-        bucket_mode: "auto" or "fixed".
-        bucket_shape_mode: "square" or "independent".
-        bucket_base: rounding base for auto mode.
-        use_tiling: bool, if True, splits images into tiles and processes them.
-        tile_size: int, size of tiles (default 256).
-        tile_super_halo: optional int, override calculated halo size.
-        use_preconditioner: bool, if True (default), use Fisher diagonal preconditioner (CG only).
-        precond_eps: float, floor for Fisher diagonal to avoid divide-by-zero.
-        solver: "linear" (direct normal-equations solve), "eigfloor" (linear
-            solve with an eigenvalue floor on AtWA - sign-free, no selection;
-            see solve_fluxes_eigfloor), "cg" (Newton-CG, original), or
-            "lasso" (L1-regularized, see solve_fluxes_lasso).
-        penalty: (lasso only) dict, e.g. {"mode": "snr", "alpha": 2.0,
-            "weights": w, "nonneg": True}. weights==0 marks protected sources.
-        selection: (lasso only) dict, e.g. {"mode": "fixed"} or
-            {"mode": "path", "criterion": "ebic", "grid": ..., "ebic_gamma": 0.5,
-             "return_path": False}.
-        debias: (lasso only) refit on the selected support (default True).
-        debias_signfree: (lasso only) which refit coordinates skip the nonneg
-            clip - "none" (default), "protected" (background + weight-0
-            sources), or "all". See solve_fluxes_lasso.
-        return_aux: (lasso only) append the per-image aux dict (support, alpha,
-            kkt, ...) as the last element of each result.
-        lasso_n_iter: (lasso only) static FISTA iteration count.
-        eig_floor: (eigfloor only) relative eigenvalue floor, in units of the
-            largest eigenvalue of AtWA (default 1e-4).
+    Parameters
+    ----------
+    tractor_obj : Tractor
+        Tractor object with images and catalog.
+    oversample_rendering : bool, optional
+        If True, use oversampled rendering for ``PixelizedPSF`` with
+        sampling != 1.
+    return_variances : bool, optional
+        If True, return variances of fluxes.
+    fit_background : bool, optional
+        If True, includes a background level in the optimization
+        parameters.
+    update_catalog : bool, optional
+        If True, updates the source catalog with optimized fluxes.
+    vmap_images : bool, optional
+        If True (default), stacks all images and processes them in a
+        single vmap call.
+    use_sharding : bool, optional
+        If True (default), distributes the batch across available devices.
+    bucket_sizes : list, optional
+        List of bucket sizes. Used if ``bucket_mode="fixed"``.
+    bucket_mode : {"auto", "fixed"}, optional
+        Bucket determination mode.
+    bucket_shape_mode : {"square", "independent"}, optional
+        Bucket shape mode.
+    bucket_base : int, optional
+        Rounding base for auto mode.
+    use_tiling : bool, optional
+        If True, splits images into tiles and processes them.
+    tile_size : int, optional
+        Size of tiles (default 256).
+    tile_super_halo : int, optional
+        Override the calculated halo size.
+    use_preconditioner : bool, optional
+        If True (default), use the Fisher diagonal preconditioner (CG
+        only).
+    precond_eps : float, optional
+        Floor for the Fisher diagonal to avoid divide-by-zero.
+    solver : {"linear", "eigfloor", "cg", "lasso"}, optional
+        "linear" (direct normal-equations solve), "eigfloor" (linear solve
+        with an eigenvalue floor on AtWA - sign-free, no selection; see
+        `solve_fluxes_eigfloor`), "cg" (Newton-CG, original), or "lasso"
+        (L1-regularized, see `solve_fluxes_lasso`).
+    penalty : dict, optional
+        (lasso only) E.g. ``{"mode": "snr", "alpha": 2.0, "weights": w,
+        "nonneg": True}``. ``weights==0`` marks protected sources.
+    selection : dict, optional
+        (lasso only) E.g. ``{"mode": "fixed"}`` or ``{"mode": "path",
+        "criterion": "ebic", "grid": ..., "ebic_gamma": 0.5,
+        "return_path": False}``.
+    debias : bool, optional
+        (lasso only) Refit on the selected support (default True).
+    debias_signfree : {"none", "protected", "all"}, optional
+        (lasso only) Which refit coordinates skip the nonneg clip -
+        "none" (default), "protected" (background + weight-0 sources), or
+        "all". See `solve_fluxes_lasso`.
+    return_aux : bool, optional
+        (lasso only) Append the per-image aux dict (support, alpha, kkt,
+        ...) as the last element of each result.
+    lasso_n_iter : int, optional
+        (lasso only) Static FISTA iteration count.
+    eig_floor : float, optional
+        (eigfloor only) Relative eigenvalue floor, in units of the largest
+        eigenvalue of AtWA (default 1e-4).
 
-    Returns:
+    Returns
+    -------
+    list
         List of results per image.
     """
     from tractor import ConstantSky
@@ -2556,7 +3061,40 @@ class JaxOptimizer(Optimizer):
                  scale_columns=True, shared_params=True, variance=False,
                  just_variance=False, vmap_images=True, use_sharding=True, **kwargs):
         """
-        Performs optimization using JAX.
+        Perform one optimization step using JAX.
+
+        Runs `optimize_fluxes` with ``update_catalog=True``,
+        ``fit_background=True`` and ``oversample_rendering=True``, then
+        reports the change in log-probability and in the parameter vector.
+
+        Parameters
+        ----------
+        tractor : Tractor
+            Tractor object; its catalog is updated in place.
+        alphas, damp, priors, scale_columns, shared_params, just_variance
+            Accepted for API compatibility with the base ``Optimizer``;
+            not used by the JAX path.
+        variance : bool, optional
+            If True, also return a variance vector for the parameters.
+        vmap_images : bool, optional
+            Forwarded to `optimize_fluxes`.
+        use_sharding : bool, optional
+            Forwarded to `optimize_fluxes`.
+        **kwargs
+            Forwarded to `optimize_fluxes`.
+
+        Returns
+        -------
+        dlnp : float
+            Change in log-probability.
+        X : numpy.ndarray
+            Parameter update vector.
+        alpha : float
+            Step scale (always 1.0).
+        var : numpy.ndarray or None
+            Parameter variances (flux parameters only; may not match the
+            full parameter vector if positions are thawed). Only returned
+            if ``variance`` is True.
         """
         lnp0 = tractor.getLogProb()
         p0 = tractor.getParams()

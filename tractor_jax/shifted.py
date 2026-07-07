@@ -153,8 +153,16 @@ class ScaledWcs(ParamsWrapper, ducks.ImageCalibration):
 
 
 class ShiftedWcs(ParamsWrapper, ducks.ImageCalibration):
-    '''
-    Wraps a WCS in order to use it for a subimage.
+    '''Wrap a WCS in order to use it for a subimage.
+
+    Parameters
+    ----------
+    wcs : object
+        The WCS object to wrap.
+    x0 : int
+        Pixel x offset of the subimage within the parent image.
+    y0 : int
+        Pixel y offset of the subimage within the parent image.
     '''
 
     def __init__(self, wcs, x0, y0):

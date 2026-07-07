@@ -1,14 +1,12 @@
-"""
+"""Generally useful generic implementations of things the Tractor needs.
+
+Magnitudes, (RA,Dec) positions, FITS WCS, and so on.
+
+Notes
+-----
 This file is part of the Tractor project.
 Copyright 2011, 2012 Dustin Lang and David W. Hogg.
 Licensed under the GPLv2; see the file COPYING for details.
-
-`basics.py`
-===========
-
-Generally useful generic implementations of things the Tractor needs:
-Magnitudes, (RA,Dec) positions, FITS WCS, and so on.
-
 """
 
 import numpy as np
@@ -32,8 +30,7 @@ from tractor_jax.shifted import (ParamsWrapper, ShiftedPsf, ScaledPhotoCal,
 
 
 class TractorWCSWrapper(object):
-    '''
-    Wraps a Tractor WCS object to look like an
+    '''Wraps a Tractor WCS object to look like an
     astrometry.util.util.Tan/Sip object.
     '''
 

@@ -12,14 +12,21 @@ except ImportError:
     _have_astropy = False
 
 class NullWCS(BaseParams, ducks.WCS):
-    '''
-    The "identity" WCS -- useful when you are using raw pixel
+    '''The "identity" WCS -- useful when you are using raw pixel
     positions rather than RA,Decs.
     '''
 
     def __init__(self, pixscale=1., dx=0., dy=0.):
-        '''
-        pixscale: [arcsec/pix]
+        '''Create a NullWCS.
+
+        Parameters
+        ----------
+        pixscale : float, optional
+            Pixel scale, in arcsec/pix.
+        dx : float, optional
+            X pixel offset added in ``positionToPixel``.
+        dy : float, optional
+            Y pixel offset added in ``positionToPixel``.
         '''
         self.dx = dx
         self.dy = dy
@@ -56,17 +63,21 @@ class NullWCS(BaseParams, ducks.WCS):
 
 
 class AstropyWCS(BaseParams, ducks.WCS):
-    '''
-    A Tractor WCS implementation that wraps an astropy.wcs.WCS object.
-    '''
+    '''A Tractor WCS implementation that wraps an astropy.wcs.WCS object.'''
     def __init__(self, wcs, origin=0):
-        '''
-        wcs: an astropy.wcs.WCS object.
-        origin: 0 or 1.
-          Tractor uses 0-based pixel coordinates (center of first pixel is 0,0).
-          FITS uses 1-based (center of first pixel is 1,1).
-          If `origin` is 0, input (x,y) to positionToPixel/pixelToPosition
-          are treated as 0-based (numpy-like) coordinates.
+        '''Create an AstropyWCS wrapper.
+
+        Parameters
+        ----------
+        wcs : astropy.wcs.WCS
+            The astropy WCS object to wrap.
+        origin : {0, 1}, optional
+            Pixel-coordinate origin convention.  Tractor uses 0-based
+            pixel coordinates (center of first pixel is 0,0).  FITS
+            uses 1-based (center of first pixel is 1,1).  If `origin`
+            is 0, input (x,y) to
+            ``positionToPixel``/``pixelToPosition`` are treated as
+            0-based (numpy-like) coordinates.
         '''
         if not _have_astropy:
             raise ImportError("Astropy is required to use AstropyWCS")
@@ -95,10 +106,22 @@ class AstropyWCS(BaseParams, ducks.WCS):
         return RaDecPos(ra, dec)
 
     def cdAtPixel(self, x, y):
-        '''
-        Returns the CD matrix at pixel x,y:
-        [ [ dRA/dx * cos(Dec), dRA/dy * cos(Dec) ],
-          [ dDec/dx          , dDec/dy           ] ]
+        '''Return the CD matrix at pixel ``x, y``.
+
+        Parameters
+        ----------
+        x : float
+            X pixel coordinate.
+        y : float
+            Y pixel coordinate.
+
+        Returns
+        -------
+        numpy.ndarray
+            The ``(2, 2)`` CD matrix at pixel x,y::
+
+                [ [ dRA/dx * cos(Dec), dRA/dy * cos(Dec) ],
+                  [ dDec/dx          , dDec/dy           ] ]
         '''
         # We compute derivatives numerically to handle distortions correctly.
         delta = 1e-4
@@ -156,9 +179,7 @@ class AstropyWCS(BaseParams, ducks.WCS):
 
 
 class PixPos(ParamList):
-    '''
-    A Position implementation using pixel positions.
-    '''
+    '''A Position implementation using pixel positions.'''
     @staticmethod
     def getNamedParams():
         return dict(x=0, y=1)
@@ -175,12 +196,14 @@ class PixPos(ParamList):
         return 2
 
 class RaDecPos(ArithmeticParams, ParamList):
-    '''
-    A Position implementation using RA,Dec positions, in degrees.
+    '''A Position implementation using RA,Dec positions, in degrees.
 
-    Attributes:
-      * ``.ra``
-      * ``.dec``
+    Attributes
+    ----------
+    ra : float
+        Right ascension, in degrees.
+    dec : float
+        Declination, in degrees.
     '''
     @staticmethod
     def getName():
@@ -217,8 +240,8 @@ class RaDecPos(ArithmeticParams, ParamList):
         return np.rad2deg(np.arccos(d))
 
 class AffineWCS(BaseParams, ducks.WCS):
-    '''
-    A WCS implementation using a simple affine transformation (CD matrix).
+    '''A WCS implementation using a simple affine transformation (CD matrix).
+
     Supports JAX-traceable operations if attributes are arrays.
     '''
     def __init__(self, crpix, crval, cd):

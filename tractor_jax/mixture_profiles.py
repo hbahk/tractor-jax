@@ -48,10 +48,19 @@ class MixtureOfGaussians(object):
 
     # symmetrize is an unnecessary step in principle, but in practice?
     def __init__(self, amp, mean, var, quick=False):
-        '''
-        amp: shape (K,)
-        mean: shape (K,D)
-        var: shape (K,D,D)
+        '''Create a new mixture of Gaussians.
+
+        Parameters
+        ----------
+        amp : array_like
+            Component amplitudes, shape ``(K,)``.
+        mean : array_like
+            Component means, shape ``(K, D)``.
+        var : array_like
+            Component variances (covariance matrices), shape ``(K, D, D)``.
+        quick : bool, optional
+            If True, store the inputs as-is, skipping type coercion,
+            variance broadcasting, and symmetrization.
         '''
         #print ("TEST1", var.shape, var)
         if quick:
@@ -131,13 +140,26 @@ class MixtureOfGaussians(object):
         return s
 
     def apply_affine(self, shift, scale):
-        '''
-        NOTE, "scale" is transposed vs earlier versions of this code!
+        '''Apply an affine transformation to this mixture.
 
-        NOTE, does NOT make a copy of amplitude!!
+        Parameters
+        ----------
+        shift : numpy.ndarray
+            Offset vector of length ``D``, added to the means.
+        scale : numpy.ndarray
+            Transformation matrix of shape ``(D, D)``, applied to the
+            variances.
 
-        shift: D-vector offset
-        scale: DxD-matrix transformation
+        Returns
+        -------
+        MixtureOfGaussians
+            The transformed mixture.
+
+        Notes
+        -----
+        `scale` is transposed vs earlier versions of this code!
+
+        Does NOT make a copy of the amplitude!
         '''
         assert(shift.shape == (self.D,))
         assert(scale.shape == (self.D, self.D))
@@ -148,11 +170,22 @@ class MixtureOfGaussians(object):
         return MixtureOfGaussians(self.amp, newmean, newvar, quick=True)
 
     def apply_shear(self, scale):
-        '''
-        NOTE, does NOT make a copy of amplitude and mean!!
+        '''Apply a linear (shear) transformation to the variances.
 
-        shift: D-vector offset
-        scale: DxD-matrix transformation
+        Parameters
+        ----------
+        scale : numpy.ndarray
+            Transformation matrix of shape ``(D, D)``, applied to the
+            variances.
+
+        Returns
+        -------
+        MixtureOfGaussians
+            The transformed mixture.
+
+        Notes
+        -----
+        Does NOT make a copy of the amplitude and mean!
         '''
         #print ("APPLY", str(self))
         assert(scale.shape == (self.D, self.D))
@@ -206,20 +239,31 @@ class MixtureOfGaussians(object):
         return MixtureOfGaussians(newamp, newmean, newvar, quick=True)
 
     def getFourierTransform(self, v, w, use_mp_fourier=True, zero_mean=False):
-        '''
-        v: FFT frequencies in the x direction
-        w: FFT frequencies in the y direction
+        '''Compute the Fourier transform of this mixture on a frequency grid.
 
-        eg,
+        For example::
 
-        H,W = 100,99
-        img = np.zeros((H,W))
-        F = np.fft.rfft2(img)
-        v = np.fft.rfftfreq(W)
-        w = np.fft.fftfreq(H)
+            H,W = 100,99
+            img = np.zeros((H,W))
+            F = np.fft.rfft2(img)
+            v = np.fft.rfftfreq(W)
+            w = np.fft.fftfreq(H)
 
-        If zero_mean is *True*, ignore the *mean* of this mixture of Gaussians.
-        
+        Parameters
+        ----------
+        v : numpy.ndarray
+            FFT frequencies in the x direction.
+        w : numpy.ndarray
+            FFT frequencies in the y direction.
+        use_mp_fourier : bool, optional
+            If True, use the compiled ``mp_fourier`` routine when available.
+        zero_mean : bool, optional
+            If True, ignore the *mean* of this mixture of Gaussians.
+
+        Returns
+        -------
+        numpy.ndarray
+            The Fourier transform, shape ``(len(w), len(v))``.
         '''
         #print ("GFT VAR", self.var, self.var.shape)
         #savetxt_cpu_append('cvar.txt', self.var.ravel())
@@ -256,21 +300,36 @@ class MixtureOfGaussians(object):
         return Fsum
 
     def getFourierTransform2(self, Nv, Nw, use_mp_fourier=True, zero_mean=False):
-        '''
-        Nv: number of FFT frequencies in the x direction
-        Nw: number of FFT frequencies in the y direction
+        '''Compute the Fourier transform given the number of frequencies.
 
-        For a 64x64 image patch, Nw = 64, Nv = 33.
+        For a 64x64 image patch, ``Nw = 64``, ``Nv = 33``.
 
-        We *assume* the frequency steps will be 1/Nw!
+        Parameters
+        ----------
+        Nv : int
+            Number of FFT frequencies in the x direction.
+        Nw : int
+            Number of FFT frequencies in the y direction.
+        use_mp_fourier : bool, optional
+            If True, use the compiled ``mp_fourier`` routine when available.
+        zero_mean : bool, optional
+            If True, ignore the *mean* of this mixture of Gaussians.
 
-        If you want to recompute the "v" and "w" vectors,
-        w = np.fft.fftfreq(Nw)
-        v = np.fft.rfftfreq(Nw) # <---NOTE, Nw *not* Nv... sorry
-        assert(len(v) == Nv)
-        assert(len(w) == Nw)
+        Returns
+        -------
+        numpy.ndarray
+            The Fourier transform, shape ``(Nw, Nv)``.
 
-        If zero_mean is *True*, ignore the *mean* of this mixture of Gaussians.
+        Notes
+        -----
+        We *assume* the frequency steps will be ``1/Nw``!
+
+        If you want to recompute the ``v`` and ``w`` vectors::
+
+            w = np.fft.fftfreq(Nw)
+            v = np.fft.rfftfreq(Nw) # <---NOTE, Nw *not* Nv... sorry
+            assert(len(v) == Nv)
+            assert(len(w) == Nw)
         '''
         if mp_fourier and use_mp_fourier and zero_mean:
             f = np.zeros((Nw, Nv), np.float32)
@@ -352,10 +411,28 @@ class MixtureOfGaussians(object):
         return result
 
     def evaluate_grid_dstn(self, x0, x1, y0, y1, cx, cy):
-        '''
-        [x0,x1): (int) X values to evaluate
-        [y0,y1): (int) Y values to evaluate
-        (cx,cy): (float) pixel center of the MoG
+        '''Evaluate this mixture on a regular pixel grid.
+
+        Parameters
+        ----------
+        x0 : int
+            Start of the X range to evaluate, ``[x0, x1)``.
+        x1 : int
+            End (exclusive) of the X range to evaluate.
+        y0 : int
+            Start of the Y range to evaluate, ``[y0, y1)``.
+        y1 : int
+            End (exclusive) of the Y range to evaluate.
+        cx : float
+            X pixel center of the MoG.
+        cy : float
+            Y pixel center of the MoG.
+
+        Returns
+        -------
+        Patch
+            The evaluated mixture as a Patch object with origin
+            ``(x0, y0)``.
         '''
         from tractor.mix import c_gauss_2d_grid
         assert(self.D == 2)
@@ -367,14 +444,29 @@ class MixtureOfGaussians(object):
         return Patch(x0, y0, result)
 
     def evaluate_grid_approx(self, x0, x1, y0, y1, cx, cy, minval):
-        '''
-        minval: small value at which to stop evaluating
+        '''Evaluate this mixture approximately on a regular pixel grid.
 
-        [x0,x1): (int) X values to evaluate
-        [y0,y1): (int) Y values to evaluate
-        (cx,cy): (float) pixel center of the MoG
+        Parameters
+        ----------
+        x0 : int
+            Start of the X range to evaluate, ``[x0, x1)``.
+        x1 : int
+            End (exclusive) of the X range to evaluate.
+        y0 : int
+            Start of the Y range to evaluate, ``[y0, y1)``.
+        y1 : int
+            End (exclusive) of the Y range to evaluate.
+        cx : float
+            X pixel center of the MoG.
+        cy : float
+            Y pixel center of the MoG.
+        minval : float
+            Small value at which to stop evaluating.
 
-        Returns: numpy array of shape (y1-y0, x1-x0)
+        Returns
+        -------
+        numpy.ndarray
+            The evaluated mixture, shape ``(y1-y0, x1-x0)``.
         '''
         from tractor.mix import c_gauss_2d_approx2
         assert(self.D == 2)
@@ -388,8 +480,29 @@ class MixtureOfGaussians(object):
 
     def evaluate_grid_masked(self, x0, y0, mask, fx, fy,
                              derivs=False):
-        '''
-        mask: np array of booleans (NOT Patch object!)
+        '''Evaluate this mixture on the masked pixels of a grid.
+
+        Parameters
+        ----------
+        x0 : int
+            X origin of the grid.
+        y0 : int
+            Y origin of the grid.
+        mask : numpy.ndarray
+            Boolean array (NOT a Patch object!) selecting the pixels to
+            evaluate.
+        fx : float
+            X pixel center of the MoG.
+        fy : float
+            Y pixel center of the MoG.
+        derivs : bool, optional
+            If True, also compute and return x and y derivatives.
+
+        Returns
+        -------
+        Patch or tuple of Patch
+            The evaluated mixture as a Patch object; if `derivs` is True,
+            a tuple ``(patch, xderiv, yderiv)`` of Patch objects.
         '''
         from tractor.mix import c_gauss_2d_masked
 
@@ -429,22 +542,43 @@ class MixtureOfGaussians(object):
     def evaluate_grid_approx3(self, x0, x1, y0, y1, fx, fy, minval,
                               derivs=False, minradius=3, doslice=True,
                               maxmargin=100):
-        '''
-        minval: small value at which to stop evaluating
+        '''Evaluate this mixture approximately on a grid, returning a Patch.
 
-        [x0,x1): (int) X values to evaluate
-        [y0,y1): (int) Y values to evaluate
-        (fx,fy): (float) pixel offset of the MoG; ie, evaluate MoG shifted by
-                this amount.
+        Unlike ``evaluate_grid_approx``, returns a Patch object.
 
-        'maxmargin': don't render sources more than this distance outside the box.
+        Parameters
+        ----------
+        x0 : int
+            Start of the X range to evaluate, ``[x0, x1)``.
+        x1 : int
+            End (exclusive) of the X range to evaluate.
+        y0 : int
+            Start of the Y range to evaluate, ``[y0, y1)``.
+        y1 : int
+            End (exclusive) of the Y range to evaluate.
+        fx : float
+            X pixel offset of the MoG; i.e., evaluate the MoG shifted by
+            this amount.
+        fy : float
+            Y pixel offset of the MoG.
+        minval : float
+            Small value at which to stop evaluating.
+        derivs : bool, optional
+            If True, compute and return x and y derivatives too.
+        minradius : int, optional
+            Minimum rendering radius passed to the evaluation routine.
+        doslice : bool, optional
+            If True, slice the images down to the non-zero bounding-box.
+        maxmargin : int, optional
+            Do not render sources more than this distance outside the box.
 
-        If 'doslice' is True, slices the images down to the non-zero
-        bounding-box.
-
-        If 'derivs' is True, computes and returns x and y derivatives too.
-
-        Unlike evaluate_grid_approx, returns a Patch object.
+        Returns
+        -------
+        Patch or tuple of Patch or None
+            The evaluated mixture as a Patch object; if `derivs` is True,
+            a tuple ``(patch, xderiv, yderiv)`` of Patch objects. Returns
+            None if the source center is more than `maxmargin` outside
+            the box.
         '''
         from tractor.mix import c_gauss_2d_approx3
 
@@ -507,11 +641,31 @@ class MixtureOfGaussians(object):
 
 
 def mixture_to_patch(mixture, x0, x1, y0, y1, minval=0., exactExtent=False):
-    '''
-    `mixture`: a MixtureOfGaussians
-    `x0,x1,y0,y1`: integer bounds [x0,x1), [y0,y1) of the grid to evaluate
+    '''Evaluate a MixtureOfGaussians on a pixel grid, returning a Patch.
 
-    Returns: a Patch object
+    Parameters
+    ----------
+    mixture : MixtureOfGaussians
+        The mixture to evaluate.
+    x0 : int
+        Start of the X range to evaluate, ``[x0, x1)``.
+    x1 : int
+        End (exclusive) of the X range to evaluate.
+    y0 : int
+        Start of the Y range to evaluate, ``[y0, y1)``.
+    y1 : int
+        End (exclusive) of the Y range to evaluate.
+    minval : float, optional
+        Small value at which to stop evaluating; if 0 or None, the exact
+        grid evaluation is used.
+    exactExtent : bool, optional
+        If True, keep the full requested extent instead of slicing to the
+        non-zero bounding-box.
+
+    Returns
+    -------
+    Patch
+        The evaluated mixture as a Patch object.
     '''
     if minval == 0. or minval is None:
         return mixture.evaluate_grid(x0, x1, y0, y1, 0., 0.)

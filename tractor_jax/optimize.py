@@ -232,13 +232,22 @@ class Optimizer(object):
 
     def _get_fitstats(self, catalog, imsBest, srcs, imlist, umodsforsource,
                       umodels, scales, nilcounts, extras=[]):
-        '''
-        extras: [ ('key', [eim0,eim1,eim2]), ... ]
+        '''Compute per-image and per-source fit statistics.
 
-        Extra fields to add to the "FitStats" object, populated by
-        taking the profile-weighted sum of 'eim*'.  The number of
-        these images *must* match the number and shape of Tractor
-        images.
+        Parameters
+        ----------
+        extras : list of tuple, optional
+            Entries of the form ``('key', [eim0, eim1, eim2])``: extra
+            fields to add to the ``FitStats`` object, populated by
+            taking the profile-weighted sum of the ``eim*`` images.
+            The number of these images *must* match the number and
+            shape of Tractor images.
+
+        Returns
+        -------
+        FitStats
+            Object whose attributes hold the per-image and per-source
+            fit statistics.
         '''
         if extras is None:
             extras = []

@@ -8,10 +8,27 @@ from tractor_jax.miscutils import lanczos_filter, batch_correlate1d
 
 
 def rebin_downsample_int_flux(img: jnp.ndarray, k_y: int, k_x: int) -> jnp.ndarray:
-    """
-    Flux-conserving integer-factor downsample.
-    img: (H, W) flux per pixel (integrated over pixel).
-    returns: (H//k_y, W//k_x), sum preserved if H,W divisible.
+    """Flux-conserving integer-factor downsample.
+
+    Block-sums the input image over non-overlapping ``k_y x k_x`` blocks.
+    If the image dimensions are not divisible by the factors, the image is
+    cropped to the largest divisible extent before rebinning.
+
+    Parameters
+    ----------
+    img : jnp.ndarray
+        Input image of shape ``(H, W)``; flux per pixel (integrated over
+        the pixel).
+    k_y : int
+        Integer downsampling factor along the first (row) axis.
+    k_x : int
+        Integer downsampling factor along the second (column) axis.
+
+    Returns
+    -------
+    jnp.ndarray
+        Downsampled image of shape ``(H // k_y, W // k_x)``. The total sum
+        is preserved when ``H`` and ``W`` are divisible by the factors.
     """
     H, W = img.shape
     H2 = (H // k_y) * k_y
@@ -22,17 +39,26 @@ def rebin_downsample_int_flux(img: jnp.ndarray, k_y: int, k_x: int) -> jnp.ndarr
 
 
 def get_galaxy_shape_matrix(re, ab, phi):
-    """
-    Computes the transformation matrix G that takes unit vectors (in re)
-    to degrees (intermediate world coords).
+    """Compute the galaxy shape transformation matrix.
 
-    Args:
-        re: Effective radius in arcsec (scalar or array)
-        ab: Axis ratio (scalar or array)
-        phi: Position angle in degrees (scalar or array)
+    Computes the transformation matrix ``G`` that takes unit vectors (in
+    units of the effective radius) to degrees (intermediate world
+    coordinates), matching the logic of ``tractor/galaxy.py``.
 
-    Returns:
-        G: Matrix of shape (..., 2, 2)
+    Parameters
+    ----------
+    re : jnp.ndarray or float
+        Effective radius in arcsec (scalar or array). A minimum size of
+        1/30 arcsec is enforced to prevent singular matrix inversions.
+    ab : jnp.ndarray or float
+        Axis ratio (scalar or array).
+    phi : jnp.ndarray or float
+        Position angle in degrees, East of North (scalar or array).
+
+    Returns
+    -------
+    G : jnp.ndarray
+        Transformation matrix of shape ``(..., 2, 2)``.
     """
     # Phi is E of N.
     # 0 = N (Dec increasing)
@@ -65,31 +91,45 @@ def get_galaxy_shape_matrix(re, ab, phi):
 
 
 def get_shear_matrix(cd_inv, G):
-    """
-    Computes Tinv = cd_inv . G
+    """Compute the shear matrix ``Tinv = cd_inv @ G``.
 
-    Args:
-        cd_inv: Inverse CD matrix (..., 2, 2) (degrees -> pixels)
-        G: Galaxy shape matrix (..., 2, 2) (unit re -> degrees)
+    Parameters
+    ----------
+    cd_inv : jnp.ndarray
+        Inverse CD matrix of shape ``(..., 2, 2)``, mapping degrees to
+        pixels.
+    G : jnp.ndarray
+        Galaxy shape matrix of shape ``(..., 2, 2)``, mapping unit
+        effective-radius vectors to degrees.
 
-    Returns:
-        Tinv: Transformation matrix (..., 2, 2) (unit re -> pixels)
+    Returns
+    -------
+    Tinv : jnp.ndarray
+        Transformation matrix of shape ``(..., 2, 2)``, mapping unit
+        effective-radius vectors to pixels.
     """
     # Matrix multiplication
     return jnp.matmul(cd_inv, G)
 
 
 def apply_shear_to_cov(cov, Tinv):
-    """
-    Applies shear Tinv to covariance matrix cov.
-    New cov = Tinv * cov * Tinv^T
+    """Apply a shear transformation to covariance matrices.
 
-    Args:
-        cov: Covariance matrices (..., K, 2, 2)
-        Tinv: Shear matrices (..., 2, 2)
+    Transforms each covariance matrix as
+    ``new_cov = Tinv @ cov @ Tinv.T``, broadcasting ``Tinv`` over the
+    mixture-component axis ``K``.
 
-    Returns:
-        New covariance matrices (..., K, 2, 2)
+    Parameters
+    ----------
+    cov : jnp.ndarray
+        Covariance matrices of shape ``(..., K, 2, 2)``.
+    Tinv : jnp.ndarray
+        Shear matrices of shape ``(..., 2, 2)``.
+
+    Returns
+    -------
+    jnp.ndarray
+        Transformed covariance matrices of shape ``(..., K, 2, 2)``.
     """
     # cov is (..., K, 2, 2)
     # Tinv is (..., 2, 2) -> expand to (..., 1, 2, 2)
@@ -109,18 +149,32 @@ def apply_shear_to_cov(cov, Tinv):
 
 
 def gaussian_fourier_transform(amp, var, mu, v, w):
-    """
-    Computes Fourier Transform of Mixture of Gaussians.
+    """Compute the Fourier transform of a mixture of Gaussians.
 
-    Args:
-        amp: Amplitudes (..., K)
-        var: Variances (..., K, 2, 2)
-        mu: Means (..., K, 2) (Can be None or zeros if centered)
-        v: Frequencies x (..., W) or (..., W)
-        w: Frequencies y (..., H)
+    Evaluates the analytic Fourier transform of a 2-D Gaussian mixture on
+    a grid of frequencies and sums over the mixture components.
 
-    Returns:
-        Fsum: (..., H, W) Complex array
+    Parameters
+    ----------
+    amp : jnp.ndarray
+        Amplitudes of shape ``(..., K)``.
+    var : jnp.ndarray
+        Covariance matrices of shape ``(..., K, 2, 2)``.
+    mu : jnp.ndarray or None
+        Means of shape ``(..., K, 2)``. May be ``None`` (or zeros) for a
+        centered mixture, in which case the phase term is omitted.
+    v : jnp.ndarray
+        Frequency grid along x, broadcastable against ``w`` to shape
+        ``(H, W)`` (e.g. a meshgrid of ``rfftfreq(W)``).
+    w : jnp.ndarray
+        Frequency grid along y, broadcastable against ``v`` to shape
+        ``(H, W)`` (e.g. a meshgrid of ``fftfreq(H)``).
+
+    Returns
+    -------
+    Fsum : jnp.ndarray
+        Complex array of shape ``(..., H, W)``: the mixture's Fourier
+        transform summed over the ``K`` components.
     """
     # v, w can be 1D arrays of frequencies.
     # Let's assume v corresponds to last dim (width), w to second last (height).
@@ -176,15 +230,26 @@ def gaussian_fourier_transform(amp, var, mu, v, w):
 
 
 def render_pixelized_psf(psf_img, dx, dy):
-    """
-    Shifts a pixelized PSF image by (dx, dy).
+    """Shift a pixelized PSF image by a subpixel offset.
 
-    Args:
-        psf_img: (H, W)
-        dx, dy: scalars
+    Replicates the Tractor logic: a Lanczos-3 filter shift in x
+    (correlating rows), followed by a Lanczos-3 filter shift in y
+    (correlating columns of the result). The Lanczos kernels are
+    normalized to unit sum.
 
-    Returns:
-        Shifted image (H, W)
+    Parameters
+    ----------
+    psf_img : jnp.ndarray
+        PSF image of shape ``(H, W)``.
+    dx : float
+        Subpixel shift along x (scalar).
+    dy : float
+        Subpixel shift along y (scalar).
+
+    Returns
+    -------
+    jnp.ndarray
+        Shifted image of shape ``(H, W)``.
     """
     # Replicate tractor logic:
     # 1. Lanczos filter x-shift (correlate rows)
@@ -228,19 +293,40 @@ def render_pixelized_psf(psf_img, dx, dy):
 
 
 def _boxcar_downsample_flux(img, out_h, out_w):
-    """Flux-conserving, window-applying downsample for NON-INTEGER factors.
+    """Flux-conserving, window-applying downsample for non-integer factors.
 
-    Integrates the high-res image over each output pixel's footprint (a boxcar
-    of width factor = H_hr/out_h). This is the native-pixel integration window
-    that the detector applies and that `rebin_downsample_int_flux` applies for
-    integer factors; the previous `jax.image.resize(lanczos3)` fallback omitted
-    it (interpolates point values instead of integrating), which made templates
-    too sharp on undersampled PSFs (research note proj-spherex-gpupipe
-    lasso_alpha/11). Exact for a piecewise-constant high-res image: the integral
-    up to a fractional position x equals the linear interpolant of the
-    cumulative sum at x, so each output pixel = cumsum(edge_{i+1}) - cumsum(edge_i).
-    Reduces exactly to the integer block-sum when the factor is an integer, and
-    conserves total flux by construction (telescoping sum).
+    Integrates the high-resolution image over each output pixel's footprint
+    (a boxcar of width ``factor = H_hr / out_h``). This is the native-pixel
+    integration window that the detector applies and that
+    :func:`rebin_downsample_int_flux` applies for integer factors.
+
+    Parameters
+    ----------
+    img : jnp.ndarray
+        High-resolution input image of shape ``(H, W)``.
+    out_h : int
+        Output height.
+    out_w : int
+        Output width.
+
+    Returns
+    -------
+    jnp.ndarray
+        Downsampled image of shape ``(out_h, out_w)``.
+
+    Notes
+    -----
+    The previous ``jax.image.resize(lanczos3)`` fallback omitted the pixel
+    window (it interpolates point values instead of integrating), which
+    made templates too sharp on undersampled PSFs (research note
+    proj-spherex-gpupipe lasso_alpha/11).
+
+    The method is exact for a piecewise-constant high-resolution image: the
+    integral up to a fractional position ``x`` equals the linear
+    interpolant of the cumulative sum at ``x``, so each output pixel is
+    ``cumsum(edge_{i+1}) - cumsum(edge_i)``. It reduces exactly to the
+    integer block-sum when the factor is an integer, and conserves total
+    flux by construction (telescoping sum).
     """
     H, W = img.shape
     dt = img.dtype
@@ -263,25 +349,34 @@ def _boxcar_downsample_flux(img, out_h, out_w):
 
 
 def downsample_image(img, target_shape):
-    """
-    Downsamples image to target_shape, flux-conservingly, applying the native
-    output-pixel integration window (so a rendered PSF is integrated over each
-    detector pixel, not point-sampled).
+    """Downsample an image flux-conservingly to a target shape.
 
-    Integer factors use fast block-sum rebinning; non-integer factors use the
-    exact boxcar integral (`_boxcar_downsample_flux`), which agrees with the
-    block-sum at integer factors. NOTE: the previous non-integer path used
-    `jax.image.resize(lanczos3)`, which band-limits but does NOT apply the
-    pixel window — biasing forced-photometry templates on undersampled PSFs
-    (proj-spherex-gpupipe lasso_alpha/11). Integer-factor (e.g. production
-    SPHEREx cutouts at OVERSAMP 10/5) rendering is unchanged.
+    Applies the native output-pixel integration window (so a rendered PSF
+    is integrated over each detector pixel, not point-sampled). Integer
+    factors use fast block-sum rebinning; non-integer factors use the
+    exact boxcar integral (:func:`_boxcar_downsample_flux`), which agrees
+    with the block-sum at integer factors.
 
-    Args:
-        img: (H_hr, W_hr) image
-        target_shape: (H, W) tuple
+    Parameters
+    ----------
+    img : jnp.ndarray
+        High-resolution input image of shape ``(H_hr, W_hr)``.
+    target_shape : tuple of int
+        Target shape ``(H, W)``. Must be static or concrete at trace time
+        so that integer downsampling can be detected.
 
-    Returns:
-        (H, W) image
+    Returns
+    -------
+    jnp.ndarray
+        Downsampled image of shape ``(H, W)``.
+
+    Notes
+    -----
+    The previous non-integer path used ``jax.image.resize(lanczos3)``,
+    which band-limits but does NOT apply the pixel window — biasing
+    forced-photometry templates on undersampled PSFs
+    (proj-spherex-gpupipe lasso_alpha/11). Integer-factor rendering
+    (e.g. production SPHEREx cutouts at OVERSAMP 10/5) is unchanged.
     """
     H_hr, W_hr = img.shape
     H, W = target_shape
@@ -307,19 +402,35 @@ def render_galaxy_fft(
     subpixel_offset,
     image_shape,
 ):
-    """
-    Renders a galaxy using FFT convolution.
+    """Render a galaxy using FFT convolution.
 
-    Args:
-        galaxy_mix: (amp, mean, var) of the galaxy profile (normalized, unsheared).
-        psf_fft: (H, W) Complex Fourier Transform of the PSF.
-        shape_params: (re, ab, phi)
-        wcs_cd_inv: (2, 2) Inverse CD matrix
-        subpixel_offset: (x, y)
-        image_shape: (H, W) target image shape (data pixels)
+    Shears the (normalized, unsheared) galaxy mixture-of-Gaussians profile
+    into pixel coordinates, evaluates its analytic Fourier transform at the
+    subpixel-shifted position, multiplies by the PSF Fourier transform, and
+    inverse-transforms to the image plane.
 
-    Returns:
-        Rendered image (H, W)
+    Parameters
+    ----------
+    galaxy_mix : tuple of jnp.ndarray
+        ``(amp, mean, var)`` of the galaxy profile (normalized,
+        unsheared), with shapes ``(K,)``, ``(K, 2)`` and ``(K, 2, 2)``.
+    psf_fft : jnp.ndarray
+        Complex Fourier transform of the PSF, in ``rfft2`` layout matching
+        ``image_shape``.
+    shape_params : tuple
+        ``(re, ab, phi)``: effective radius in arcsec, axis ratio, and
+        position angle in degrees.
+    wcs_cd_inv : jnp.ndarray
+        Inverse CD matrix of shape ``(2, 2)``.
+    subpixel_offset : tuple
+        ``(x, y)`` subpixel offset of the galaxy center.
+    image_shape : tuple of int
+        Target image shape ``(H, W)`` in data pixels.
+
+    Returns
+    -------
+    jnp.ndarray
+        Rendered image of shape ``(H, W)``.
     """
     amp, mean, var = galaxy_mix
     re, ab, phi = shape_params
@@ -360,16 +471,24 @@ def render_galaxy_fft(
 
 
 def render_point_source_pixelized(flux, subpixel_offset, psf_image):
-    """
-    Renders a point source with pixelized PSF.
+    """Render a point source with a pixelized PSF.
 
-    Args:
-        flux: Scalar
-        subpixel_offset: (dx, dy)
-        psf_image: (H, W) PSF stamp
+    Shifts the PSF stamp by the subpixel offset (Lanczos interpolation via
+    :func:`render_pixelized_psf`) and scales it by the flux.
 
-    Returns:
-        (H, W) Image
+    Parameters
+    ----------
+    flux : float or jnp.ndarray
+        Scalar source flux (in the image's calibrated units).
+    subpixel_offset : tuple
+        ``(dx, dy)`` subpixel shift.
+    psf_image : jnp.ndarray
+        PSF stamp of shape ``(H, W)``.
+
+    Returns
+    -------
+    jnp.ndarray
+        Rendered image of shape ``(H, W)``.
     """
     dx, dy = subpixel_offset
     shifted_psf = render_pixelized_psf(psf_image, dx, dy)
@@ -377,17 +496,28 @@ def render_point_source_pixelized(flux, subpixel_offset, psf_image):
 
 
 def render_point_source_fft(flux, pos, psf_fft, image_shape):
-    """
-    Renders a point source using FFT convolution (phase shift).
+    """Render a point source using FFT convolution (phase shift).
 
-    Args:
-        flux: Scalar flux.
-        pos: (x, y) Position.
-        psf_fft: (H, W) FFT of PSF (centered at 0 frequency).
-        image_shape: (H, W).
+    Multiplies the PSF Fourier transform by a phase ramp encoding the
+    source position and by the flux, then inverse-transforms to the image
+    plane.
 
-    Returns:
-        Rendered image (H, W).
+    Parameters
+    ----------
+    flux : float or jnp.ndarray
+        Scalar source flux (in the image's calibrated units).
+    pos : jnp.ndarray or tuple
+        ``(x, y)`` position in pixels.
+    psf_fft : jnp.ndarray
+        Fourier transform of the PSF (centered at zero frequency), in
+        ``rfft2`` layout matching ``image_shape``.
+    image_shape : tuple of int
+        Target image shape ``(H, W)``.
+
+    Returns
+    -------
+    jnp.ndarray
+        Rendered image of shape ``(H, W)``.
     """
     H, W = image_shape
 
@@ -413,21 +543,35 @@ def render_point_source_fft(flux, pos, psf_fft, image_shape):
 
 
 def convolve_gaussians(amp1, mean1, var1, amp2, mean2, var2):
-    """
-    Convolves two MoGs.
-    MoG1: (K1) components
-    MoG2: (K2) components
+    """Convolve two mixtures of Gaussians.
 
-    Args:
-        amp1: (K1,)
-        mean1: (K1, 2)
-        var1: (K1, 2, 2)
-        amp2: (K2,)
-        mean2: (K2, 2)
-        var2: (K2, 2, 2)
+    The convolution of a ``K1``-component mixture with a ``K2``-component
+    mixture is a ``K1 * K2``-component mixture whose amplitudes multiply
+    and whose means and covariances add, pairwise.
 
-    Returns:
-        (amp, mean, var) of size K1*K2
+    Parameters
+    ----------
+    amp1 : jnp.ndarray
+        Amplitudes of the first mixture, shape ``(K1,)``.
+    mean1 : jnp.ndarray
+        Means of the first mixture, shape ``(K1, 2)``.
+    var1 : jnp.ndarray
+        Covariances of the first mixture, shape ``(K1, 2, 2)``.
+    amp2 : jnp.ndarray
+        Amplitudes of the second mixture, shape ``(K2,)``.
+    mean2 : jnp.ndarray
+        Means of the second mixture, shape ``(K2, 2)``.
+    var2 : jnp.ndarray
+        Covariances of the second mixture, shape ``(K2, 2, 2)``.
+
+    Returns
+    -------
+    amp : jnp.ndarray
+        Amplitudes of the convolved mixture, shape ``(K1 * K2,)``.
+    mean : jnp.ndarray
+        Means of the convolved mixture, shape ``(K1 * K2, 2)``.
+    var : jnp.ndarray
+        Covariances of the convolved mixture, shape ``(K1 * K2, 2, 2)``.
     """
     # Reshape for broadcasting
     # (K1, 1) * (1, K2) -> (K1, K2)
@@ -445,17 +589,29 @@ def convolve_gaussians(amp1, mean1, var1, amp2, mean2, var2):
 
 
 def evaluate_mog_grid(amp, mean, var, X, Y):
-    """
-    Evaluates MoG on a grid (X, Y).
+    """Evaluate a mixture of Gaussians on a coordinate grid.
 
-    Args:
-        amp: (K,)
-        mean: (K, 2)
-        var: (K, 2, 2)
-        X, Y: (H, W) coordinate arrays
+    Evaluates the amplitude-weighted sum of normalized 2-D Gaussian
+    densities at each grid point. Covariance determinants are clipped
+    at ``1e-12`` for numerical stability, and NaNs are replaced by zero.
 
-    Returns:
-        Image (H, W)
+    Parameters
+    ----------
+    amp : jnp.ndarray
+        Amplitudes of shape ``(K,)``.
+    mean : jnp.ndarray
+        Means of shape ``(K, 2)``, ordered as ``(x, y)``.
+    var : jnp.ndarray
+        Covariance matrices of shape ``(K, 2, 2)``.
+    X : jnp.ndarray
+        x-coordinate array of shape ``(H, W)``.
+    Y : jnp.ndarray
+        y-coordinate array of shape ``(H, W)``.
+
+    Returns
+    -------
+    jnp.ndarray
+        Image of shape ``(H, W)``.
     """
     # Stack coords: (H, W, 2)
     pos = jnp.stack([X, Y], axis=-1)
@@ -522,19 +678,34 @@ def evaluate_mog_grid(amp, mean, var, X, Y):
 
 
 def render_galaxy_mog(galaxy_mix, psf_mix, shape_params, wcs_cd_inv, pos, image_shape):
-    """
-    Renders a galaxy using MoG convolution (Analytic).
+    """Render a galaxy using analytic mixture-of-Gaussians convolution.
 
-    Args:
-        galaxy_mix: (amp, mean, var) (normalized, unsheared)
-        psf_mix: (amp, mean, var)
-        shape_params: (re, ab, phi)
-        wcs_cd_inv: (2, 2)
-        pos: (x, y) Center position in pixels
-        image_shape: (H, W)
+    Shears the (normalized, unsheared) galaxy profile into pixel
+    coordinates, convolves it analytically with the PSF mixture, shifts
+    the result to the source position, and evaluates it on the pixel
+    grid.
 
-    Returns:
-        Image (H, W)
+    Parameters
+    ----------
+    galaxy_mix : tuple of jnp.ndarray
+        ``(amp, mean, var)`` of the galaxy profile (normalized,
+        unsheared), with shapes ``(K,)``, ``(K, 2)`` and ``(K, 2, 2)``.
+    psf_mix : tuple of jnp.ndarray
+        ``(amp, mean, var)`` of the PSF mixture, in pixel coordinates.
+    shape_params : tuple
+        ``(re, ab, phi)``: effective radius in arcsec, axis ratio, and
+        position angle in degrees.
+    wcs_cd_inv : jnp.ndarray
+        Inverse CD matrix of shape ``(2, 2)``.
+    pos : jnp.ndarray or tuple
+        ``(x, y)`` center position in pixels.
+    image_shape : tuple of int
+        Target image shape ``(H, W)``.
+
+    Returns
+    -------
+    jnp.ndarray
+        Rendered image of shape ``(H, W)``.
     """
     gal_amp, gal_mean, gal_var = galaxy_mix
     psf_amp, psf_mean, psf_var = psf_mix
@@ -581,17 +752,27 @@ def render_galaxy_mog(galaxy_mix, psf_mix, shape_params, wcs_cd_inv, pos, image_
 
 
 def render_point_source_mog(flux, pos, psf_mix, image_shape):
-    """
-    Renders a point source with MoG PSF.
+    """Render a point source with a mixture-of-Gaussians PSF.
 
-    Args:
-        flux: Scalar
-        pos: (x, y)
-        psf_mix: (amp, mean, var)
-        image_shape: (H, W)
+    Shifts the PSF mixture means to the source position, evaluates the
+    normalized mixture on the pixel grid, and scales by the flux.
 
-    Returns:
-        Image (H, W)
+    Parameters
+    ----------
+    flux : float or jnp.ndarray
+        Scalar source flux (in the image's calibrated units).
+    pos : jnp.ndarray or tuple
+        ``(x, y)`` position in pixels.
+    psf_mix : tuple of jnp.ndarray
+        ``(amp, mean, var)`` of the PSF mixture, with shapes ``(K,)``,
+        ``(K, 2)`` and ``(K, 2, 2)``.
+    image_shape : tuple of int
+        Target image shape ``(H, W)``.
+
+    Returns
+    -------
+    jnp.ndarray
+        Rendered image of shape ``(H, W)``.
     """
     amp, mean, var = psf_mix
 

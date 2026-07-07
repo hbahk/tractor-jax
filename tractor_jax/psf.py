@@ -59,8 +59,25 @@ def lanczos_shift_image(img, dx, dy, inplace=False, force_python=False):
     return outimg
 
 def lanczos_shift_image_batch_gpu(imgs, dxs, dys):
-    """Translated from lanczos_shift_image python version to GPU using cupy
-        and helper functions from tractor_jax.miscutils"""
+    """Shift a batch of images by subpixel offsets using Lanczos interpolation.
+
+    Translated from the ``lanczos_shift_image`` Python version to the GPU,
+    using helper functions from ``tractor_jax.miscutils``.
+
+    Parameters
+    ----------
+    imgs : array_like
+        Batch of images, shape ``(N, H, W)``.
+    dxs : array_like
+        Subpixel shifts in x, one per image.
+    dys : array_like
+        Subpixel shifts in y, one per image.
+
+    Returns
+    -------
+    array_like
+        The shifted images, same shape as `imgs`.
+    """
     import jax.numpy as jnp
     from tractor_jax.miscutils import lanczos_filter, batch_correlate1d
     L = 3
@@ -85,27 +102,33 @@ class HybridPSF(object):
 
 
 class PixelizedPSF(BaseParams, ducks.ImageCalibration):
-    '''
-    A PSF model based on an image postage stamp, which will be
-    sinc-shifted to subpixel positions.
+    '''A PSF model based on an image postage stamp.
 
+    The postage stamp will be sinc-shifted to subpixel positions.
     Galaxies will be rendered using FFT convolution.
 
     Also handles the case where the PSF model is sampled at a
-    different pixel spacing than the native pixel, eg, an oversampled
+    different pixel spacing than the native pixel, e.g., an oversampled
     model to be used when the image itself is undersampled.
 
+    Notes
+    -----
     FIXME -- currently this class claims to have no params.
     '''
 
     def __init__(self, img, sampling=1., Lorder=3):
-        '''
-        Creates a new PixelizedPSF object from the given *img* (numpy
-        array) image of the PSF.
+        '''Create a new PixelizedPSF object from the given PSF image.
 
-        - *img* must be an ODD size.
-        - *Lorder* is the order of the Lanczos interpolant used for
-           shifting the image to subpixel positions.
+        Parameters
+        ----------
+        img : numpy.ndarray
+            Image of the PSF. Must have ODD size in each dimension.
+        sampling : float, optional
+            Pixel spacing of the PSF model relative to the native image
+            pixels (values other than 1 indicate an oversampled model).
+        Lorder : int, optional
+            Order of the Lanczos interpolant used for shifting the image
+            to subpixel positions.
         '''
         # ensure float32 and align
         if isinstance(img, np.ndarray):
@@ -165,8 +188,18 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
         return self.radius
 
     def get_r_eff(self, flux_fraction=0.999):
-        """
-        Computes the effective radius containing the specified fraction of the flux.
+        """Compute the effective radius containing a given fraction of the flux.
+
+        Parameters
+        ----------
+        flux_fraction : float, optional
+            Fraction of the total flux to be enclosed within the radius.
+
+        Returns
+        -------
+        float
+            The radius, in pixels, enclosing `flux_fraction` of the total
+            flux of the PSF image.
         """
         cache_key = ('r_eff', flux_fraction)
         if hasattr(self, '_r_eff_cache') and cache_key in self._r_eff_cache:
@@ -292,11 +325,25 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
         return sz
 
     def _padInImage(self, H, W, img=None):
-        '''
-        Embeds this PSF image into a larger or smaller image of shape H,W.
+        '''Embed this PSF image into a larger or smaller image of shape (H, W).
 
-        Return (img, cx, cy), where *cx*,*cy* are the coordinates of the PSF
-        center in *img*.
+        Parameters
+        ----------
+        H : int
+            Height of the output image.
+        W : int
+            Width of the output image.
+        img : numpy.ndarray, optional
+            Image to embed; defaults to this PSF's image.
+
+        Returns
+        -------
+        img : numpy.ndarray
+            The embedded (padded or cropped) image of shape ``(H, W)``.
+        cx : int
+            X coordinate of the PSF center in `img`.
+        cy : int
+            Y coordinate of the PSF center in `img`.
         '''
         if img is None:
             img = self.img
@@ -327,18 +374,32 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
         return pad, cx, cy
 
     def getFourierTransform(self, px, py, radius):
-        '''
-        Returns the Fourier Transform of this PSF, with the
-        next-power-of-2 size up from *radius*.
+        '''Return the Fourier transform of this PSF.
 
-        Returns: (FFT, (xc, yc), (imh,imw), (v,w))
+        The transform is computed at the next-power-of-2 size up from
+        `radius`.
 
-        *FFT*: numpy array, the FFT
-        *xc*: float, pixel location of the PSF /center/ in the PSF subimage
-        *yc*:    ditto
-        *imh,imw*: ints, shape of the padded PSF image
-        *v,w*: v=np.fft.rfftfreq(imw), w=np.fft.fftfreq(imh)
+        Parameters
+        ----------
+        px : float
+            X pixel position at which the PSF is evaluated.
+        py : float
+            Y pixel position at which the PSF is evaluated.
+        radius : float
+            Desired radius; the FFT size is the next power of two above
+            ``2 * radius``.
 
+        Returns
+        -------
+        FFT : numpy.ndarray
+            The FFT of the padded PSF image.
+        (xc, yc) : tuple of float
+            Pixel location of the PSF center in the PSF subimage.
+        (imh, imw) : tuple of int
+            Shape of the padded PSF image.
+        (v, w) : tuple of numpy.ndarray
+            Frequency vectors, ``v = np.fft.rfftfreq(imw)`` and
+            ``w = np.fft.fftfreq(imh)``.
         '''
         if self.sampling != 1.:
             return self._getOversampledFourierTransform(px, py, radius)
@@ -533,23 +594,29 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
         return rtn
 
 class GaussianMixturePSF(MogParams, ducks.ImageCalibration):
-    '''
-    A PSF model that is a mixture of general 2-D Gaussians
-    (characterized by amplitude, mean, covariance)
+    '''A PSF model that is a mixture of general 2-D Gaussians.
+
+    Each Gaussian component is characterized by an amplitude, a mean, and
+    a covariance.
     '''
 
     def __init__(self, *args):
-        '''
-        GaussianMixturePSF(amp, mean, var)
+        '''Create a new Gaussian-mixture PSF.
 
-        or
+        Can be called as ``GaussianMixturePSF(amp, mean, var)`` or with
+        the parameters unpacked as scalars, e.g.::
 
-        GaussianMixturePSF(a0,a1,a2, mx0,my0,mx1,my1,mx2,my2,
-                           vxx0,vyy0,vxy0, vxx1,vyy1,vxy1, vxx2,vyy2,vxy2)
+            GaussianMixturePSF(a0,a1,a2, mx0,my0,mx1,my1,mx2,my2,
+                               vxx0,vyy0,vxy0, vxx1,vyy1,vxy1, vxx2,vyy2,vxy2)
 
-        amp:  np array (size K) of Gaussian amplitudes
-        mean: np array (size K,2) of means
-        var:  np array (size K,2,2) of variances
+        Parameters
+        ----------
+        amp : numpy.ndarray
+            Gaussian amplitudes, shape ``(K,)``.
+        mean : numpy.ndarray
+            Means, shape ``(K, 2)``.
+        var : numpy.ndarray
+            Variances (covariance matrices), shape ``(K, 2, 2)``.
         '''
         super(GaussianMixturePSF, self).__init__(*args)
         assert(self.mog.D == 2)
@@ -614,10 +681,22 @@ class GaussianMixturePSF(MogParams, ducks.ImageCalibration):
         return self.getNSigma() * np.sqrt(meig)
 
     def get_r_eff(self, flux_fraction=0.999):
-        """
-        Computes the effective radius using an analytic Gaussian approximation.
-        r_eff = max_k ( sigma_scale * sqrt(lambda_max_k) )
-        where sigma_scale = sqrt(2 * ln(1/(1-f)))
+        """Compute the effective radius using an analytic Gaussian approximation.
+
+        The radius is ``r_eff = max_k(sigma_scale * sqrt(lambda_max_k))``,
+        where ``sigma_scale = sqrt(2 * ln(1/(1-f)))``, ``f`` is the flux
+        fraction, and ``lambda_max_k`` is the largest eigenvalue of the
+        covariance of component ``k``.
+
+        Parameters
+        ----------
+        flux_fraction : float, optional
+            Fraction of the total flux to be enclosed within the radius.
+
+        Returns
+        -------
+        float
+            The effective radius, in pixels.
         """
         cache_key = ('r_eff', flux_fraction)
         if hasattr(self, '_r_eff_cache') and cache_key in self._r_eff_cache:
@@ -740,14 +819,37 @@ class GaussianMixturePSF(MogParams, ducks.ImageCalibration):
     def fromStamp(stamp, N=3, P0=None, xy0=None, alpha=0.,
                   emsteps=1000, v2=False, approx=1e-30,
                   v3=False):
-        '''
-        optional P0 = (w,mu,var): initial parameter guess.
+        '''Fit a GaussianMixturePSF model to a PSF postage-stamp image.
 
-        w has shape (N,)
-        mu has shape (N,2)
-        var (variance) has shape (N,2,2)
+        Parameters
+        ----------
+        stamp : numpy.ndarray
+            PSF postage-stamp image to fit.
+        N : int, optional
+            Number of Gaussian components to fit.
+        P0 : tuple, optional
+            Initial parameter guess ``(w, mu, var)``, where ``w`` has shape
+            ``(N,)``, ``mu`` has shape ``(N, 2)``, and ``var`` (variance)
+            has shape ``(N, 2, 2)``.
+        xy0 : tuple of int, optional
+            ``(x0, y0)`` origin of the stamp.
+        alpha : float, optional
+            Regularization parameter passed to the EM fitter.
+        emsteps : int, optional
+            Maximum number of EM steps.
+        v2 : bool, optional
+            If True, use the alternate EM fitting routine
+            (``em_fit_2d_reg2``), which also fits a sky amplitude.
+        approx : float, optional
+            Approximation threshold used during fitting.
+        v3 : bool, optional
+            If True, fit using Tractor optimization instead of EM.
 
-        optional xy0 = int x0,y0 origin of stamp.
+        Returns
+        -------
+        GaussianMixturePSF or tuple
+            The fitted PSF model; if `v2` is True, a tuple
+            ``(psf, skyamp)`` of the fitted model and sky amplitude.
         '''
         from tractor_jax.emfit import em_fit_2d_reg
         from tractor_jax.fitpsf import em_init_params
@@ -801,18 +903,31 @@ class GaussianMixturePSF(MogParams, ducks.ImageCalibration):
 
 
 class HybridPixelizedPSF(HybridPSF):
-    '''
+    '''A PixelizedPSF model augmented with a Gaussian approximation.
+
     This class wraps a PixelizedPSF model, adding a Gaussian approximation
     model.
     '''
 
     def __init__(self, pix, gauss=None, N=2, cx=0., cy=0.):
-        '''
-        Create a new hybrid PSF model using the given PixelizedPSF
-        model *pix* and Gaussian approximation *gauss*.
+        '''Create a new hybrid PSF model.
 
-        If *gauss* is *None*, a *GaussianMixturePSF* model will be fit
-        to the PixelizedPSF image using *N* Gaussian components.
+        Parameters
+        ----------
+        pix : PixelizedPSF
+            The pixelized PSF model to wrap.
+        gauss : GaussianMixturePSF, optional
+            Gaussian approximation of the PSF. If None, a
+            GaussianMixturePSF model will be fit to the PixelizedPSF image
+            using `N` Gaussian components.
+        N : int, optional
+            Number of Gaussian components used when fitting `gauss`.
+        cx : float, optional
+            X pixel position at which the pixelized PSF image is evaluated
+            for the Gaussian fit.
+        cy : float, optional
+            Y pixel position at which the pixelized PSF image is evaluated
+            for the Gaussian fit.
         '''
         super(HybridPixelizedPSF, self).__init__()
         self.pix = pix
@@ -859,23 +974,29 @@ class HybridPixelizedPSF(HybridPSF):
 
 
 class GaussianMixtureEllipsePSF(GaussianMixturePSF):
-    '''
+    '''A GaussianMixturePSF variant with EllipseESoft covariances.
+
     A variant of GaussianMixturePSF that uses EllipseESoft to describe
     the covariance ellipse.
     '''
 
     def __init__(self, *args):
-        '''
-        args = (amp, mean, ell)
+        '''Create a new Gaussian-mixture-ellipse PSF.
 
-        or
+        Can be called as ``GaussianMixtureEllipsePSF(amp, mean, ell)`` or
+        with the parameters unpacked as scalars::
 
-        args = (a0,a1,..., mx0,my0,mx1,my1,..., logr0,ee1-0,ee2-0,logr1,ee1-2,...)
+            GaussianMixtureEllipsePSF(a0,a1,..., mx0,my0,mx1,my1,...,
+                                      logr0,ee1-0,ee2-0, logr1,ee1-1,ee2-1, ...)
 
-
-        amp:  np array (size K) of Gaussian amplitudes
-        mean: np array (size K,2) of means
-        ell:  list (length K) of EllipseESoft objects
+        Parameters
+        ----------
+        amp : numpy.ndarray
+            Gaussian amplitudes, shape ``(K,)``.
+        mean : numpy.ndarray
+            Means, shape ``(K, 2)``.
+        ell : list of EllipseESoft
+            Covariance ellipses, one per component (length ``K``).
         '''
         if len(args) == 3:
             amp, mean, ell = args
@@ -959,10 +1080,26 @@ class GaussianMixtureEllipsePSF(GaussianMixturePSF):
 
     @staticmethod
     def fromStamp(stamp, N=3, P0=None, approx=1e-6, damp=0.):
-        '''
-        optional P0 = (list of floats): initial parameter guess.
+        '''Fit a GaussianMixtureEllipsePSF model to a PSF postage-stamp image.
 
-        (parameters of a GaussianMixtureEllipsePSF)
+        Parameters
+        ----------
+        stamp : numpy.ndarray
+            PSF postage-stamp image to fit.
+        N : int, optional
+            Number of Gaussian components to fit.
+        P0 : list of float, optional
+            Initial parameter guess (parameters of a
+            GaussianMixtureEllipsePSF).
+        approx : float, optional
+            Model minimum value used during fitting.
+        damp : float, optional
+            Damping parameter passed to the optimizer.
+
+        Returns
+        -------
+        GaussianMixtureEllipsePSF
+            The fitted PSF model.
         '''
         from tractor_jax.ellipses import EllipseESoft
         w = np.ones(N) / float(N)
@@ -993,22 +1130,23 @@ class GaussianMixtureEllipsePSF(GaussianMixturePSF):
 
 
 class NCircularGaussianPSF(MultiParams, ducks.ImageCalibration):
-    '''
-    A PSF model using N concentric, circular Gaussians.
+    '''A PSF model using N concentric, circular Gaussians.
     '''
 
     def __init__(self, sigmas, weights):
-        '''
-        Creates a new N-Gaussian (concentric, isotropic) PSF.
+        '''Create a new N-Gaussian (concentric, isotropic) PSF.
 
-        sigmas: (list of floats) standard deviations of the components
+        For example, ``NCircularGaussianPSF([1.5, 4.0], [0.8, 0.2])``.
 
-        weights: (list of floats) relative weights of the components;
-        given two components with weights 0.9 and 0.1, the total mass
-        due to the second component will be 0.1.  These values will be
-        normalized so that the total mass of the PSF is 1.0.
-
-        eg,   NCircularGaussianPSF([1.5, 4.0], [0.8, 0.2])
+        Parameters
+        ----------
+        sigmas : list of float
+            Standard deviations of the components.
+        weights : list of float
+            Relative weights of the components; given two components with
+            weights 0.9 and 0.1, the total mass due to the second component
+            will be 0.1. These values will be normalized so that the total
+            mass of the PSF is 1.0.
         '''
         assert(len(sigmas) == len(weights))
         psigmas = ParamList(*sigmas)
@@ -1061,7 +1199,18 @@ class NCircularGaussianPSF(MultiParams, ducks.ImageCalibration):
         return self.weights.vals
 
     def scale(self, factor):
-        ''' Returns a new PSF that is *factor* times wider. '''
+        '''Return a new PSF that is `factor` times wider.
+
+        Parameters
+        ----------
+        factor : float
+            Multiplicative factor applied to the component sigmas.
+
+        Returns
+        -------
+        NCircularGaussianPSF
+            A new PSF model, `factor` times wider than this one.
+        '''
         return NCircularGaussianPSF(np.array(self.mysigmas) * factor,
                                     self.myweights)
 
@@ -1098,8 +1247,17 @@ class NCircularGaussianPSF(MultiParams, ducks.ImageCalibration):
         return max(self.minradius, max(self.mysigmas) * self.getNSigma())
 
     def get_r_eff(self, flux_fraction=0.999):
-        """
-        Computes the effective radius.
+        """Compute the effective radius containing a given fraction of the flux.
+
+        Parameters
+        ----------
+        flux_fraction : float, optional
+            Fraction of the total flux to be enclosed within the radius.
+
+        Returns
+        -------
+        float
+            The effective radius, in pixels.
         """
         cache_key = ('r_eff', flux_fraction)
         if hasattr(self, '_r_eff_cache') and cache_key in self._r_eff_cache:

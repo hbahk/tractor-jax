@@ -1,16 +1,15 @@
 """
-This file is part of the Tractor project.
-Copyright 2011, 2012, 2013 Dustin Lang and David W. Hogg.
-Licensed under the GPLv2; see the file COPYING for details.
-
-`galaxy.py`
-================
-
 Exponential and deVaucouleurs galaxy model classes.
 
 These use the slightly modified versions of the exp and dev profiles
-from the SDSS /Photo/ software; we use multi-Gaussian approximations
+from the SDSS *Photo* software; we use multi-Gaussian approximations
 of these.
+
+Notes
+-----
+This file is part of the Tractor project.
+Copyright 2011, 2012, 2013 Dustin Lang and David W. Hogg.
+Licensed under the GPLv2; see the file COPYING for details.
 """
 import numpy as np
 
@@ -41,10 +40,12 @@ def disable_galaxy_cache():
 
 class GalaxyShape(ParamList):
     '''
-    A naive representation of an ellipse (describing a galaxy shape),
-    using effective radius (in arcsec), axis ratio, and position angle.
+    A naive representation of an ellipse describing a galaxy shape.
 
-    For better ellipse parameterizations, see ellipses.py
+    The parameterization uses effective radius (in arcsec), axis
+    ratio, and position angle.
+
+    For better ellipse parameterizations, see ``ellipses.py``.
     '''
     @staticmethod
     def getName():
@@ -53,10 +54,18 @@ class GalaxyShape(ParamList):
     @staticmethod
     def getNamedParams():
         '''
-        re: arcsec
-        ab: axis ratio, dimensionless, in [0,1]
-        phi: deg, "E of N", 0=direction of increasing Dec,
-        90=direction of increasing RA
+        Return the mapping from named parameters to their indices.
+
+        Returns
+        -------
+        params : dict
+            Maps parameter names to indices:
+
+            - ``re`` : effective radius, in arcsec.
+            - ``ab`` : axis ratio, dimensionless, in [0, 1].
+            - ``phi`` : position angle in degrees, "E of N";
+              0 is the direction of increasing Dec,
+              90 is the direction of increasing RA.
         '''
         return dict(re=0, ab=1, phi=2)
 
@@ -77,8 +86,14 @@ class GalaxyShape(ParamList):
 
     def getRaDecBasis(self):
         '''
-        Returns a transformation matrix that takes vectors in r_e
-        to delta-RA, delta-Dec vectors.
+        Return the transformation from r_e units to RA,Dec offsets.
+
+        Returns
+        -------
+        G : numpy.ndarray
+            2x2 transformation matrix that takes vectors in units of
+            effective radius (r_e) to (delta-RA, delta-Dec) vectors,
+            in degrees.
         '''
         # # convert re, ab, phi into a transformation matrix
         phi = np.deg2rad(90 - self.phi)
@@ -113,7 +128,15 @@ class Galaxy(MultiParams, SingleProfileSource):
 
     def getDName(self):
         '''
-        Name used in labeling the derivative images d(Dname)/dx, eg
+        Return the name used in labeling derivative images.
+
+        For example, the derivative images are labeled
+        ``d(dname)/dx``.
+
+        Returns
+        -------
+        dname : str
+            Short name used in derivative-image labels.
         '''
         return 'gal'
 
@@ -258,8 +281,7 @@ class Galaxy(MultiParams, SingleProfileSource):
 
 class ProfileGalaxy(object):
     '''
-    A mix-in class that renders itself based on a Mixture-of-Gaussians
-    profile.
+    A mix-in class that renders itself via a Mixture-of-Gaussians profile.
     '''
 
     def getName(self):
@@ -270,15 +292,41 @@ class ProfileGalaxy(object):
 
     # Here are the two main methods to override;
     def _getAffineProfile(self, img, px, py):
-        ''' Returns a MixtureOfGaussians profile that has been
-        affine-transformed into the pixel space of the image.
+        '''
+        Return a profile affine-transformed into image pixel space.
+
+        Parameters
+        ----------
+        img : Image
+            The image whose WCS defines the pixel space.
+        px, py : float
+            Pixel coordinates of the source center.
+
+        Returns
+        -------
+        amix : MixtureOfGaussians or None
+            The affine-transformed profile (None in this base class).
         '''
         return None
 
     def _getShearedProfile(self, img, px, py):
-        ''' Returns a MixtureOfGaussians profile that has been
-        shear-transformed into the pixel space of the image.
-        At px,py (but not offset to px,py).
+        '''
+        Return a profile shear-transformed into image pixel space.
+
+        The transformation is evaluated at (px, py), but the profile is
+        not offset to (px, py).
+
+        Parameters
+        ----------
+        img : Image
+            The image whose WCS defines the pixel space.
+        px, py : float
+            Pixel coordinates of the source center.
+
+        Returns
+        -------
+        amix : MixtureOfGaussians or None
+            The shear-transformed profile (None in this base class).
         '''
         return None
 
@@ -339,7 +387,21 @@ class ProfileGalaxy(object):
         hybrid = isinstance(psf, HybridPSF)
 
         def run_mog(amix=None, mm=None):
-            ''' This runs the mixture-of-Gaussians convolution method.
+            '''
+            Run the mixture-of-Gaussians convolution method.
+
+            Parameters
+            ----------
+            amix : MixtureOfGaussians, optional
+                Galaxy profile mixture; if None, the affine-transformed
+                profile at (px, py) is computed.
+            mm : ModelMask, optional
+                Model mask; if None, the enclosing ``modelMask`` is used.
+
+            Returns
+            -------
+            patch : Patch
+                The PSF-convolved profile evaluated on a pixel grid.
             '''
             if amix is None:
                 amix = self._getAffineProfile(img, px, py)
@@ -746,8 +808,20 @@ class HoggGalaxy(ProfileGalaxy, Galaxy):
         return self.nre * self.shape.re
 
     def _getAffineProfile(self, img, px, py):
-        ''' Returns a MixtureOfGaussians profile that has been
-        affine-transformed into the pixel space of the image.
+        '''
+        Return the galaxy profile affine-transformed into image pixel space.
+
+        Parameters
+        ----------
+        img : Image
+            The image whose WCS defines the pixel space.
+        px, py : float
+            Pixel coordinates of the source center.
+
+        Returns
+        -------
+        amix : MixtureOfGaussians
+            The affine-transformed profile, centered at (px, py).
         '''
         galmix = self.getProfile()
         cdinv = img.getWcs().cdInverseAtPixel(px, py)
@@ -766,9 +840,23 @@ class HoggGalaxy(ProfileGalaxy, Galaxy):
         return amix
 
     def _getShearedProfile(self, img, px, py):
-        ''' Returns a MixtureOfGaussians profile that has been
-        shear-transformed into the pixel space of the image.
-        At px,py (but not offset to px,py).
+        '''
+        Return the galaxy profile shear-transformed into image pixel space.
+
+        The transformation is evaluated at (px, py), but the profile is
+        not offset to (px, py).
+
+        Parameters
+        ----------
+        img : Image
+            The image whose WCS defines the pixel space.
+        px, py : float
+            Pixel coordinates of the source center.
+
+        Returns
+        -------
+        amix : MixtureOfGaussians
+            The shear-transformed profile.
         '''
         galmix = self.getProfile()
         cdinv = img.getWcs().cdInverseAtPixel(px, py)
@@ -886,13 +974,13 @@ class FracDev(ScalarParam):
 
 class SoftenedFracDev(FracDev):
     '''
-    Implements a "softened" version of the deV-to-total fraction.
+    A "softened" version of the deV-to-total fraction.
 
     The sigmoid function is scaled and shifted so that S(0) ~ 0.1 and
     S(1) ~ 0.9.
 
-    Use the 'clipped()' function to get the un-softened fracDev
-    clipped to [0,1].
+    Use the ``clipped()`` method to get the un-softened fracDev
+    clipped to [0, 1].
     '''
 
     def clipped(self):
@@ -908,14 +996,15 @@ class SoftenedFracDev(FracDev):
 
 class FixedCompositeGalaxy(MultiParams, ProfileGalaxy, SingleProfileSource):
     '''
-    A galaxy with Exponential and deVaucouleurs components where the
-    brightnesses of the deV and exp components are defined in terms of
-    a total brightness and a fraction of that total that goes to the
-    deV component.
+    A galaxy with exp and deV components sharing a total brightness.
 
-    The two components share a position (ie the centers are the same),
-    but have different shapes.  The galaxy has a single brightness
-    that is split between the components.
+    The brightnesses of the deV and exp components are defined in
+    terms of a total brightness and a fraction of that total that goes
+    to the deV component.
+
+    The two components share a position (i.e., the centers are the
+    same), but have different shapes.  The galaxy has a single
+    brightness that is split between the components.
 
     This is like CompositeGalaxy, but more useful for getting
     consistent colors from forced photometry, because one can freeze
@@ -987,9 +1076,24 @@ class FixedCompositeGalaxy(MultiParams, ProfileGalaxy, SingleProfileSource):
         return mix[0] + mix[1]
 
     def _getShearedProfile(self, img, px, py):
-        ''' Returns a MixtureOfGaussians profile that has been
-        shear-transformed into the pixel space of the image.
-        At px,py (but not offset to px,py).
+        '''
+        Return the composite profile shear-transformed into pixel space.
+
+        The transformation is evaluated at (px, py), but the profile is
+        not offset to (px, py).
+
+        Parameters
+        ----------
+        img : Image
+            The image whose WCS defines the pixel space.
+        px, py : float
+            Pixel coordinates of the source center.
+
+        Returns
+        -------
+        amix : MixtureOfGaussians
+            The shear-transformed deV+exp profile, with amplitudes
+            weighted by the clipped fracDev.
         '''
         # f = self.fracDev.clipped()
         # profs = []
@@ -1144,8 +1248,8 @@ class CompositeGalaxy(MultiParams, BasicSource):
     '''
     A galaxy with Exponential and deVaucouleurs components.
 
-    The two components share a position (ie the centers are the same),
-    but have different brightnesses and shapes.
+    The two components share a position (i.e., the centers are the
+    same), but have different brightnesses and shapes.
     '''
 
     def __init__(self, pos, brightnessExp, shapeExp, brightnessDev, shapeDev):
@@ -1176,9 +1280,12 @@ class CompositeGalaxy(MultiParams, BasicSource):
                 ', shapeDev=' + repr(self.shapeDev))
 
     def getBrightness(self):
-        ''' This makes some assumptions about the
-        ``Brightness`` / ``PhotoCal`` and should be treated as
-        approximate.'''
+        '''
+        Return the summed brightness of the exp and deV components.
+
+        This makes some assumptions about the ``Brightness`` /
+        ``PhotoCal`` and should be treated as approximate.
+        '''
         return self.brightnessExp + self.brightnessDev
 
     def getBrightnesses(self):
@@ -1259,7 +1366,21 @@ class CompositeGalaxy(MultiParams, BasicSource):
 class JaxGalaxy(Galaxy):
     '''
     A Galaxy subclass designed for JAX optimization.
-    It holds a pre-computed profile (MoG) to avoid complex calculations during JAX tracing.
+
+    It holds a pre-computed profile (mixture of Gaussians) to avoid
+    complex calculations during JAX tracing.
+
+    Parameters
+    ----------
+    pos : Position
+        Sky or pixel position of the galaxy center.
+    brightness : Brightness
+        Brightness of the galaxy; units follow the image calibration
+        via ``PhotoCal``.
+    shape : GalaxyShape or ellipse
+        Shape of the galaxy profile.
+    profile : MixtureOfGaussians
+        Pre-computed mixture-of-Gaussians profile used for rendering.
     '''
     def __init__(self, pos, brightness, shape, profile):
         # Galaxy init takes (pos, brightness, shape) - wait, it takes *args.

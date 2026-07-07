@@ -13,20 +13,25 @@ from tractor_jax.utils import ParamList
 
 
 class EllipseE(ParamList):
-    '''
-    Ellipse parameterization with r, e1, e2.
+    '''Ellipse parameterization with r, e1, e2.
 
-    e = hypot(e1, e2)
+    The parameters are the effective radius ``re`` (arcsec) and the
+    two ellipticity components ``e1``, ``e2`` (dimensionless).
 
-    ba = (1 - e) / (1 + e)
-    e  = (ba + 1) / (ba - 1)
+    Notes
+    -----
+    The relations between the parameters and the axis ratio ``ba`` and
+    position angle ``phi`` are::
 
-    phi = -rad2deg(arctan2(e2, e1) / 2)
-    angle = deg2rad(-2 * phi)
-    e1 = e * cos(angle)
-    e2 = e * sin(angle)
+        e = hypot(e1, e2)
 
+        ba = (1 - e) / (1 + e)
+        e  = (ba + 1) / (ba - 1)
 
+        phi = -rad2deg(arctan2(e2, e1) / 2)
+        angle = deg2rad(-2 * phi)
+        e1 = e * cos(angle)
+        e2 = e * sin(angle)
     '''
     @staticmethod
     def getName():
@@ -79,15 +84,23 @@ class EllipseE(ParamList):
 
     @property
     def theta(self):
-        '''
-        Returns position angle in *radians*
+        '''Position angle in *radians*.
+
+        Returns
+        -------
+        float
+            The position angle, in radians.
         '''
         return math.atan2(self.e2, self.e1) / 2.
 
     @property
     def ab(self):
-        '''
-        Returns minor/major axis ratio.
+        '''Minor/major axis ratio.
+
+        Returns
+        -------
+        float
+            The minor/major axis ratio.
         '''
         e = self.e
         return (1. - e) / (1. + e)
@@ -113,10 +126,14 @@ class EllipseE(ParamList):
         return self.copy()
 
     def getCovariance(self):
-        '''
-        Returns a covariance matrix that when, eg, used in a Gaussian
-        results in iso-density contours that lie on this ellipse.
-        The units are arcsec**2.
+        '''Return a covariance matrix corresponding to this ellipse.
+
+        Returns
+        -------
+        numpy.ndarray
+            A covariance matrix that when, eg, used in a Gaussian
+            results in iso-density contours that lie on this ellipse.
+            The units are arcsec**2.
         '''
         G = self.getRaDecBasis()
         G *= 3600.
@@ -124,8 +141,14 @@ class EllipseE(ParamList):
         return GGT
 
     def getRaDecBasis(self):
-        ''' Returns a transformation matrix that takes vectors in r_e
+        '''Return a transformation matrix that takes vectors in ``r_e``
         to delta-RA, delta-Dec vectors.
+
+        Returns
+        -------
+        numpy.ndarray
+            A ``(2, 2)`` matrix taking unit vectors (in ``r_e``) to
+            degrees (~intermediate world coords).
         '''
         theta = self.theta
         ct = math.cos(theta)
@@ -163,20 +186,22 @@ class EllipseE(ParamList):
         return T
 
 class EllipseESoft(EllipseE):
-    '''
-    This is an alternate implementation of the ellipse describing a
-    galaxy shape, and can be used as a drop-in replacement of the
-    "GalaxyShape" class used in the tractor.galaxy ExpGalaxy and
-    DevGalaxy classes.
+    '''An alternate implementation of the ellipse describing a galaxy
+    shape.
+
+    Can be used as a drop-in replacement of the "GalaxyShape" class
+    used in the tractor.galaxy ExpGalaxy and DevGalaxy classes.
 
     The parameters are a tweak on the usual ellipticity parameters
     e1,e2, plus log(effective radius).  The tweak is that we map 'e'
-    through a sigmoid-like 1-exp(-|ee|) function so that there are no
-    forbidden regions in the parameter space.
+    through a sigmoid-like ``1 - exp(-|ee|)`` function so that there
+    are no forbidden regions in the parameter space.
 
+    Notes
+    -----
     In this class, we use "ee" to indicate the "softened" parameters
     (before they have gone through the sigmoid to bring them into
-    |e|<1, and "e" to indicate the usual, unsoftened versions.
+    ``|e| < 1``), and "e" to indicate the usual, unsoftened versions.
     '''
     @staticmethod
     def getName():
@@ -239,23 +264,35 @@ class EllipseESoft(EllipseE):
 
     @property
     def e(self):
-        '''
-        Returns the "usual" ellipticity e in [0,1]
+        '''The "usual" ellipticity ``e`` in [0, 1].
+
+        Returns
+        -------
+        float
+            The unsoftened ellipticity.
         '''
         ee = math.hypot(self.ee1, self.ee2)
         return 1. - math.exp(-ee)
 
     @property
     def softe(self):
-        '''
-        Returns the "softened" ellipticity ee in [0, inf]
+        '''The "softened" ellipticity ``ee`` in [0, inf].
+
+        Returns
+        -------
+        float
+            The softened ellipticity.
         '''
         return math.hypot(self.ee1, self.ee2)
 
     @property
     def theta(self):
-        '''
-        Returns position angle in *radians*
+        '''Position angle in *radians*.
+
+        Returns
+        -------
+        float
+            The position angle, in radians.
         '''
         return math.atan2(self.ee2, self.ee1) / 2.
 

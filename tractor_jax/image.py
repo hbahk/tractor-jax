@@ -4,32 +4,46 @@ import traceback
 
 class Image(MultiParams):
     '''
-    An image plus its calibration information.  An ``Image`` has
-    pixels, inverse-variance map, WCS, PSF, photometric calibration
-    information, and sky level.  All these things are ``Params``
-    instances, and ``Image`` is a ``MultiParams`` so that the Tractor
-    can optimize them.
+    An image plus its calibration information.
+
+    An ``Image`` has pixels, inverse-variance map, WCS, PSF,
+    photometric calibration information, and sky level.  All these
+    things are ``Params`` instances, and ``Image`` is a
+    :class:`~tractor_jax.utils.MultiParams` so that the
+    :class:`~tractor_jax.engine.Tractor` can optimize them.
     '''
 
     def __init__(self, data=None, invvar=None, inverr=None,
                  psf=None, wcs=None, sky=None,
                  photocal=None, name=None, time=None, **kwargs):
         '''
-        Args:
-          * *data*: numpy array: the image pixels
-          * *inverr*: numpy array: the image inverse-error
-          * *psf*: a :class:`tractor.PSF` duck
-          * *wcs*: a :class:`tractor.WCS` duck
-          * *sky*: a :class:`tractor.Sky` duck
-          * *photocal*: a :class:`tractor.PhotoCal` duck
-          * *name*: string name of this image.
-          * *zr*: plotting range ("vmin"/"vmax" in matplotlib.imshow)
+        Create a new Image.
 
-        If *wcs* is not given, assumes pixel space.
-
-        If *sky* is not given, assumes zero sky.
-
-        If *photocal* is not given, assumes count units.
+        Parameters
+        ----------
+        data : numpy.ndarray
+            The image pixels.
+        invvar : deprecated
+            Must be None; use `inverr` instead.
+        inverr : numpy.ndarray
+            The image inverse-error map.
+        psf : PSF duck, optional
+            The point-spread function model.
+        wcs : WCS duck, optional
+            The world coordinate system.  If not given, assumes pixel
+            space.
+        sky : Sky duck, optional
+            The sky model.  If not given, assumes zero sky.
+        photocal : PhotoCal duck, optional
+            The photometric calibration.  If not given, assumes count
+            units.
+        name : str, optional
+            String name of this image.
+        time : optional
+            The epoch of this image.
+        zr : optional
+            Plotting range ("vmin"/"vmax" in ``matplotlib.imshow``);
+            accepted via `**kwargs`.
         '''
         # deprecated
         assert(invvar is None)
@@ -96,12 +110,25 @@ class Image(MultiParams):
 
     def getParamDerivatives(self, tractor, srcs):
         '''
-        Returns a list of Patch objects, one per numberOfParams().
-        Note that this means you have to pay attention to the
+        Return the derivatives of this image's thawed parameters.
+
+        Note that the list has one entry per thawed parameter
+        (``numberOfParams()``), so you have to pay attention to the
         frozen/thawed state.
 
-        Can return None for no derivative, or False if you want the
-        Tractor to compute the derivatives for you.
+        Parameters
+        ----------
+        tractor : :class:`~tractor_jax.engine.Tractor`
+            The Tractor object requesting the derivatives.
+        srcs : list of Source objects
+            The sources in the catalog.
+
+        Returns
+        -------
+        derivs : list of :class:`~tractor_jax.patch.Patch`
+            One entry per thawed parameter.  An entry can be None for
+            no derivative, or False if you want the Tractor to compute
+            the derivatives for you.
         '''
         derivs = []
         for s in self._getActiveSubs():

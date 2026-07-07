@@ -1,21 +1,18 @@
-"""
-This file is part of the Tractor project.
-Copyright 2011, 2012 Dustin Lang and David W. Hogg.
-Licensed under the GPLv2; see the file COPYING for details.
-
-`ducks.py`
-===========
-
-Duck-type definitions of types used by the Tractor.
+"""Duck-type definitions of types used by the Tractor.
 
 Most of this code is not actually used at all.  It's here for
 documentation purposes.
+
+Notes
+-----
+This file is part of the Tractor project.
+Copyright 2011, 2012 Dustin Lang and David W. Hogg.
+Licensed under the GPLv2; see the file COPYING for details.
 """
 
 
 class Params(object):
-    '''
-    A set of parameters that can be optimized by the Tractor.
+    '''A set of parameters that can be optimized by the Tractor.
 
     This is a duck-type definition.
     '''
@@ -24,12 +21,14 @@ class Params(object):
         return None
 
     def hashkey(self):
-        '''
-        Returns a tuple containing the state of this `Params` object
+        '''Return a tuple containing the state of this `Params` object
         for use as a cache key.
 
-        All elements must be hashable: see
-        http://docs.python.org/glossary.html#term-hashable
+        Returns
+        -------
+        tuple
+            The state of this object.  All elements must be hashable:
+            see http://docs.python.org/glossary.html#term-hashable
         '''
         return ()
 
@@ -39,17 +38,33 @@ class Params(object):
     # def __eq__(self, other):
 
     def getParamNames(self):
-        ''' Returns a list of strings: the names of the parameters. '''
+        '''Return the names of the parameters.
+
+        Returns
+        -------
+        list of str
+            The names of the parameters.
+        '''
         return []
 
     def numberOfParams(self):
-        ''' Returns the number of parameters (ie, number of scalar
-        values).'''
+        '''Return the number of parameters (ie, number of scalar values).
+
+        Returns
+        -------
+        int
+            The number of scalar parameter values.
+        '''
         return len(self.getParams())
 
     def getParams(self):
-        ''' Returns a *copy* of the current parameter values as an
-        iterable (eg, list)'''
+        '''Return a *copy* of the current parameter values.
+
+        Returns
+        -------
+        iterable
+            A copy of the current parameter values (eg, a list).
+        '''
         return []
 
     def getAllParams(self):
@@ -59,7 +74,13 @@ class Params(object):
         return self.getStepSizes(*args, **kwargs)
 
     def getStepSizes(self, *args, **kwargs):
-        ''' Returns "reasonable" step sizes for the parameters.'''
+        '''Return "reasonable" step sizes for the parameters.
+
+        Returns
+        -------
+        list of float
+            One step size per parameter.
+        '''
         return []
 
     def setAllStepSizes(self, ss):
@@ -70,10 +91,13 @@ class Params(object):
         pass
 
     def setParams(self, p):
-        '''
-        Sets the parameter values to the values in the given
-        iterable `p`.  The length of `p` will be equal to
-        `numberOfParams()`.
+        '''Set the parameter values to the values in the given iterable.
+
+        Parameters
+        ----------
+        p : iterable of float
+            The new parameter values.  The length of `p` will be equal
+            to ``numberOfParams()``.
         '''
         assert(len(p) == self.numberOfParams())
 
@@ -81,13 +105,19 @@ class Params(object):
         return self.setParams(p)
 
     def setParam(self, i, p):
-        '''
-        Sets parameter index 'i' to new value 'p'.
+        '''Set parameter index `i` to new value `p`.
 
-        i: integer in the range [0, numberOfParams()).
-        p: float
+        Parameters
+        ----------
+        i : int
+            Parameter index, in the range ``[0, numberOfParams())``.
+        p : float
+            New parameter value.
 
-        Returns the old value.
+        Returns
+        -------
+        float
+            The old value of the parameter.
         '''
         return None
 
@@ -98,63 +128,72 @@ class Params(object):
         return []
 
     def getMaxStep(self):
-        '''
-        Returns the largest step we should take in this parameter.  Use for nonlinear
-        params where making a large change will take us outside the linear optimization
-        regime.
+        '''Return the largest step we should take in this parameter.
+
+        Use for nonlinear params where making a large change will take
+        us outside the linear optimization regime.
+
+        Returns
+        -------
+        float or None
+            The largest allowed step.
         '''
         return None
 
     def getGaussianPriors(self):
-        '''
-        Returns a list of
-        (index, mu, sigma)
-        of Gaussian priors on this set of parameters.
+        '''Return the Gaussian priors on this set of parameters.
+
+        Returns
+        -------
+        list of tuple
+            A list of ``(index, mu, sigma)`` tuples of Gaussian priors
+            on this set of parameters.
         '''
         return []
 
     def getLogPrior(self):
-        '''
-        Returns the prior, evaluated at the current values of
-        the parameters.
+        '''Return the prior, evaluated at the current values of the parameters.
+
+        Returns
+        -------
+        float
+            The log-prior at the current parameter values.
         '''
         return 0.
 
     def getLogPriorDerivatives(self):
-        '''
-        Returns a "chi-like" approximation to the log-prior at the
+        '''Return a "chi-like" approximation to the log-prior at the
         current parameter values.
 
         This will go into the least-squares fitting (each term in the
         prior acts like an extra "pixel" in the fit).
 
-        Returns (rowA, colA, valA, pb, mub), where:
+        Returns
+        -------
+        rowA : list of iterables of int
+            Row indices describing a sparse matrix ``pA`` of shape
+            ``N x numberOfParams``.
+        colA : list of int
+            Column indices of the sparse matrix ``pA``.
+        valA : list of iterables of float
+            Values of the sparse matrix ``pA``.
+        pb : list of iterables of float
+            Right-hand-side terms, of shape ``N``.
+        mub : list of iterables of float
+            Like `pb` but not shifted relative to the current parameter
+            values; ie, it's the mean of the Gaussian.  Shape ``N``.
 
-        rowA, colA, valA: describe a sparse matrix pA
+        Notes
+        -----
+        ``N`` is the number of "pseudo-pixels" or Gaussian terms.
+        ``pA`` will be appended to the least-squares ``A`` matrix, and
+        ``pb`` will be appended to the least-squares ``b`` vector, and
+        the least-squares problem is minimizing
 
-        pA: has shape N x numberOfParams
-        pb: has shape N
-        mub: has shape N
-
-        rowA: list of iterables of ints
-        colA: list of ints
-        valA: list of iterables of floats
-        pb:   list of iterables of floats
-        mub:  list of iterables of floats
-
-        where "N" is the number of "pseudo-pixels" or Gaussian terms.
-        "pA" will be appended to the least-squares "A" matrix, and
-        "pb" will be appended to the least-squares "b" vector, and the
-        least-squares problem is minimizing
-
-        || A * (delta-params) - b ||^2
-
-        We also require *mub*, which is like "pb" but not shifted
-        relative to the current parameter values; ie, it's the mean of
-        the Gaussian.
+        .. math:: || A \\cdot (\\mathrm{delta\\text{-}params}) - b ||^2
 
         This function must take frozen-ness of parameters into account
-        (this is implied by the "numberOfParams" shape requirement).
+        (this is implied by the ``numberOfParams`` shape requirement).
         '''
         return None
 
@@ -190,40 +229,71 @@ class ImageCalibration(object):
 
 
 class Sky(ImageCalibration, Params):
-    '''
-    Duck-type definition for a sky model.
-    '''
+    '''Duck-type definition for a sky model.'''
 
     def getParamDerivatives(self, tractor, img, srcs):
-        '''
-        Returns [ Patch, Patch, ... ], of length numberOfParams(),
-        containing the derivatives in the given `Image` for each
-        parameter.
+        '''Return the derivatives of this sky model in the given image.
+
+        Parameters
+        ----------
+        tractor : Tractor
+            The Tractor object.
+        img : Image
+            The image in which to evaluate the derivatives.
+        srcs : list of Source
+            The sources in the image.
+
+        Returns
+        -------
+        list of Patch
+            ``[ Patch, Patch, ... ]``, of length ``numberOfParams()``,
+            containing the derivatives in the given `Image` for each
+            parameter.
         '''
         return []
 
     def addTo(self, mod, scale=1.):
-        '''
-        Add the sky to the input synthetic image `mod`, a 2-D numpy
-        array.
+        '''Add the sky to the input synthetic image.
+
+        Parameters
+        ----------
+        mod : numpy.ndarray
+            The 2-D synthetic (model) image to which the sky is added.
+        scale : float, optional
+            Factor by which to scale the sky before adding.
         '''
         pass
 
     def getConstant(self):
-        '''
-        Returns an unspecified constant value, eg the mean, median, etc.
+        '''Return an unspecified constant value, eg the mean, median, etc.
+
+        Returns
+        -------
+        float
+            A constant value characterizing this sky model.
         '''
         return 0.
 
     def subtract(self, con):
-        '''
-        Subtracts a constant value from this sky model.
+        '''Subtract a constant value from this sky model.
+
+        Parameters
+        ----------
+        con : float
+            The constant value to subtract.
         '''
         raise RuntimeError('Unimplemented: Sky.subtract()')
 
     def shift(self, x0, y0):
-        '''
-        Shifts this sky model so that it applies to the subimage starting at x0,y0.
+        '''Shift this sky model so that it applies to the subimage
+        starting at ``x0, y0``.
+
+        Parameters
+        ----------
+        x0 : int
+            X pixel coordinate of the subimage origin.
+        y0 : int
+            Y pixel coordinate of the subimage origin.
         '''
         pass
 
@@ -234,32 +304,50 @@ class Sky(ImageCalibration, Params):
 
 
 class Source(Params):
-    '''
-    This is the duck-type definition of a Source (star, galaxy, etc)
-    that the Tractor uses.
+    '''Duck-type definition of a Source (star, galaxy, etc) that the
+    Tractor uses.
     '''
 
     def getModelPatch(self, img, minsb=0., modelMask=None, **kwargs):
-        '''
-        Returns a Patch object containing a rendering of this Source
-        into the given `Image` object.  This will probably use the
-        calibration information of the `Image`: the WCS, PSF, and
-        photometric calibration.
+        '''Return a Patch containing a rendering of this Source into
+        the given image.
 
-        *minsb*: the allowable approximation error per pixel; we are
-        asking the source to render itself out to this surface
-        brightness.
+        This will probably use the calibration information of the
+        `Image`: the WCS, PSF, and photometric calibration.
 
-        *modelMask*: a ModelMask object describing the rectangular
-         region of interest (image pixels).
+        Parameters
+        ----------
+        img : Image
+            The image into which to render this source.
+        minsb : float, optional
+            The allowable approximation error per pixel; we are asking
+            the source to render itself out to this surface brightness.
+        modelMask : ModelMask, optional
+            Describes the rectangular region of interest (image pixels).
+
+        Returns
+        -------
+        Patch
+            A rendering of this Source into the given `Image` object.
         '''
         pass
 
     def getParamDerivatives(self, img, modelMask=None, **kwargs):
-        '''
-        Returns [ Patch, Patch, ... ], of length numberOfParams(),
-        containing the derivatives in the given `Image` for each
-        parameter.
+        '''Return the derivatives of this source in the given image.
+
+        Parameters
+        ----------
+        img : Image
+            The image in which to evaluate the derivatives.
+        modelMask : ModelMask, optional
+            Describes the rectangular region of interest (image pixels).
+
+        Returns
+        -------
+        list of Patch
+            ``[ Patch, Patch, ... ]``, of length ``numberOfParams()``,
+            containing the derivatives in the given `Image` for each
+            parameter.
         '''
         return []
 
@@ -268,33 +356,43 @@ class Source(Params):
 
     def getUnitFluxModelPatches(self, img, minval=0., modelMask=None,
                                 **kwargs):
-        '''
-        Returns a list the same length as getBrightnesses(), each
-        containing a Patch whose sum is ~ unity.
+        '''Return unit-flux model patches, one per brightness.
 
-        Like getModelPatch(), but ignore the brightness of the object
-        and just return a patch whose sum is unity.  Like "minsb",
-        "minval" gives the allowable per-pixel value at which the
-        profile can be truncated.  The patch may therefore not sum to
-        1 exactly.
+        Like ``getModelPatch()``, but ignore the brightness of the
+        object and just return a patch whose sum is unity.
+
+        Parameters
+        ----------
+        img : Image
+            The image into which to render this source.
+        minval : float, optional
+            Like ``minsb``, gives the allowable per-pixel value at
+            which the profile can be truncated.  The patch may
+            therefore not sum to 1 exactly.
+        modelMask : ModelMask, optional
+            Describes the rectangular region of interest (image pixels).
+
+        Returns
+        -------
+        list of Patch
+            A list the same length as ``getBrightnesses()``, each
+            containing a Patch whose sum is ~ unity.
         '''
         pass
 
 
 class Brightness(Params):
-    '''
-    Duck-type definition of the brightness of an astronomical source.
+    '''Duck-type definition of the brightness of an astronomical source.
 
-    Only used as an input to `PhotoCal`.  `Source`s have
-    `Brightness`es; `PhotoCal`s convert these into counts in a
-    specific `Image`.
+    Only used as an input to `PhotoCal`.  `Source` objects have
+    `Brightness` objects; `PhotoCal` objects convert these into counts
+    in a specific `Image`.
     '''
     pass
 
 
 class PhotoCal(ImageCalibration, Params):
-    '''
-    Duck-type definition of photometric calibration.
+    '''Duck-type definition of photometric calibration.
 
     A `PhotoCal` belongs to an `Image`; it converts `Brightness`
     values into counts ("data numbers", ADU, etc) in the data space
@@ -309,35 +407,48 @@ class PhotoCal(ImageCalibration, Params):
     '''
 
     def brightnessToCounts(self, brightness):
-        '''Converts `brightness`, a `Brightness` duck, into counts.
+        '''Convert a brightness into counts.
 
-        Returns: float
+        Parameters
+        ----------
+        brightness : Brightness
+            A `Brightness` duck to convert.
+
+        Returns
+        -------
+        float
+            The corresponding counts.
         '''
         pass
 
 
 class Position(Params):
-    '''
-    Duck-type definition of the position of an astronomical object.
+    '''Duck-type definition of the position of an astronomical object.
 
-    Only used as an input to a `WCS` object; `Sources` have
-    `Positions`, and `WCS` objects convert them into pixel coordinates
-    in a specific `Image`.
+    Only used as an input to a `WCS` object; `Source` objects have
+    `Position` objects, and `WCS` objects convert them into pixel
+    coordinates in a specific `Image`.
     '''
     pass
 
 
 class Time(Params):
-    '''
-    Objects of type "Time" should define arithmetic operators (at least
-    __sub__, __add__, __isub__, __iadd__)
+    '''Duck-type definition of a time.
+
+    Objects of type `Time` should define arithmetic operators (at least
+    ``__sub__``, ``__add__``, ``__isub__``, ``__iadd__``).
     '''
     # def __sub__(self, other):
     #   pass
 
     def getSunTheta(self):
-        ''' Returns the angle of the Earth's (mean?) anomaly at this time;
-        ie, the time of year expressed as an angle in radians.'''
+        '''Return the angle of the Earth's (mean?) anomaly at this time.
+
+        Returns
+        -------
+        float
+            The time of year expressed as an angle in radians.
+        '''
         pass
 
     def toYears(self):
@@ -345,30 +456,37 @@ class Time(Params):
 
 
 class WCS(ImageCalibration, Params):
-    '''
-    Duck-type definition of World Coordinate System.
+    '''Duck-type definition of World Coordinate System.
 
     Converts between Position objects and Image pixel coordinates.
 
     In general, there is a lot of freedom in the definition of the
     `Position` object, and `WCS` has to be kept consistent with that.
-    For instance, if the `Positions` used are image-based x-y
+    For instance, if the `Position` objects used are image-based x-y
     positions (`PixPos`), then `WCS` has to be null (or close to
     that); `NullWCS`.
     '''
 
     def positionToPixel(self, pos, src=None):
-        '''
-        Converts a :class:`tractor.Position` *pos* into ``x,y`` pixel
-        coordinates.
+        '''Convert a position into ``x, y`` pixel coordinates.
 
-        Note that the :class:`tractor.Source` may be passed in; your
-        :class:`tractor.WCS` could have color-specific behavior, for
-        example.
+        Parameters
+        ----------
+        pos : Position
+            The position to convert.
+        src : Source, optional
+            The source may be passed in; your `WCS` could have
+            color-specific behavior, for example.
 
-        Returns tuple `(x, y)`, where `x` and `y` are floats, and `0,
-        0` is the first pixel.
+        Returns
+        -------
+        x : float
+            X pixel coordinate; ``0, 0`` is the first pixel.
+        y : float
+            Y pixel coordinate.
 
+        Notes
+        -----
         Pixels are funny things.  Our convention is shifted by 1 from
         the FITS convention, so 0,0 is the *center* of the first
         ("zeroth", says Hogg) pixel, if you think of pixels as little
@@ -377,24 +495,36 @@ class WCS(ImageCalibration, Params):
         return None
 
     def cdAtPixel(self, x, y):
-        '''
-        Returns a local affine relationship between `Position` and
-        (x,y) pixel coordinates.  This is used, for example, to
-        convert tensor shapes of galaxies from `Position` space to
-        image space.
+        '''Return a local affine relationship between `Position` and
+        ``(x, y)`` pixel coordinates.
 
-        Returns a numpy array of shape (2,2).
+        This is used, for example, to convert tensor shapes of
+        galaxies from `Position` space to image space.
 
+        Parameters
+        ----------
+        x : float
+            X pixel coordinate.
+        y : float
+            Y pixel coordinate.
+
+        Returns
+        -------
+        numpy.ndarray
+            Array of shape ``(2, 2)``, in degrees per pixel.
+
+        Notes
+        -----
         In FITS celestial coordinates language, this is the CD matrix
-        at pixel x,y:
+        at pixel x,y::
 
-        [ [ dRA/dx * cos(Dec), dRA/dy * cos(Dec) ],
-          [ dDec/dx          , dDec/dy           ] ]
+            [ [ dRA/dx * cos(Dec), dRA/dy * cos(Dec) ],
+              [ dDec/dx          , dDec/dy           ] ]
 
-        in FITS these are called:
+        in FITS these are called::
 
-        [ [ CD11             , CD12              ],
-          [ CD21             , CD22              ] ]
+            [ [ CD11             , CD12              ],
+              [ CD21             , CD22              ] ]
 
         The units of these things are degrees per pixel.
         '''
@@ -423,54 +553,99 @@ class WCS(ImageCalibration, Params):
         return derivs
 
     def pixscale_at(self, x, y):
-        '''
-        Returns the local pixel scale at the given *x*,*y* pixel coords,
-        in *arcseconds* per pixel.
+        '''Return the local pixel scale at the given pixel coordinates.
+
+        Parameters
+        ----------
+        x : float
+            X pixel coordinate.
+        y : float
+            Y pixel coordinate.
+
+        Returns
+        -------
+        float
+            The local pixel scale, in *arcseconds* per pixel.
         '''
         import numpy as np
         return 3600. * np.sqrt(np.abs(np.linalg.det(self.cdAtPixel(x, y))))
 
     def shifted(self, dx, dy):
-        '''
-        Returns a new WCS object appropriate for the subimage starting
-        at (dx,dy) with respect to the current WCS origin.
+        '''Return a new WCS object appropriate for a shifted subimage.
+
+        Parameters
+        ----------
+        dx : float
+            X offset of the subimage with respect to the current WCS
+            origin.
+        dy : float
+            Y offset of the subimage.
+
+        Returns
+        -------
+        WCS
+            A new WCS object appropriate for the subimage starting at
+            ``(dx, dy)`` with respect to the current WCS origin.
         '''
         return None
 
 
 class PSF(ImageCalibration, Params):
-    '''
-    Duck-type definition of a point-spread function.
-    '''
+    '''Duck-type definition of a point-spread function.'''
 
     def getPointSourcePatch(self, px, py, minval=0., modelMask=None):
-        '''
-        Returns a `Patch`, a rendering of a point source at the given
-        pixel coordinates.
+        '''Return a rendering of a point source at the given pixel
+        coordinates.
 
-        The returned `Patch` should have unit "counts".
+        Parameters
+        ----------
+        px : float
+            X pixel coordinate of the point source.
+        py : float
+            Y pixel coordinate of the point source.
+        minval : float, optional
+            Says that we are willing to accept an approximation such
+            that pixels with counts < `minval` can be omitted.
+        modelMask : ModelMask, optional
+            Describes the pixels to be evaluated.  If the `modelMask`
+            includes a pixel-by-pixel mask, this overrides `minval`.
 
-        *minval* says that we are willing to accept an approximation
-        such that pixels with counts < minval can be omitted.
-
-        *modelMask* describes the pixels to be evaluated.  If the
-         *modelMask* includes a pixel-by-pixel mask, this overrides
-         *minval*.
+        Returns
+        -------
+        Patch
+            A rendering of a point source at the given pixel
+            coordinates.  The returned `Patch` should have unit
+            "counts".
         '''
         pass
 
     def getRadius(self):
-        '''
-        Returns the size of the support of this PSF.
+        '''Return the size of the support of this PSF.
 
         This is required because the Tractor has to decide what size
-        to make the ``Patch``es.
+        to make the ``Patch`` objects.
+
+        Returns
+        -------
+        float
+            The radius of the PSF support, in pixels.
         '''
         return 0
 
     def getShifted(self, x0, y0):
-        '''
-        Returns a PSF model for the subimage starting at x0,y0.
+        '''Return a PSF model for the subimage starting at ``x0, y0``.
+
+        Parameters
+        ----------
+        x0 : int
+            X pixel coordinate of the subimage origin.
+        y0 : int
+            Y pixel coordinate of the subimage origin.
+
+        Returns
+        -------
+        PSF
+            A PSF model for the subimage.
         '''
         return None
 

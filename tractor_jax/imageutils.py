@@ -4,19 +4,37 @@ from tractor_jax.wcs import RaDecPos
 
 def interpret_roi(wcs, imgshape, roi=None, roiradecsize=None, roiradecbox=None,
                   **kwargs):
-    '''
-    imgshape = (H,W): full image size
+    '''Interpret the different ways of specifying a region of interest.
 
-    If not None, roi = (x0, x1, y0, y1) defines a region-of-interest
-    in the image, in zero-indexed pixel coordinates.  x1,y1 are
-    NON-inclusive, ie, x in [x0,x1);
-    roi=(0,100,0,100) will yield a 100 x 100 image.
+    Parameters
+    ----------
+    wcs : object
+        WCS object supporting ``positionToPixel``, used to convert
+        RA,Dec to pixel coordinates.
+    imgshape : tuple of int
+        Full image size ``(H, W)``.
+    roi : tuple of int, optional
+        If not None, ``(x0, x1, y0, y1)`` defines a region-of-interest
+        in the image, in zero-indexed pixel coordinates.  ``x1``,
+        ``y1`` are NON-inclusive, i.e., x in ``[x0, x1)``;
+        ``roi=(0,100,0,100)`` will yield a 100 x 100 image.
+    roiradecsize : tuple, optional
+        ``(ra, dec, half-size in pixels)`` indicates that you want to
+        grab a ROI around the given RA,Dec.
+    roiradecbox : tuple, optional
+        ``(ra0, ra1, dec0, dec1)`` indicates that you want to grab a
+        ROI containing the given RA,Dec ranges.
+    **kwargs
+        Ignored.
 
-    "roiradecsize" = (ra, dec, half-size in pixels) indicates that you
-    want to grab a ROI around the given RA,Dec.
-
-    "roiradecbox" = (ra0, ra1, dec0, dec1) indicates that you
-    want to grab a ROI containing the given RA,Dec ranges.
+    Returns
+    -------
+    roi : tuple of int or None
+        The resolved region of interest ``(x0, x1, y0, y1)``, or None
+        if the requested ROI is empty.
+    issubimage : bool
+        Whether the ROI is a proper sub-image (smaller than the full
+        image).
     '''
     (H, W) = imgshape
     if roiradecsize is not None:
