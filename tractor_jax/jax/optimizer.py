@@ -111,7 +111,6 @@ def assign_buckets(
 
     if bucket_mode == "fixed":
         if bucket_sizes is None:
-            # Fallback default
             bucket_sizes = [32, 64, 128, 256, 512, 1024, 2048, 4096]
 
         # In fixed mode, we assume bucket_sizes defines the allowed grid.
@@ -126,22 +125,17 @@ def assign_buckets(
             else:
                 norm_shapes.append((int(b[0]), int(b[1])))
 
-        # For assignment logic, we use this list.
         allowed_shapes = norm_shapes
 
     else: # auto
-        # Determine buckets from distribution
-
-        # Quantize required shapes to bucket_base
+        # Quantize required shapes up to multiples of bucket_base
         quantized_shapes = []
         for h, w in required_shapes:
-            # Ceil to multiple of bucket_base
             h_q = int(math.ceil(h / bucket_base) * bucket_base)
             w_q = int(math.ceil(w / bucket_base) * bucket_base)
             quantized_shapes.append((h_q, w_q))
 
         if bucket_shape_mode == "square":
-            # Force square
             sq_sizes = []
             for h, w in quantized_shapes:
                 s = max(h, w)
@@ -150,7 +144,6 @@ def assign_buckets(
             counts = Counter(sq_sizes)
             max_size = max(sq_sizes) if sq_sizes else bucket_base
 
-            # Get common sizes
             common = counts.most_common(max_buckets)
 
             candidates = set([s for s, c in common])
@@ -269,17 +262,11 @@ def compute_target_stats(images, oversample_rendering=False):
         elif isinstance(psf, PixelizedPSF):
             ph, pw = psf.img.shape
             s = getattr(psf, "sampling", 1.0)
-            # Fallback to old logic (fixed to divide by s?)
-            # Old logic was: scale = max_factor * s.
-            # If s > 1 (oversampled), this explodes.
-            # Assuming s means samples/pixel, it should be / s.
-            # But let's stick to old logic for fallback to avoid changing behavior for non-reff cases too much
-            # unless we are sure.
-            # Actually, let's fix it if we are confident.
-            # But if r_eff is missing, maybe it's safest to use shape.
-
+            # No r_eff: fall back to the raw kernel footprint. `s` is PSF
+            # pixels per image pixel, so the kernel spans ph * max_factor / s
+            # target pixels (dividing by s, not multiplying — the old *s
+            # version exploded for oversampled PSFs).
             if oversample_rendering:
-                # Correct logic: pixels * max_factor / s
                 scale = max_factor / s
                 ph_target = int(ph * scale)
                 pw_target = int(pw * scale)
@@ -360,9 +347,6 @@ def extract_model_data(
 
         target_H, target_W = fixed_target_shape
         max_factor = fixed_max_factor
-
-        # Calculate max_mog_K for padding logic below (needed for consistency)
-        # Note: We still need psf info for individual images.
 
         # We need padded_H/W (input resolution padded size) for padding input images.
         # target_H >= padded_H * max_factor
@@ -459,7 +443,6 @@ def extract_model_data(
         if isinstance(psf, PixelizedPSF):
             p_type = 0
 
-            # Get local sampling
             s = getattr(psf, "sampling", 1.0)
             local_factor = 1.0/s if s < 1.0 else 1.0
 
@@ -470,7 +453,6 @@ def extract_model_data(
                 ratio = p_sampling / local_factor
                 new_shape = (int(round(ph * ratio)), int(round(pw * ratio)))
 
-                # Resize using jax.image.resize
                 resized_img = jax.image.resize(raw_img, new_shape, method='lanczos3')
 
                 # Normalize flux to preserve sum
@@ -484,7 +466,7 @@ def extract_model_data(
 
             ph, pw = raw_img.shape
 
-            # 3. Pad to target_H, target_W
+            # Pad to (target_H, target_W), centered
             pad_img = jnp.zeros((target_H, target_W))
             cy, cx = target_H // 2, target_W // 2
             y0 = cy - ph // 2
@@ -496,7 +478,6 @@ def extract_model_data(
 
         elif isinstance(psf, GaussianMixturePSF):
             p_type = 1
-            # MoG parameters
             K = len(psf.mog.amp)
             pad_len = max_mog_K - K
 
@@ -508,11 +489,10 @@ def extract_model_data(
                 amp = jnp.pad(amp, (0, pad_len), constant_values=0)
                 mean = jnp.pad(mean, ((0, pad_len), (0, 0)), constant_values=0)
 
-                # Correct padding for var: Identity
+                # Pad var with identity blocks (zero covariances would be singular)
                 new_var = jnp.zeros((max_mog_K, 2, 2), dtype=var.dtype)
                 new_var = new_var.at[:K].set(var)
 
-                # Set identity for padding
                 padding_eye = jnp.tile(jnp.eye(2), (pad_len, 1, 1))
                 new_var = new_var.at[K:].set(padding_eye)
                 var = new_var
@@ -582,7 +562,6 @@ def extract_model_data(
         else:
             indices = sorted(cat_idx_to_flux_idx.keys())
 
-        # Current Image Lists
         ps_flux = []
         ps_pos = []
 
@@ -599,7 +578,6 @@ def extract_model_data(
             src = catalog[cat_idx]
             f_idx = cat_idx_to_flux_idx[cat_idx]
 
-            # Determine type
             if hasattr(src, "getSourceType"):
                 src_type = src.getSourceType()
             else:
@@ -653,13 +631,10 @@ def extract_model_data(
             n = len(fl)
             pad = max_ps - n
 
-            # Pad arrays
-            # flux_idx: pad with 0
             f_arr = np.array(fl, dtype=np.int32)
             f_arr = np.pad(f_arr, (0, pad), constant_values=0)
             flux_idx_stack.append(f_arr)
 
-            # pos_pix: pad with 0
             if n > 0:
                 p_arr = np.array(pos, dtype=np.float32)
             else:
@@ -711,7 +686,7 @@ def extract_model_data(
             p_arr = np.pad(p_arr, ((0, pad), (0, 0)), constant_values=0)
             pos_pix_stack.append(p_arr)
 
-            cd_arr = np.pad(cd_arr, ((0, pad), (0, 0), (0, 0)), constant_values=0) # Identity? 0 is fine if masked
+            cd_arr = np.pad(cd_arr, ((0, pad), (0, 0), (0, 0)), constant_values=0) # zeros OK: padded slots are masked
             wcs_stack.append(cd_arr)
 
             sh_arr = np.pad(sh_arr, ((0, pad), (0, 0)), constant_values=0)
@@ -721,16 +696,13 @@ def extract_model_data(
             m_arr = np.pad(m_arr, (0, pad), constant_values=0)
             mask_stack.append(m_arr)
 
-            # Profile padding (MoG)
-            # Each source has MoG with K components.
-            # We need to pad each MoG to max_gal_mog_K.
-            # AND pad the list of sources to max_gal.
-
-            # Construct (max_gal, max_K, ...) arrays for this image
+            # Profile padding (MoG): pad each source's mixture to
+            # max_gal_mog_K components AND the source list to max_gal,
+            # giving (max_gal, max_K, ...) arrays for this image.
             img_amp = np.zeros((max_gal, max_gal_mog_K), dtype=np.float32)
             img_mean = np.zeros((max_gal, max_gal_mog_K, 2), dtype=np.float32)
             img_var = np.zeros((max_gal, max_gal_mog_K, 2, 2), dtype=np.float32)
-            # Initialize var to Identity to avoid singular matrices if unmasked?
+            # identity var keeps padded components non-singular
             img_var[:] = np.eye(2)
 
             for k_src in range(n):
@@ -777,13 +749,11 @@ def extract_model_data(
 
         bg_vals = np.array(bg_vals, dtype=np.float32).reshape(N_img, 1)
 
-        # Concatenate
         initial_fluxes_matrix = np.hstack([initial_fluxes_matrix, bg_vals])
 
-        # Batch Indices
-        # Background param is at index N_src_params
-        bg_idx = len(src_fluxes) # scalar index relative to row
-        # Since each row has its own bg param at the end
+        # Each row carries its own bg param at the end, so the index is a
+        # single row-relative scalar shared by all images.
+        bg_idx = len(src_fluxes)
         batches["Background"] = {
             "flux_idx": jnp.array([bg_idx], dtype=jnp.int32)
         }
@@ -1445,24 +1415,10 @@ def compute_fisher_diagonal(image_data, batches, n_flux):
 
         psf_data = image_data["psf"]
 
-        # Render unit fluxes
         stamps = render_batch_point_sources(unit_fluxes, pos_pix, psf_data, (H, W), mask=mask)
-        # Wait, render_batch_point_sources returns summed image if we pass fluxes.
-        # But we need stamps squared.
-        # We need to expose a function that returns stamps!
-        # render_batch_point_sources logic sums internally.
-
-        # We need to replicate logic but without summing.
-        # Or we call the internal vmap manually.
-        # This duplicates code.
-        # Better to factor out `get_model_stamps`.
-
-        # But wait, render_batch_point_sources has branching logic (cond).
-        # We can reuse it if we pass unit flux and get stamps?
-        # No, it sums.
-
-        # Re-implementation inline for Fisher (simplification)
-        # Using branching logic again?
+        # render_batch_point_sources sums the stamps internally, but the Fisher
+        # diagonal needs each per-source stamp squared, so the stamp rendering
+        # is re-implemented inline below (the summed result above is unused).
 
         H_hr = psf_data['fft'].shape[0]
         scale = float(H_hr) / float(H)
@@ -2659,11 +2615,9 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
             # Project catalog to this image's pixel coords
             pos_cat = project_catalog(tractor_obj.catalog, img.getWcs())
 
-            # Split into tiles
             tiles_with_meta = tile_image(img, tile_size, halo)
 
             for (tile_img, meta) in tiles_with_meta:
-                # Filter sources
                 indices = filter_sources_by_box(
                     pos_cat,
                     meta['x_start'], meta['x_end'],
@@ -2671,26 +2625,21 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
                     margin=0 # Halo already included in start/end
                 )
 
-                # We include the tile even if indices is empty?
-                # Yes, might fit background.
-
+                # Keep tiles with no sources: the background can still be fit.
                 all_tiles.append(tile_img)
                 all_indices.append(indices)
                 original_img_indices.append(i_img)
 
         # 3. Bucket Tiles
-        # Calculate stats for tiles
         stats = compute_target_stats(all_tiles, oversample_rendering)
         max_factor = stats["max_factor"]
         req_shapes = compute_image_shapes(all_tiles, stats)
 
-        # Bucketing
         bucket_map = assign_buckets(req_shapes, bucket_sizes, bucket_mode, bucket_shape_mode, bucket_base)
 
         print(f"JAX Optimization: {len(all_tiles)} tiles -> {len(bucket_map)} buckets")
 
-        # Container for results (fluxes per tile)
-        # We store result as list of results matching 'all_tiles' order.
+        # results per tile, in 'all_tiles' order
         tile_results = [None] * len(all_tiles)
 
         for shape, tile_idxs in bucket_map.items():
@@ -2725,21 +2674,10 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
                     "profile": {"amp": 0, "mean": 0, "var": 0}
                 }
             if "Background" in batches:
-                batches_in_axes["Background"] = {"flux_idx": None} # Background index logic might vary?
+                # Background flux_idx is a row-relative scalar identical for
+                # every image (see extract_model_data), so it is not vmapped.
+                batches_in_axes["Background"] = {"flux_idx": None}
 
-            # Wait, background logic in extract_model_data assumes 1 flux per image.
-            # And it puts `bg_vals` at end of `initial_fluxes`.
-            # And `batches["Background"]["flux_idx"]` is (N_img,) usually.
-            # But in `extract_model_data` dense/sparse refactor, I kept `batches["Background"]` as:
-            # `batches["Background"] = { "flux_idx": jnp.array([bg_idx], dtype=jnp.int32) }` (Scalar index relative to row!)
-            # Check line 592 in modified code: `bg_idx = len(src_fluxes)`.
-            # This is scalar.
-            # So `batches_in_axes` should be `None` for flux_idx if it's the same scalar for all images?
-            # Yes, for each image row, the background is at `N_flux`.
-            # So the index is constant.
-            # So `flux_idx: None` is correct.
-
-            # Optimization
             if use_sharding:
                 images_data, batches, initial_fluxes = prepare_sharded_inputs(images_data, batches, initial_fluxes)
 
@@ -2775,8 +2713,6 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
                     parts.append({key: np.array(val[k]) for key, val in aux_stack.items()})
                 tile_results[original_idx] = tuple(parts) if len(parts) > 1 else f
 
-        # Tiling Done. Results are per tile.
-        # We assume update_catalog is False or we warn.
         if update_catalog:
             print("Warning: update_catalog=True is ignored in Tiling mode (ambiguous results).")
 
@@ -2789,24 +2725,15 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
         req_shapes = compute_image_shapes(tractor_obj.images, stats)
         bucket_map = assign_buckets(req_shapes, bucket_sizes, bucket_mode, bucket_shape_mode, bucket_base)
 
-        # Debug Logging
         print(f"JAX Optimization: {len(tractor_obj.images)} images -> {len(bucket_map)} buckets")
         for shape, idxs in bucket_map.items():
             print(f"  Bucket {shape}: {len(idxs)} images")
 
-        # Container for results
         all_results = [None] * len(tractor_obj.images)
 
-        optimized_fluxes_np = None # placeholder if needed later
-        # Actually we construct results list at the end differently if we bucket.
-        # But optimize_fluxes expects `results` list in order.
-
-        # We need to collect fluxes to update catalog if single image.
-        # But if single image, we probably only have 1 bucket.
-
-        # For update_catalog logic at end:
-        # We need `optimized_fluxes_np` array (N_img, N_params).
-        # We can construct it from all_results.
+        # (N_img, N_params); rebuilt from all_results after the bucket loop
+        # for the update_catalog logic below.
+        optimized_fluxes_np = None
 
         for shape, img_indices in bucket_map.items():
             if not img_indices:
@@ -2826,9 +2753,8 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
             )
 
             # 2. Define in_axes for batches
-            # Note: With refactoring, flux_idx, shapes, profiles are now per-image arrays (shape N_img, N_src, ...).
-            # So they should be mapped with in_axes=0.
-
+            # flux_idx, shapes and profiles are per-image arrays
+            # (N_img, N_src, ...), so they are mapped with in_axes=0.
             batches_in_axes = {}
             if "PointSource" in batches:
                 batches_in_axes["PointSource"] = {
@@ -2902,24 +2828,20 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
             else:
                 optimized_fluxes_np = np.array(all_results)
         else:
-             # Handle empty case
              optimized_fluxes_np = np.array([])
              if return_variances:
                  variances_np = np.array([])
 
     else:
-        # Sequential Processing
-        # We process images one by one to save memory.
-        # However, we still need to collect results in the same format.
-
+        # Sequential Processing: images one by one to save memory,
+        # collecting results in the same format as the vmap path.
         fluxes_list = []
         variances_list = []
 
         batches = {} # Initialize in case loop doesn't run, to avoid UnboundLocalError for bg check
 
         for _img_i, img in enumerate(tractor_obj.images):
-            # Create a mini Tractor object for extraction
-            # extract_model_data works on Tractor objects.
+            # extract_model_data works on Tractor objects; wrap the single image
             sub_tractor = Tractor([img], tractor_obj.catalog)
 
             img_data, batches, init_flux = extract_model_data(
@@ -2930,9 +2852,6 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
 
             # img_data is stacked with shape (1, ...). We unbatch.
             single_data = jax.tree_util.tree_map(lambda x: x[0], img_data)
-
-            # batches contain fields like 'pos_pix' which are (1, N_src, 2).
-            # We unbatch them to (N_src, 2).
 
             # All per-source arrays are stacked per image by extract_model_data
             # (shape (1, N_src, ...) here); slice image 0 off every leaf, as the
@@ -2947,7 +2866,8 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
                     lambda x: x[0], batches["Galaxy"])
 
             if "Background" in batches:
-                # flux_idx is (1,) for single image?
+                # Background flux_idx is row-relative, not image-batched;
+                # nothing to slice.
                 pass
 
             single_flux = init_flux[0] # (N_params,)
@@ -3000,41 +2920,14 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
 
     if update_catalog:
         if N_img == 1:
-            # Update catalog
-            # We need to map flux array back to sources.
-            # We can use batches info which contains 'flux_idx'.
-            # The indices in flux array correspond to the order in src_fluxes (from extract_model_data).
-            # src_fluxes was built by iterating catalog.
-
-            # Re-iterate catalog to update params?
-            # Or use indices if we stored them.
-            # batches stores flux_idx per type.
-
-            # Let's iterate types.
             f_vec = optimized_fluxes_np[0] # Single image
 
-            # Point Sources
             if "PointSource" in batches:
                 idxs = batches["PointSource"]["flux_idx"]
-                # idxs is (N_src,) array of indices
-                # We need to know WHICH sources are these.
-                # extract_model_data iterates catalog.
-
-                # It's cleaner to re-iterate catalog and update in order if we know the order matches.
-                # But extract_model_data filters sources (CompositeGalaxy etc).
-
-                # We should probably modify extract_model_data to return a mapping or list of (source, start_idx).
-                # But I don't want to break API if possible.
-
-                # Let's assume standard iteration order is preserved.
-                # And assume we only have PointSources and Galaxies supported.
-
-                # This is tricky without refactoring extract_model_data.
-                # BUT, extract_model_data is in this file. I CAN refactor it or rely on its logic.
-
-                # The fluxes in 'initial_fluxes' are packed: [src1_params, src2_params, ...].
-                # So if we iterate catalog again, we can match them.
-
+                # Fluxes are packed [src1_params, src2_params, ...] in catalog
+                # iteration order with the same filtering as extract_model_data
+                # (composites skipped), so re-iterating the catalog in order
+                # recovers the source <-> flux mapping. (idxs above is unused.)
                 ptr = 0
                 for src in tractor_obj.catalog:
                     if isinstance(src, (CompositeGalaxy, FixedCompositeGalaxy)):
@@ -3099,15 +2992,8 @@ class JaxOptimizer(Optimizer):
         lnp0 = tractor.getLogProb()
         p0 = tractor.getParams()
 
-        # Call optimize_fluxes with update_catalog=True
-        # We assume oversample_rendering=True as safe default? Or only if needed?
-        # User requested oversampling test.
-        # But we should probably check if needed? No, just pass it.
-
-        # Note: optimize_fluxes returns (fluxes, vars) if variance=True.
-        # But update_catalog=True updates the tractor object.
-        # optimize_fluxes currently returns list of results per image.
-
+        # oversample_rendering=True is a safe default: it only takes effect
+        # for undersampled PixelizedPSFs (sampling < 1).
         res = optimize_fluxes(
             tractor,
             return_variances=variance,
@@ -3119,7 +3005,6 @@ class JaxOptimizer(Optimizer):
             **kwargs
         )
 
-        # tractor catalog is updated.
         p1 = tractor.getParams()
         lnp1 = tractor.getLogProb()
         dlnp = lnp1 - lnp0
@@ -3128,68 +3013,27 @@ class JaxOptimizer(Optimizer):
         alpha = 1.0
 
         if variance:
-            # We need to return variance vector matching X.
-            # optimize_fluxes returns list of variances per image.
-            # If N_img=1, we take the first.
             if len(res) == 1:
                 fluxes, vars = res[0]
-                # vars corresponds to flux parameters.
-                # X corresponds to ALL parameters (including fixed positions).
-                # But X has 0 for fixed params.
-                # We need to map vars to the full parameter vector.
-
-                # We can construct full variance vector.
-                # tractor.getParams() returns all thawed params.
-                # optimize_fluxes only optimizes fluxes (and maybe background).
-                # It does NOT optimize positions.
-                # So variance for positions is 0 (or infinity? usually 0 if fixed).
-
-                # We need to map the variances back.
-                # This is hard without explicit mapping.
-
-                # For now, let's assume we are fitting fluxes only (positions fixed).
-                # Then X length == flux params length.
-                # And vars length == flux params length.
-
-                # But if positions are thawed in tractor, X will be larger.
-                # optimize_fluxes does NOT touch positions.
-                # So X will have 0s for positions.
-                # And we don't have variances for positions.
-
-                # If the user expects variances for all params, we should pad with 0?
-
-                # Let's try to match lengths.
+                # vars covers FLUX parameters only, while X spans every thawed
+                # tractor parameter (tractor orders thawed image params, then
+                # catalog params); a robust flux -> full-parameter mapping
+                # would need extract_model_data to export one. In the simple
+                # case (sky and positions fixed, fluxes thawed) the lengths
+                # match and vars is the full vector.
                 full_var = np.zeros_like(X)
 
-                # Mapping:
-                # We iterate catalog again to fill full_var?
-                # Similar logic to update_catalog.
-
+                # (mapping via these pointers was never implemented; only the
+                # length check below is used)
                 ptr_flux = 0
                 ptr_param = 0
-
-                # This depends on how tractor.getParams() orders things.
-                # Tractor orders by: Images (if thawed), Catalog (if thawed).
-                # Images params (Sky?)
-                # Catalog params (Src1, Src2...)
-
-                # Check if Images params are thawed.
-                # If fit_background=False, Sky is not optimized by JAX (except if we updated it?)
-                # optimize_fluxes with fit_background=False does not return sky variance.
-
-                # If Sky is thawed in Tractor, p0 includes sky.
-                # But JAX didn't optimize it.
-
-                # Let's assume simple case: Sky fixed, Pos fixed. Flux thawed.
-                # Then params match.
 
                 if len(X) == len(vars):
                      full_var = vars
                 else:
-                    # Try to map?
-                    # Too risky without robust mapping.
-                    # Just return vars and hope user handles it or lengths match.
-                    full_var = vars # Mismatch likely if pos thawed.
+                    # No robust mapping: pass vars through unchanged
+                    # (length mismatch likely if positions are thawed).
+                    full_var = vars
             else:
                 full_var = None
 

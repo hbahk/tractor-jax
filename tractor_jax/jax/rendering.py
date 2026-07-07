@@ -33,7 +33,7 @@ def rebin_downsample_int_flux(img: jnp.ndarray, k_y: int, k_x: int) -> jnp.ndarr
     H, W = img.shape
     H2 = (H // k_y) * k_y
     W2 = (W // k_x) * k_x
-    img = img[:H2, :W2]  # crop; or pad if you prefer
+    img = img[:H2, :W2]
     img = img.reshape(H2 // k_y, k_y, W2 // k_x, k_x)
     return img.sum(axis=(1, 3))
 
@@ -72,16 +72,7 @@ def get_galaxy_shape_matrix(re, ab, phi):
     s = jnp.sin(phi_rad)
 
     # G = re_deg * [[cp, sp * ab], [-sp, cp * ab]]
-    # Shape construction
-    # Note: re_deg might be scalar.
-
-    # In tractor/galaxy.py:
-    # return re_deg * np.array([[cp, sp * self.ab], [-sp, cp * self.ab]])
-
-    # Correct stacking.
-    # If re, ab, phi are scalars, we want (2, 2).
-    # If arrays (N,), we want (N, 2, 2).
-
+    # Scalar inputs give (2, 2); batched (N,) inputs give (N, 2, 2).
     row1 = jnp.stack([c, s * ab], axis=-1)
     row2 = jnp.stack([-s, c * ab], axis=-1)
     mat = jnp.stack([row1, row2], axis=-2)  # (..., 2, 2)
@@ -108,7 +99,6 @@ def get_shear_matrix(cd_inv, G):
         Transformation matrix of shape ``(..., 2, 2)``, mapping unit
         effective-radius vectors to pixels.
     """
-    # Matrix multiplication
     return jnp.matmul(cd_inv, G)
 
 
@@ -131,17 +121,10 @@ def apply_shear_to_cov(cov, Tinv):
     jnp.ndarray
         Transformed covariance matrices of shape ``(..., K, 2, 2)``.
     """
-    # cov is (..., K, 2, 2)
-    # Tinv is (..., 2, 2) -> expand to (..., 1, 2, 2)
+    # Tinv: (..., 2, 2) -> (..., 1, 2, 2) so it broadcasts over the K axis of cov
     Tinv_expanded = Tinv[..., jnp.newaxis, :, :]
 
-    # matmul: (..., 1, 2, 2) @ (..., K, 2, 2) -> (..., K, 2, 2)
-    # But Tinv is broadcasted over K
-
-    # Tinv @ cov
     res = jnp.matmul(Tinv_expanded, cov)
-    # res @ Tinv^T
-    # Tinv^T is (..., 1, 2, 2) (transpose last two dims)
     Tinv_T = jnp.swapaxes(Tinv_expanded, -1, -2)
 
     new_cov = jnp.matmul(res, Tinv_T)
@@ -176,29 +159,14 @@ def gaussian_fourier_transform(amp, var, mu, v, w):
         Complex array of shape ``(..., H, W)``: the mixture's Fourier
         transform summed over the ``K`` components.
     """
-    # v, w can be 1D arrays of frequencies.
-    # Let's assume v corresponds to last dim (width), w to second last (height).
-
-    # var components
     a = var[..., 0, 0]
     b = var[..., 0, 1]
     d = var[..., 1, 1]
 
-    # Expand dims for broadcasting
-    # v: (W,) -> (1, ..., 1, 1, W)
-    # w: (H,) -> (1, ..., 1, H, 1)
-    # amp: (..., K) -> (..., K, 1, 1)
-    # var elements: (..., K) -> (..., K, 1, 1)
-
     v_grid = v
     w_grid = w
 
-    # We assume v and w are passed such that they broadcast correctly or we reshape them.
-    # Usually v is (W,), w is (H,).
-    # We want output (..., H, W).
-    # Inputs have shape (..., K).
-
-    # Let's add dimensions
+    # Broadcast (..., K) params against the (H, W) frequency grid -> (..., K, H, W)
     a = a[..., jnp.newaxis, jnp.newaxis]
     b = b[..., jnp.newaxis, jnp.newaxis]
     d = d[..., jnp.newaxis, jnp.newaxis]
@@ -223,8 +191,7 @@ def gaussian_fourier_transform(amp, var, mu, v, w):
         arg_imag = -2.0 * jnp.pi * 1j * (mx * v_grid + my * w_grid)
         F = F * jnp.exp(arg_imag)
 
-    # Sum over K components
-    Fsum = jnp.sum(amp * F, axis=-3)  # Sum over K axis (which is -3 now: ..., K, H, W)
+    Fsum = jnp.sum(amp * F, axis=-3)  # sum over K (axis -3 of ..., K, H, W)
 
     return Fsum
 
@@ -251,36 +218,22 @@ def render_pixelized_psf(psf_img, dx, dy):
     jnp.ndarray
         Shifted image of shape ``(H, W)``.
     """
-    # Replicate tractor logic:
-    # 1. Lanczos filter x-shift (correlate rows)
-    # 2. Lanczos filter y-shift (correlate cols of result)
-
-    # We use batch_correlate1d from miscutils which expects (Batch, H, W).
-    # So we add batch dim.
+    # batch_correlate1d expects (Batch, H, W); add a singleton batch dim.
     img_b = psf_img[jnp.newaxis, :, :]
 
     dx_b = jnp.array([dx])
     dy_b = jnp.array([dy])
 
-    # lanczos_shift_image_batch_gpu in psf.py
-    # But we can just write it here using miscutils imports
-
     L = 3
-    # kernels
-    # We need a grid of shifts.
-    # miscutils.lanczos_filter(order, x)
-
-    # Construct kernels
     k_range = jnp.arange(-L, L + 1)
     Lx = lanczos_filter(L, k_range + dx)
     Ly = lanczos_filter(L, k_range + dy)
 
-    # Normalize
+    # Normalize kernels to unit sum so the shift conserves flux
     Lx = Lx / jnp.sum(Lx)
     Ly = Ly / jnp.sum(Ly)
 
-    # Lx shape: (7,)
-    # correlate1d expects b to be (Batch, Len).
+    # correlate1d expects kernels of shape (Batch, Len)
     Lx = Lx[jnp.newaxis, :]
     Ly = Ly[jnp.newaxis, :]
 
@@ -381,8 +334,7 @@ def downsample_image(img, target_shape):
     H_hr, W_hr = img.shape
     H, W = target_shape
 
-    # Try to detect integer downsampling
-    # This assumes shapes are static or concrete integers at trace time
+    # Integer-factor detection requires shapes static/concrete at trace time
     is_int_y = (H_hr % H == 0)
     is_int_x = (W_hr % W == 0)
 
@@ -442,20 +394,17 @@ def render_galaxy_fft(
     Tinv = get_shear_matrix(wcs_cd_inv, G)
 
     # 2. Shear the galaxy profile
-    # Only variance changes for centered profile
+    # Only the variance changes for a centered profile; means stay 0.
     sheared_var = apply_shear_to_cov(var, Tinv)
-    # Means are 0 for centered profile.
     sheared_mean = jnp.zeros_like(mean)
 
     # 3. Compute FFT of galaxy profile
     freq_x = jfft.rfftfreq(W)
     freq_y = jfft.fftfreq(H)
 
-    # Meshgrid frequencies
     v_grid, w_grid = jnp.meshgrid(freq_x, freq_y)
 
-    # Galaxy is centered at (0,0).
-    # We want to shift it to (pos_x, pos_y).
+    # Shift the centered profile to the subpixel position (phase term in the FT)
     shifted_mean = sheared_mean + jnp.array([pos_x, pos_y])
 
     gal_fft = gaussian_fourier_transform(amp, sheared_var, shifted_mean, v_grid, w_grid)
@@ -521,7 +470,6 @@ def render_point_source_fft(flux, pos, psf_fft, image_shape):
     """
     H, W = image_shape
 
-    # Frequencies
     freq_x = jfft.rfftfreq(W)
     freq_y = jfft.fftfreq(H)
 
@@ -532,11 +480,8 @@ def render_point_source_fft(flux, pos, psf_fft, image_shape):
     phase = -2.0 * jnp.pi * 1j * (pos[0] * v + pos[1] * w)
     shift_fft = jnp.exp(phase)
 
-    # Convolve: Multiply FFTs
-    # Point source FFT is flux * shift_fft
     model_fft = flux * shift_fft * psf_fft
 
-    # Inverse FFT
     img = jfft.irfft2(model_fft, s=(H, W))
 
     return img
@@ -573,7 +518,6 @@ def convolve_gaussians(amp1, mean1, var1, amp2, mean2, var2):
     var : jnp.ndarray
         Covariances of the convolved mixture, shape ``(K1 * K2, 2, 2)``.
     """
-    # Reshape for broadcasting
     # (K1, 1) * (1, K2) -> (K1, K2)
     new_amp = (amp1[:, jnp.newaxis] * amp2[jnp.newaxis, :]).reshape(-1)
 
@@ -616,7 +560,6 @@ def evaluate_mog_grid(amp, mean, var, X, Y):
     # Stack coords: (H, W, 2)
     pos = jnp.stack([X, Y], axis=-1)
 
-    # Expand dims for K
     # pos: (H, W, 1, 2)
     pos = pos[..., jnp.newaxis, :]
 
@@ -629,48 +572,26 @@ def evaluate_mog_grid(amp, mean, var, X, Y):
     # var: (1, 1, K, 2, 2)
     cov = var[jnp.newaxis, jnp.newaxis, :, :, :]
 
-    # Inverse covariance and determinant
-    # We can use jnp.linalg.inv and det.
-    # But for 2x2, explicit formula is faster/simpler?
-    # Let's use jax.numpy.linalg for generality.
-
+    # jnp.linalg handles the batched 2x2s; explicit inverse formulas gain little
     inv_cov = jnp.linalg.inv(cov)  # (1, 1, K, 2, 2)
     det_cov = jnp.linalg.det(cov)  # (1, 1, K)
 
-    # Mahalanobis distance
-    # diff^T * inv_cov * diff
+    # Mahalanobis distance: diff^T @ inv_cov @ diff
     # (H, W, K, 1, 2) @ (H, W, K, 2, 2) @ (H, W, K, 2, 1)
+    diff_col = diff[..., jnp.newaxis]      # (..., 2, 1)
+    diff_row = diff[..., jnp.newaxis, :]   # (..., 1, 2)
 
-    # diff is (..., 2). Expand to column vector (..., 2, 1)
-    diff_col = diff[..., jnp.newaxis]
-    diff_row = diff[..., jnp.newaxis, :]  # (..., 1, 2)
-
-    # inv_cov @ diff
-    # (..., 2, 2) @ (..., 2, 1) -> (..., 2, 1)
     temp = jnp.matmul(inv_cov, diff_col)
-
-    # diff^T @ temp
-    # (..., 1, 2) @ (..., 2, 1) -> (..., 1, 1)
     exponent = -0.5 * jnp.matmul(diff_row, temp).squeeze((-1, -2))
 
-    # Prefactor
-    # 1 / (2*pi * sqrt(det))
-    # Be careful with det sign? Cov should be positive definite.
-    # Clip det for stability?
+    # Cov should be positive definite; clip det for numerical stability
     det_cov = jnp.maximum(det_cov, 1e-12)
 
     norm = 1.0 / (2.0 * jnp.pi * jnp.sqrt(det_cov))
 
-    # Gaussian values
     gauss = norm * jnp.exp(exponent)  # (H, W, K)
 
-    # Replace nans with 0
     gauss = jnp.nan_to_num(gauss)
-
-    # Weighted sum
-
-    # amp is (K,).
-    # gauss is (H, W, K).
 
     weighted_gauss = amp[jnp.newaxis, jnp.newaxis, :] * gauss
 
@@ -730,17 +651,9 @@ def render_galaxy_mog(galaxy_mix, psf_mix, shape_params, wcs_cd_inv, pos, image_
         gal_amp, sheared_gal_mean, sheared_gal_var, psf_amp, psf_mean, psf_var
     )
 
-    # Debug info
-    # print(f"Gal Var: {sheared_gal_var}")
-    # print(f"Conv Var: {conv_var}")
-
     # 3. Add position offset
-    # conv_mean is relative to (0,0). Add pos.
-    # But pos is (x, y) = (col, row).
-    # Tractor means are (x, y).
-    # evaluate_mog_grid expects mean as (x, y).
-    # pos is from wcs.positionToPixel, so (x, y).
-
+    # pos from wcs.positionToPixel is (x, y) = (col, row), matching the
+    # (x, y) mean ordering that evaluate_mog_grid expects.
     final_mean = conv_mean + jnp.array(pos)
 
     # 4. Evaluate on grid
@@ -776,10 +689,8 @@ def render_point_source_mog(flux, pos, psf_mix, image_shape):
     """
     amp, mean, var = psf_mix
 
-    # Shift mean
     final_mean = mean + jnp.array(pos)
 
-    # Evaluate
     H, W = image_shape
     xx, yy = jnp.meshgrid(jnp.arange(W), jnp.arange(H))
 

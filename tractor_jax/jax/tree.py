@@ -18,6 +18,8 @@ class MogProfile:
 
 def _restore_mogparams(children):
     amp, mean, var = children
+    # Under vmap the leaves gain a batch axis (mean becomes (B, K, 2));
+    # MogParams can't hold batched arrays, so fall back to the plain container.
     if getattr(mean, "ndim", 0) > 2:
         return MogProfile(amp, mean, var)
     return MogParams(amp, mean, var)

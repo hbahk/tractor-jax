@@ -39,21 +39,14 @@ def tile_image(image, tile_size, halo):
     H, W = image.shape
     tiles = []
 
-    # Grid of tiles
     nx = int(math.ceil(W / tile_size))
     ny = int(math.ceil(H / tile_size))
 
-    # Original Data
     data = image.getImage()
     invvar = image.getInvError()**2
 
-    # WCS
     wcs = image.getWcs()
-
-    # PSF
     psf = image.getPsf()
-
-    # Sky
     sky = image.getSky()
 
     for iy in range(ny):
@@ -72,21 +65,19 @@ def tile_image(image, tile_size, halo):
             x_end = x1 + halo
             y_end = y1 + halo
 
-            # Slicing with padding
-            # Calculate overlap with image
+            # Overlap of the padded tile with the image; the rest stays zero
             im_x0 = max(0, x_start)
             im_y0 = max(0, y_start)
             im_x1 = min(W, x_end)
             im_y1 = min(H, y_end)
 
-            # Slice size
             tile_h = y_end - y_start
             tile_w = x_end - x_start
 
             tile_data = np.zeros((tile_h, tile_w), dtype=data.dtype)
             tile_invvar = np.zeros((tile_h, tile_w), dtype=invvar.dtype)
 
-            # Offsets in tile
+            # Offsets of the overlap region within the tile
             t_x0 = im_x0 - x_start
             t_y0 = im_y0 - y_start
             t_x1 = t_x0 + (im_x1 - im_x0)
@@ -96,12 +87,10 @@ def tile_image(image, tile_size, halo):
                 tile_data[t_y0:t_y1, t_x0:t_x1] = data[im_y0:im_y1, im_x0:im_x1]
                 tile_invvar[t_y0:t_y1, t_x0:t_x1] = invvar[im_y0:im_y1, im_x0:im_x1]
 
-            # Construct new WCS
-            # Shifted subtracts offsets from CRPIX, effectively moving the origin.
-            # New pixel (0,0) corresponds to Old pixel (x_start, y_start).
+            # shifted() subtracts offsets from CRPIX, moving the origin:
+            # new pixel (0,0) corresponds to old pixel (x_start, y_start).
             tile_wcs = wcs.shifted(x_start, y_start)
 
-            # Construct Tile Image
             tile_inverr = np.sqrt(tile_invvar)
 
             tile_img = Image(data=tile_data, inverr=tile_inverr, wcs=tile_wcs, psf=psf, sky=sky)
@@ -136,9 +125,7 @@ def project_catalog(catalog, wcs):
         projection are set to NaN.
     """
     positions = []
-    # Try to verify if we can vectorize
-    # But catalog is list of objects.
-
+    # Catalog is a list of heterogeneous objects; loop rather than vectorize.
     for src in catalog:
         try:
             x, y = wcs.positionToPixel(src.getPosition(), src)
@@ -179,9 +166,7 @@ def filter_sources_by_box(positions, x_min, x_max, y_min, y_max, margin=0):
     x = positions[:, 0]
     y = positions[:, 1]
 
-    # Handle NaNs (sources that failed projection) -> False
-    # Use range with margin
-
+    # NaN positions (failed projections) compare False and are excluded
     mask = (x >= x_min - margin) & (x < x_max + margin) & \
            (y >= y_min - margin) & (y < y_max + margin)
 
