@@ -6,17 +6,17 @@ from .psf import (NCircularGaussianPSF, GaussianMixturePSF, PixelizedPSF,
 from .ellipses import *
 from .imageutils import *
 from .galaxy import *
+from . import sersic
 from .version import __version__
 
 __all__ = [
     # modules
-    'emfit', 'galaxy', 'sersic',
+    'galaxy', 'sersic',
     # ducks
     'Params', 'Sky', 'Source', 'Position', 'Brightness', 'PhotoCal',
     'PSF',
     # utils
     'BaseParams', 'ScalarParam', 'ParamList', 'MultiParams',
-    'NamedParams', 'NpArrayParams',
     # basics
     'ConstantSky', 'PointSource',
     'Flux', 'Fluxes', 'Mag', 'Mags', 'MagsPhotoCal',
