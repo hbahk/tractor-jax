@@ -48,4 +48,10 @@ the upstream [dstndstn/tractor](https://github.com/dstndstn/tractor).
 
 ## License
 
-See [LICENSE](LICENSE). Portions derive from The Tractor.
+GPL-3.0 — see [LICENSE](LICENSE).
+
+Portions of this code derive from
+[The Tractor](https://github.com/dstndstn/tractor), copyright
+Dustin Lang and David W. Hogg, distributed under the GNU General Public
+License version 2 or (at your option) any later version; this project
+exercises that option and distributes the derived work under GPL-3.0.
