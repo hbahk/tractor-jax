@@ -1,5 +1,8 @@
 # Tractor-JAX
 
+[![CI](https://github.com/hbahk/tractor-jax/actions/workflows/ci.yml/badge.svg)](https://github.com/hbahk/tractor-jax/actions/workflows/ci.yml)
+[![Documentation Status](https://readthedocs.org/projects/tractor-jax/badge/?version=latest)](https://tractor-jax.readthedocs.io/en/latest/)
+
 JAX-accelerated astronomical image modeling and forced photometry.
 
 **Tractor-JAX** is a GPU-oriented reimplementation of
@@ -27,6 +30,28 @@ pip install -e tractor-jax
 
 The default `pip install jax` dependency is CPU-only; for GPU acceleration
 install the CUDA wheel, e.g. `pip install "jax[cuda12]"`.
+
+## Quickstart
+
+```python
+import numpy as np
+from tractor_jax import (
+    Tractor, Image, PointSource, PixPos, Flux, NCircularGaussianPSF,
+)
+
+image = Image(
+    data=np.zeros((50, 50), dtype=np.float32),
+    inverr=np.ones((50, 50), dtype=np.float32),
+    psf=NCircularGaussianPSF([1.5], [1.0]),
+)
+src = PointSource(PixPos(24.0, 27.0), Flux(100.0))
+
+tractor = Tractor(images=[image], catalog=[src])
+model = tractor.getModelImage(0)
+```
+
+See the [documentation](https://tractor-jax.readthedocs.io) for the full
+guide and API reference.
 
 ## Documentation
 
