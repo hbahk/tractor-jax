@@ -19,8 +19,8 @@ Developed for SPHEREx-scale joint deblending and forced photometry.
 
 ## Conventions
 
-- Fluxes are in **nanomaggies** unless a variable name says otherwise;
-  magnitudes are AB.
+- Flux models carry whatever unit the input images are calibrated in (see
+  `PhotoCal`); magnitudes are AB.
 - WCS follows the **FITS convention** (1-based pixel origin, RA increasing to
   the left).
 - Code follows JAX functional style: no in-place mutation, shape-determining
