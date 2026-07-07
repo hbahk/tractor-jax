@@ -337,7 +337,7 @@ def extract_model_data(
         broadcast/shared across images; the background parameter (if fit)
         is per-image.
     """
-    from tractor import ConstantSky
+    from tractor_jax.sky import ConstantSky
     images = tractor_obj.images
     catalog = tractor_obj.catalog
 
@@ -2553,7 +2553,7 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
     list
         List of results per image.
     """
-    from tractor import ConstantSky
+    from tractor_jax.sky import ConstantSky
 
     results = []
 

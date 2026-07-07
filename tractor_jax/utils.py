@@ -1540,7 +1540,7 @@ class MogParams(ParamList):
         var : numpy.ndarray
             Array (size K, 2, 2) of variances.
         '''
-        from tractor import mixture_profiles as mp
+        from tractor_jax import mixture_profiles as mp
 
         if len(args) == 3:
             amp, mean, var = args

@@ -393,7 +393,7 @@ if __name__ == '__main__':
     ps.savefig()
 
     from tractor_jax.psf import NCircularGaussianPSF
-    from tractor import Image, NullWCS, ConstantSky, LinearPhotoCal, PixPos, Flux, Tractor
+    from tractor_jax import Image, NullWCS, ConstantSky, LinearPhotoCal, PixPos, Flux, Tractor
     W, H = 500, 500
     img = np.zeros((H, W), np.float32)
     sig1 = 1.
