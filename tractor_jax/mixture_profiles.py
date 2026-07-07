@@ -44,6 +44,39 @@ def get_exp_mixture():
 def get_dev_mixture():
     return MixtureOfGaussians(dev_amp, np.zeros((dev_amp.size, 2)), dev_var)
 
+def _gauss_2d_grid_np(x0, x1, y0, y1, cx, cy, amp, mean, var, derivs=False):
+    """Pure-numpy fallback for the legacy ``tractor.mix`` C grid evaluators.
+
+    Evaluates a 2-D Gaussian mixture centred at ``(cx, cy)`` (plus each
+    component's mean) at integer pixel centres of the half-open grid
+    ``[x0, x1) x [y0, y1)``. With ``derivs``, also returns the derivatives
+    of the result with respect to ``cx`` and ``cy``.
+    """
+    X, Y = np.meshgrid(np.arange(x0, x1, dtype=np.float64) - cx,
+                       np.arange(y0, y1, dtype=np.float64) - cy)
+    result = np.zeros(X.shape)
+    xd = np.zeros(X.shape) if derivs else None
+    yd = np.zeros(X.shape) if derivs else None
+    for k in range(len(amp)):
+        dx = X - mean[k, 0]
+        dy = Y - mean[k, 1]
+        Vinv = np.linalg.inv(var[k])
+        dsq = (Vinv[0, 0] * dx * dx + (Vinv[0, 1] + Vinv[1, 0]) * dx * dy
+               + Vinv[1, 1] * dy * dy)
+        G = np.zeros(X.shape)
+        I = dsq < 700
+        norm = amp[k] / (2. * np.pi * np.sqrt(np.linalg.det(var[k])))
+        G[I] = norm * np.exp(-0.5 * dsq[I])
+        result += G
+        if derivs:
+            # d/dcx of exp(-0.5 d^T Vinv d), d = pixel - centre
+            xd += G * (Vinv[0, 0] * dx + Vinv[0, 1] * dy)
+            yd += G * (Vinv[1, 0] * dx + Vinv[1, 1] * dy)
+    if derivs:
+        return result, xd, yd
+    return result
+
+
 class MixtureOfGaussians(object):
 
     # symmetrize is an unnecessary step in principle, but in practice?
@@ -399,7 +432,11 @@ class MixtureOfGaussians(object):
         return result
 
     def evaluate_2(self, pos):
-        from tractor.mix import c_gauss_2d
+        try:
+            from tractor.mix import c_gauss_2d
+        except ImportError:
+            # optional legacy-tractor C accelerator not installed
+            return self.evaluate_3(pos)
         if pos.size == self.D:
             pos = np.reshape(pos, (1, self.D))
         (N, D) = pos.shape
@@ -434,8 +471,13 @@ class MixtureOfGaussians(object):
             The evaluated mixture as a Patch object with origin
             ``(x0, y0)``.
         '''
-        from tractor.mix import c_gauss_2d_grid
         assert(self.D == 2)
+        try:
+            from tractor.mix import c_gauss_2d_grid
+        except ImportError:
+            result = _gauss_2d_grid_np(x0, x1, y0, y1, cx, cy,
+                                       self.amp, self.mean, self.var)
+            return Patch(x0, y0, result)
         result = np.zeros((y1 - y0, x1 - x0))
         rtn = c_gauss_2d_grid(int(x0), int(x1), int(y0), int(y1), cx, cy,
                               self.amp, self.mean, self.var, result)
@@ -468,8 +510,13 @@ class MixtureOfGaussians(object):
         numpy.ndarray
             The evaluated mixture, shape ``(y1-y0, x1-x0)``.
         '''
-        from tractor.mix import c_gauss_2d_approx2
         assert(self.D == 2)
+        try:
+            from tractor.mix import c_gauss_2d_approx2
+        except ImportError:
+            # exact evaluation; minval is only a speed optimization
+            return _gauss_2d_grid_np(x0, x1, y0, y1, cx, cy,
+                                     self.amp, self.mean, self.var)
 
         result = np.zeros((y1 - y0, x1 - x0))
         rtn = c_gauss_2d_approx2(x0, x1, y0, y1, cx, cy, minval,
@@ -580,7 +627,10 @@ class MixtureOfGaussians(object):
             None if the source center is more than `maxmargin` outside
             the box.
         '''
-        from tractor.mix import c_gauss_2d_approx3
+        try:
+            from tractor.mix import c_gauss_2d_approx3
+        except ImportError:
+            c_gauss_2d_approx3 = None
 
         result = np.zeros((y1 - y0, x1 - x0))
         xderiv = yderiv = None
@@ -595,6 +645,18 @@ class MixtureOfGaussians(object):
         if (cx < x0 - maxmargin or cx > x1 + maxmargin or
                 cy < y0 - maxmargin or cy > y1 + maxmargin):
             return None
+
+        if c_gauss_2d_approx3 is None:
+            # exact numpy evaluation over the full box (minval/minradius are
+            # speed hints; doslice skipped — callers handle Patch extents)
+            out = _gauss_2d_grid_np(x0, x1, y0, y1, fx, fy,
+                                    self.amp, self.mean, self.var,
+                                    derivs=derivs)
+            if derivs:
+                result, xderiv, yderiv = out
+                return (Patch(x0, y0, result), Patch(x0, y0, xderiv),
+                        Patch(x0, y0, yderiv))
+            return Patch(x0, y0, out)
 
         try:
             rtn, sx0, sx1, sy0, sy1 = c_gauss_2d_approx3(
