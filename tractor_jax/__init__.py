@@ -6,12 +6,7 @@ from .psf import (NCircularGaussianPSF, GaussianMixturePSF, PixelizedPSF,
 from .ellipses import *
 from .imageutils import *
 from .galaxy import *
-from .version import *
-
-try:
-    __version__ = version
-except:
-    __version__ = 'unknown'
+from .version import __version__
 
 __all__ = [
     # modules

@@ -1,12 +1,12 @@
 # Sphinx configuration for tractor-jax documentation.
 
-from tractor_jax.version import __version__
+from tractor_jax import __version__
 
 project = "tractor-jax"
 author = "Hyeonguk Bahk"
 copyright = "2026, Hyeonguk Bahk"
-version = str(__version__)
-release = str(__version__)
+version = __version__
+release = __version__
 
 extensions = [
     "sphinx.ext.autodoc",
