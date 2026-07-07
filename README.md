@@ -1,8 +1,8 @@
-# tractor-jax
+# Tractor-JAX
 
 JAX-accelerated astronomical image modeling and forced photometry.
 
-**tractor-jax** is a GPU-oriented reimplementation of
+**Tractor-JAX** is a GPU-oriented reimplementation of
 [The Tractor](https://github.com/dstndstn/tractor) (Lang & Hogg). It renders
 parametric source models — point sources and exponential / de Vaucouleurs /
 composite / Sérsic galaxies — through pixelized or Gaussian-mixture PSFs, and

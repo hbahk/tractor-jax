@@ -1,6 +1,6 @@
-# tractor-jax
+# Tractor-JAX
 
-**tractor-jax** is a JAX-accelerated reimplementation of
+**Tractor-JAX** is a JAX-accelerated reimplementation of
 [The Tractor](https://github.com/dstndstn/tractor) for astronomical image
 modeling and forced photometry. It renders parametric source models (point
 sources, exponential / de Vaucouleurs / composite galaxies) through pixelized
