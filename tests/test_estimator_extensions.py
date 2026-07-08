@@ -304,3 +304,25 @@ def test_eigfloor_immune_to_background_column_domination():
     bright = np.abs(f_lin) > 1.0
     rel = np.abs(f_ef[bright] - f_lin[bright]) / np.abs(f_lin[bright])
     assert np.max(rel) < 1e-2, rel
+
+
+# --------------------------------------------------------------------------- #
+# A4. alpha="auto" == manual sqrt(2 ln p) (universal-threshold rule)
+# --------------------------------------------------------------------------- #
+def test_alpha_auto_equals_manual_rule():
+    tr, _ = toy_scene()
+    single, sb, f0 = single_image_inputs(tr)
+    n = f0.shape[0]
+    w = jnp.array([1.0, 1.0, 1.0, 0.0])          # source 3 protected
+    kw = dict(penalty_mode="snr", penalty_weights=w, nonneg=True,
+              debias=True, n_iter=3000)
+
+    f_auto = np.array(solve_fluxes_lasso(f0, single, sb, alpha="auto", **kw))
+    # p = penalized live candidates = 3 (sources 0-2; src 3 protected)
+    a_manual = float(np.sqrt(2.0 * np.log(3.0)))
+    f_manual = np.array(solve_fluxes_lasso(f0, single, sb, alpha=a_manual,
+                                           **kw))
+    assert np.allclose(f_auto, f_manual, rtol=1e-12, atol=1e-14)
+
+    with pytest.raises(ValueError):
+        solve_fluxes_lasso(f0, single, sb, alpha="rule", **kw)

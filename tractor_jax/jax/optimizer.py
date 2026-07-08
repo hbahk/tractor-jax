@@ -2072,9 +2072,13 @@ def solve_fluxes_lasso(initial_fluxes, image_data, batches,
     sampling_factor : float, optional
         High-resolution oversampling factor forwarded to the template
         renderer.
-    alpha : float, optional
+    alpha : float or "auto", optional
         Penalty strength; its meaning depends on ``penalty_mode``. Used
-        directly when ``selection_mode="fixed"``.
+        directly when ``selection_mode="fixed"``. The string ``"auto"``
+        applies the universal-threshold rule ``alpha = sqrt(2 ln p)`` with
+        ``p`` the number of penalized live candidates in the solve —
+        catalog-deterministic (never pixel-dependent) and validated
+        in-basin across catalog depths (research note lasso_alpha/16 §6).
     penalty_mode : {"snr", "raw"}, optional
         Penalty parameterization (see proj-spherex-gpupipe research note
         notebooks/research_notes/lasso_alpha/01). ``"snr"``:
@@ -2435,7 +2439,21 @@ def _lasso_core(G, b, dWd, n_eff, wj, free, *,
         if return_path:
             aux["path_fluxes"] = f_p
     else:
-        a = jnp.asarray(alpha if alpha is not None else 0.0, dtype=G.dtype)
+        if isinstance(alpha, str):
+            if alpha != "auto":
+                raise ValueError(f"alpha must be a number, None, or 'auto'; "
+                                 f"got {alpha!r}")
+            # universal-threshold rule alpha = sqrt(2 ln p), p = number of
+            # PENALIZED live candidates in this solve. Deterministic in the
+            # prior catalog (never in the pixel data), so it cannot couple
+            # the selection to the noise, and it keeps the noise-only
+            # false-entry rate uniform across problems of different catalog
+            # depth (validated in-basin on 9 SPHEREx sim fields; proj
+            # research note lasso_alpha/16 §6).
+            p = jnp.sum((wj > 0) & live)
+            a = jnp.sqrt(2.0 * jnp.log(jnp.maximum(p, 2).astype(G.dtype)))
+        else:
+            a = jnp.asarray(alpha if alpha is not None else 0.0, dtype=G.dtype)
         fluxes, support, kkt, _, _, resid_corr_snr, snr_deb = solve_one_alpha(a)
         aux = {
             "support": support, "alpha": a,
