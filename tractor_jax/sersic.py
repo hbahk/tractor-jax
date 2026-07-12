@@ -27,7 +27,7 @@ class SersicMixture(object):
     def getProfile(sindex):
         if SersicMixture.singleton is None:
             SersicMixture.singleton = SersicMixture()
-        return SersicMixture.singleton._getProfile(sindex)
+        return SersicMixture.singleton._getProfileCached(sindex)
 
     def __init__(self):
         from scipy.interpolate import InterpolatedUnivariateSpline, interp1d
@@ -282,6 +282,27 @@ class SersicMixture(object):
         self.lowest = lo
         (lo,hi,a,v) = self.fits[-1]
         self.highest = hi
+        self._profile_cache = {}
+
+    def _getProfileCached(self, sindex):
+        """Memoized :meth:`_getProfile`, keyed on the exact float value.
+
+        Catalogs carry few distinct sersic indices (~1e2) but batch builders
+        look profiles up once per galaxy slot (~1e4 per cutout), and every
+        uncached call re-evaluates the interpolating splines and allocates a
+        fresh mixture. Cached mixtures are shared objects, so their arrays are
+        marked read-only: consumers only read ``amp/mean/var`` (transforms
+        like ``apply_shear`` allocate fresh outputs), and any latent in-place
+        mutator now fails loudly instead of corrupting later lookups.
+        """
+        key = float(sindex)
+        prof = self._profile_cache.get(key)
+        if prof is None:
+            prof = self._getProfile(key)
+            for arr in (prof.amp, prof.mean, prof.var):
+                np.asarray(arr).setflags(write=False)
+            self._profile_cache[key] = prof
+        return prof
 
     def _getProfile(self, sindex):
         matches = []
