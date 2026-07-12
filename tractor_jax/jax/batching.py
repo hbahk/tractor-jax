@@ -24,19 +24,27 @@ recompile per call. This module centralizes that pattern:
 - :func:`penalty_weights_from_slots` builds those weights from the
   per-image ``{catalog index -> flux slot}`` maps the batch builders return.
 """
+import math
 from functools import partial
+from typing import NamedTuple
 
 import numpy as np
 import jax
 import jax.numpy as jnp
+import jax.numpy.fft as jfft
 
 from tractor_jax.jax.optimizer import (
     solve_fluxes_linear,
     solve_fluxes_eigfloor,
     solve_fluxes_lasso,
 )
+from tractor_jax.sersic import SersicMixture
 
 __all__ = [
+    "BatchBundle",
+    "build_padded_batches",
+    "psf_to_fft",
+    "slice_fluxes",
     "batches_in_axes",
     "make_batched_solver",
     "clear_solver_cache",
@@ -182,3 +190,354 @@ def make_batched_solver(solver="linear", *, in_axes, return_variances=True,
     if cache:
         _solver_cache[key] = fn
     return fn
+
+
+# --------------------------------------------------------------------------- #
+# Padded multi-view batch builder
+# --------------------------------------------------------------------------- #
+class BatchBundle(NamedTuple):
+    """Everything :func:`make_batched_solver` needs for one padded batch.
+
+    ``meta`` keys: ``max_ps``, ``max_gal``, ``max_mog_k``, ``n_flux``,
+    ``bg_idx``, ``src_slot`` (per view: dict catalog index -> flux slot),
+    ``counts`` (per view: ``(n_ps, n_gal)`` real, unpadded source counts).
+    """
+    images_data: dict
+    batches: dict
+    initial_fluxes: jnp.ndarray
+    in_axes: dict
+    meta: dict
+
+
+def psf_to_fft(psf_img, *, psf_sampling, target_shape, target_sampling):
+    """rfft2 of a PSF resampled to ``target_sampling``, center-padded to
+    ``target_shape`` and ``ifftshift``-ed — the layout ``images_data['psf']
+    ['fft']`` expects. Resampling (lanczos3, flux-renormalized) only happens
+    when the PSF's own oversampling ``1/psf_sampling`` differs from
+    ``target_sampling``."""
+    target_h, target_w = target_shape
+    psf = np.asarray(psf_img, dtype=np.float64)
+    ph, pw = psf.shape
+    local_factor = 1.0 / psf_sampling if psf_sampling < 1.0 else 1.0
+    if abs(local_factor - target_sampling) > 1e-3:
+        ratio = target_sampling / local_factor
+        new_shape = (int(round(ph * ratio)), int(round(pw * ratio)))
+        psf_j = jax.image.resize(jnp.asarray(psf), new_shape, method="lanczos3")
+        s_in = float(psf.sum())
+        s_out = float(jnp.sum(psf_j))
+        if s_out > 0 and s_in > 0:
+            psf_j = psf_j * (s_in / s_out)
+        psf = np.asarray(psf_j)
+        ph, pw = psf.shape
+    pad_psf = np.zeros((target_h, target_w), dtype=np.float64)
+    cy, cx = target_h // 2, target_w // 2
+    y0 = cy - ph // 2
+    x0 = cx - pw // 2
+    pad_psf[y0:y0 + ph, x0:x0 + pw] = psf
+    pad_psf = np.fft.ifftshift(pad_psf)
+    return jfft.rfft2(jnp.asarray(pad_psf))
+
+
+def slice_fluxes(fluxes, meta):
+    """Per-view flux arrays in ``[ps..., gal...]`` order, real sources only
+    (padding slots dropped), from a solved ``(n_views, n_flux)`` stack."""
+    max_ps = meta["max_ps"]
+    out = []
+    for c, (n_ps, n_gal) in enumerate(meta["counts"]):
+        fc = np.asarray(fluxes[c])
+        out.append(np.concatenate([fc[:n_ps], fc[max_ps:max_ps + n_gal]]))
+    return out
+
+
+def build_padded_batches(
+    views,
+    catalog,
+    sx,
+    sy,
+    *,
+    psf_sampling,
+    fixed_max_factor=None,
+    fit_background=True,
+    profile_lookup_fn=None,
+    cd_inv=None,
+    max_ps_cap=None,
+    max_gal_cap=None,
+    max_mog_k_cap=None,
+    psf_fft_cache=None,
+    dtype=np.float32,
+):
+    """Pad + stack per-view source problems into one vmap-ready batch.
+
+    Each *view* is an independently-solved postage stamp sharing one parent
+    catalog — a halo tile of a larger cutout, or a per-target window. All
+    views must share one data shape.
+
+    Parameters
+    ----------
+    views : list of dict
+        Per view: ``data`` (h, w), ``invvar`` (h, w), ``psf`` (2-D array,
+        oversampled by ``1/psf_sampling``), ``src_indices`` (catalog rows in
+        this view), ``origin`` ``(x0, y0)`` of the view in the ``sx``/``sy``
+        pixel frame.
+    catalog : table
+        Needs ``shape_r`` (0 => point source), ``shape_ab``, ``shape_phi``,
+        ``sersic`` columns for galaxies.
+    sx, sy : array
+        Source pixel positions in the parent frame, indexed by catalog row.
+    psf_sampling : float
+        PSF pixel size in image pixels (e.g. 0.2 for 5x oversampling).
+    fixed_max_factor : float, optional
+        Oversampled-rendering factor; default ``1/psf_sampling`` (or 1).
+    profile_lookup_fn : callable, optional
+        ``sersic -> MixtureOfGaussians``; default is the memoized
+        :meth:`SersicMixture.getProfile`. Looked up once per galaxy.
+    cd_inv : (2, 2) array, optional
+        Inverse CD matrix shared by every view (views are translated crops of
+        one parent WCS). Identity if omitted; required in practice whenever
+        galaxies are fit.
+    max_ps_cap, max_gal_cap, max_mog_k_cap : int, optional
+        Fixed per-view array widths; a view exceeding a cap raises
+        ``ValueError`` instead of silently changing the padded shape (which
+        would force an XLA retrace). Masked pad slots carry no source; with
+        the Jacobi per-source ridge the padding is output-preserving (exact
+        under eigfloor/x64; ~1e-5 bright-source level for float32 linear,
+        larger only for near-null-space fluxes in over-crowded views).
+    psf_fft_cache : MutableMapping, optional
+        Caller-owned cross-call cache for PSF FFTs, keyed on the PSF object's
+        identity and the FFT geometry. The caller must keep the PSF arrays
+        alive for the cache's lifetime (id reuse after gc would alias).
+
+    Returns
+    -------
+    BatchBundle
+    """
+    n_views = len(views)
+    if n_views == 0:
+        raise ValueError("build_padded_batches: views is empty")
+    if profile_lookup_fn is None:
+        profile_lookup_fn = SersicMixture.getProfile
+
+    base_h, base_w = views[0]["data"].shape
+    for v in views:
+        if v["data"].shape != (base_h, base_w):
+            raise ValueError("All views must share the same data shape")
+
+    max_psf_h = max(v["psf"].shape[0] for v in views)
+    max_psf_w = max(v["psf"].shape[1] for v in views)
+    if fixed_max_factor is None:
+        fixed_max_factor = 1.0 / psf_sampling if psf_sampling < 1.0 else 1.0
+    max_factor = float(fixed_max_factor)
+    target_sampling = max_factor if max_factor > 1.0 else 1.0
+
+    fft_pad_h_lr = int(math.ceil(max_psf_h / max_factor))
+    fft_pad_w_lr = int(math.ceil(max_psf_w / max_factor))
+    padded_h = base_h + fft_pad_h_lr
+    padded_w = base_w + fft_pad_w_lr
+    target_h = int(round(padded_h * max_factor))
+    target_w = int(round(padded_w * max_factor))
+
+    # Classify sources per view; look each galaxy's MoG profile up ONCE here
+    # and stash it for the fill loop below.
+    classification = []
+    max_ps = 0
+    max_gal = 0
+    max_mog_k = 1
+    shape_r = catalog["shape_r"]
+    for v in views:
+        ps_idx, gal_idx, gal_profs = [], [], []
+        for ci in v["src_indices"]:
+            if shape_r[ci] == 0:
+                ps_idx.append(ci)
+            else:
+                gal_idx.append(ci)
+                prof = profile_lookup_fn(float(catalog["sersic"][ci]))
+                gal_profs.append(prof)
+                max_mog_k = max(max_mog_k, len(prof.amp))
+        classification.append((ps_idx, gal_idx, gal_profs))
+        max_ps = max(max_ps, len(ps_idx))
+        max_gal = max(max_gal, len(gal_idx))
+
+    # Fixed-shape caps: pad the per-view widths so the jitted solver sees one
+    # shape across every batch built with the same caps.
+    if max_ps_cap is not None:
+        if max_ps > max_ps_cap:
+            raise ValueError(
+                f"max_ps={max_ps} exceeds cap {max_ps_cap}")
+        max_ps = max_ps_cap
+    if max_gal_cap is not None:
+        if max_gal > max_gal_cap:
+            raise ValueError(
+                f"max_gal={max_gal} exceeds cap {max_gal_cap}")
+        max_gal = max_gal_cap
+    if max_mog_k_cap is not None:
+        if max_mog_k > max_mog_k_cap:
+            raise ValueError(
+                f"max_mog_K={max_mog_k} exceeds cap {max_mog_k_cap}")
+        max_mog_k = max_mog_k_cap
+
+    # Per-view flux layout: [point sources... | galaxies... | (background)]
+    n_flux = max_ps + max_gal + (1 if fit_background else 0)
+    bg_idx = max_ps + max_gal
+
+    data_list = []
+    invvar_list = []
+    init_flux_list = []
+    src_slot_per_view = []
+    counts = []
+
+    ps_pos = np.zeros((n_views, max_ps, 2), dtype=dtype)
+    ps_fidx = np.zeros((n_views, max_ps), dtype=np.int32)
+    ps_mask = np.zeros((n_views, max_ps), dtype=dtype)
+
+    gal_pos = np.zeros((n_views, max_gal, 2), dtype=dtype)
+    gal_fidx = np.zeros((n_views, max_gal), dtype=np.int32)
+    gal_mask = np.zeros((n_views, max_gal), dtype=dtype)
+    gal_cd = np.tile(np.eye(2, dtype=dtype), (n_views, max_gal, 1, 1))
+    gal_shape = np.zeros((n_views, max_gal, 3), dtype=dtype)
+    gal_amp = np.zeros((n_views, max_gal, max_mog_k), dtype=dtype)
+    gal_mean = np.zeros((n_views, max_gal, max_mog_k, 2), dtype=dtype)
+    gal_var = np.tile(np.eye(2, dtype=dtype),
+                      (n_views, max_gal, max_mog_k, 1, 1))
+
+    cd_inv = (np.eye(2, dtype=dtype) if cd_inv is None
+              else np.asarray(cd_inv, dtype=dtype))
+
+    shape_ab = catalog["shape_ab"] if max_gal else None
+    shape_phi = catalog["shape_phi"] if max_gal else None
+
+    for vi, view in enumerate(views):
+        d = view["data"]
+        iv = view["invvar"]
+        h, w = d.shape
+
+        d_pad = np.zeros((padded_h, padded_w), dtype=dtype)
+        iv_pad = np.zeros((padded_h, padded_w), dtype=dtype)
+        d_pad[:h, :w] = d
+        iv_pad[:h, :w] = iv
+        data_list.append(jnp.asarray(d_pad))
+        invvar_list.append(jnp.asarray(iv_pad))
+
+        ps_indices, gal_indices, gal_profs = classification[vi]
+        counts.append((len(ps_indices), len(gal_indices)))
+
+        slots = {}
+        for k, ci in enumerate(ps_indices):
+            slots[ci] = k
+        for k, ci in enumerate(gal_indices):
+            slots[ci] = max_ps + k
+        src_slot_per_view.append(slots)
+
+        init_f = np.zeros(n_flux, dtype=dtype)
+        x0, y0 = view["origin"]
+
+        def _seed_init(px, py, slot):
+            ix, iy = int(round(px)), int(round(py))
+            if 0 <= iy < h and 0 <= ix < w:
+                val = float(d[iy, ix])
+                init_f[slot] = val if np.isfinite(val) else 0.0
+
+        for k, ci in enumerate(ps_indices):
+            px = float(sx[ci]) - x0
+            py = float(sy[ci]) - y0
+            ps_pos[vi, k, 0] = px
+            ps_pos[vi, k, 1] = py
+            ps_fidx[vi, k] = slots[ci]
+            ps_mask[vi, k] = 1.0
+            _seed_init(px, py, slots[ci])
+
+        for k, ci in enumerate(gal_indices):
+            px = float(sx[ci]) - x0
+            py = float(sy[ci]) - y0
+            gal_pos[vi, k, 0] = px
+            gal_pos[vi, k, 1] = py
+            gal_fidx[vi, k] = slots[ci]
+            gal_mask[vi, k] = 1.0
+            gal_cd[vi, k] = cd_inv
+            gal_shape[vi, k, 0] = float(shape_r[ci])
+            gal_shape[vi, k, 1] = float(shape_ab[ci])
+            gal_shape[vi, k, 2] = float(shape_phi[ci])
+            prof = gal_profs[k]
+            K = len(prof.amp)
+            gal_amp[vi, k, :K] = np.asarray(prof.amp, dtype=dtype)
+            gal_mean[vi, k, :K] = np.asarray(prof.mean, dtype=dtype)
+            gal_var[vi, k, :K] = np.asarray(prof.var, dtype=dtype)
+            _seed_init(px, py, slots[ci])
+
+        init_flux_list.append(init_f)
+
+    # PSF FFTs: transform once per distinct PSF object (identity within this
+    # call) and broadcast when every view shares one PSF; the optional
+    # caller-owned psf_fft_cache extends the reuse across calls.
+    def _fft_for(psf_arr):
+        if psf_fft_cache is not None:
+            key = (id(psf_arr), psf_arr.shape, target_h, target_w,
+                   round(target_sampling, 9), round(psf_sampling, 9))
+            hit = psf_fft_cache.get(key)
+            if hit is not None:
+                return hit
+        fft = psf_to_fft(psf_arr, psf_sampling=psf_sampling,
+                         target_shape=(target_h, target_w),
+                         target_sampling=target_sampling)
+        if psf_fft_cache is not None:
+            psf_fft_cache[key] = fft
+        return fft
+
+    unique_fft = {}
+    for v in views:
+        pid = id(v["psf"])
+        if pid not in unique_fft:
+            unique_fft[pid] = _fft_for(v["psf"])
+    if len(unique_fft) == 1:
+        one = next(iter(unique_fft.values()))
+        psf_fft_stack = jnp.broadcast_to(one[None], (n_views,) + one.shape)
+    else:
+        psf_fft_stack = jnp.stack([unique_fft[id(v["psf"])] for v in views])
+
+    images_data = {
+        "data": jnp.stack(data_list),
+        "invvar": jnp.stack(invvar_list),
+        "psf": {
+            "type_code": jnp.zeros(n_views, dtype=jnp.int32),
+            "sampling": jnp.full(n_views, target_sampling, dtype=jnp.float32),
+            "fft": psf_fft_stack,
+            "amp": jnp.zeros((n_views, 1)),
+            "mean": jnp.zeros((n_views, 1, 2)),
+            "var": jnp.tile(jnp.eye(2), (n_views, 1, 1, 1)),
+        },
+    }
+
+    batches = {}
+    if max_ps > 0:
+        batches["PointSource"] = {
+            "flux_idx": jnp.asarray(ps_fidx),
+            "pos_pix": jnp.asarray(ps_pos),
+            "mask": jnp.asarray(ps_mask),
+        }
+    if max_gal > 0:
+        batches["Galaxy"] = {
+            "flux_idx": jnp.asarray(gal_fidx),
+            "pos_pix": jnp.asarray(gal_pos),
+            "wcs_cd_inv": jnp.asarray(gal_cd),
+            "shapes": jnp.asarray(gal_shape),
+            "mask": jnp.asarray(gal_mask),
+            "profile": {
+                "amp": jnp.asarray(gal_amp),
+                "mean": jnp.asarray(gal_mean),
+                "var": jnp.asarray(gal_var),
+            },
+        }
+    if fit_background:
+        batches["Background"] = {"flux_idx": jnp.asarray([bg_idx],
+                                                         dtype=jnp.int32)}
+
+    if max_ps > 0 or max_gal > 0:
+        init = np.stack(init_flux_list)
+    else:
+        init = np.zeros((n_views, n_flux), dtype=dtype)
+    initial_fluxes = jnp.asarray(init, dtype=dtype)
+
+    meta = {"max_ps": max_ps, "max_gal": max_gal, "max_mog_k": max_mog_k,
+            "n_flux": n_flux, "bg_idx": bg_idx,
+            "src_slot": src_slot_per_view, "counts": counts}
+    return BatchBundle(images_data, batches, initial_fluxes,
+                       batches_in_axes(batches), meta)
