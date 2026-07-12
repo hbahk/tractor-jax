@@ -1927,7 +1927,7 @@ def _power_iter_lmax(G, n_steps=16):
     return jnp.vdot(v, G @ v)
 
 
-def _lasso_fista(G, b, lam, *, nonneg=True, free=None, n_iter=1000, reg=0.0):
+def lasso_fista(G, b, lam, *, nonneg=True, free=None, n_iter=1000, reg=0.0):
     """
     Per-coordinate L1-penalized quadratic solve on the normal equations.
 
@@ -2017,6 +2017,18 @@ def _lasso_fista(G, b, lam, *, nonneg=True, free=None, n_iter=1000, reg=0.0):
     kkt = jnp.max(jnp.where(live, viol, 0.0))
 
     return beta / D, kkt
+
+
+# Back-compat alias (pre-public name).
+_lasso_fista = lasso_fista
+
+# Jitted entry: G/b/lam/free/reg are all traced arguments, so distinct
+# problem values — including a Python-float ``reg``, which the RAW function
+# bakes into its lax.scan traces as a fresh constant — share one compile per
+# shape. Prefer this over the raw function for repeated solves with varying
+# n or reg (pad n to a fixed bucket via tractor_jax.jax.batching.pad_normal_eq
+# to make the shape fixed too).
+lasso_fista_jit = jax.jit(lasso_fista, static_argnames=("nonneg", "n_iter"))
 
 
 def _ln_binom(p, k):

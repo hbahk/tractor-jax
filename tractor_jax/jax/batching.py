@@ -49,6 +49,7 @@ __all__ = [
     "make_batched_solver",
     "clear_solver_cache",
     "penalty_weights_from_slots",
+    "pad_normal_eq",
 ]
 
 _SOLVER_FNS = {
@@ -190,6 +191,35 @@ def make_batched_solver(solver="linear", *, in_axes, return_variances=True,
     if cache:
         _solver_cache[key] = fn
     return fn
+
+
+def pad_normal_eq(G, b, lam, free=None, *, bucket=128):
+    """Zero-pad a normal-equation lasso problem to the next ``bucket``
+    multiple of its size, so repeated :func:`~tractor_jax.jax.optimizer.
+    lasso_fista_jit` calls with varying ``n`` hit a small set of compiled
+    shapes instead of recompiling per problem.
+
+    Dead pad slots have ``G_jj = 0`` and ``lam_j = 0``, which the solver's
+    dead-slot convention pins to exactly zero — slice the solution back with
+    ``f[:n]``.
+
+    Returns ``(G_p, b_p, lam_p, free_p, n)`` as numpy arrays plus the
+    original size ``n``.
+    """
+    G = np.asarray(G)
+    n = G.shape[0]
+    n_pad = ((n + bucket - 1) // bucket) * bucket
+    Gp = np.zeros((n_pad, n_pad), dtype=G.dtype)
+    Gp[:n, :n] = G
+    bp = np.zeros(n_pad, dtype=np.asarray(b).dtype)
+    bp[:n] = b
+    lamp = np.zeros(n_pad, dtype=np.asarray(lam).dtype)
+    lamp[:n] = lam
+    freep = np.zeros(n_pad, dtype=(np.asarray(free).dtype if free is not None
+                                   else np.float64))
+    if free is not None:
+        freep[:n] = free
+    return Gp, bp, lamp, freep, n
 
 
 # --------------------------------------------------------------------------- #

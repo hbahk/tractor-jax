@@ -364,3 +364,58 @@ def test_batched_rhs_alpha0_equals_linear():
         sd = dict(single); sd["data"] = jnp.array(stack[i])
         f_lin = np.array(solve_fluxes_linear(f0, sd, sb))
         assert np.max(np.abs(f_b[i] - f_lin)) / np.max(np.abs(f_lin)) < 1e-6
+
+
+# --------------------------------------------------------------------------- #
+# 11. public jitted entry + bucket padding (upstreamed compile-storm fix)
+# --------------------------------------------------------------------------- #
+def test_lasso_fista_jit_matches_raw():
+    from tractor_jax.jax.optimizer import lasso_fista, lasso_fista_jit
+    X, y, _ = random_problem()
+    G = jnp.array(X.T @ X)
+    b = jnp.array(X.T @ y)
+    lam = 2.0 * jnp.sqrt(jnp.diag(G))
+    for reg in (0.0, 1e-6, 0.37):        # python floats: traced under jit
+        f_raw, k_raw = _lasso_fista(G, b, lam, nonneg=True, n_iter=2000,
+                                    reg=jnp.float64(reg))
+        f_jit, k_jit = lasso_fista_jit(G, b, lam, nonneg=True, n_iter=2000,
+                                       reg=reg)
+        np.testing.assert_allclose(np.asarray(f_jit), np.asarray(f_raw),
+                                   rtol=1e-12, atol=1e-14)
+        np.testing.assert_allclose(float(k_jit), float(k_raw),
+                                   rtol=1e-9, atol=1e-12)
+    assert lasso_fista is not None       # public alias importable
+
+
+def test_lasso_fista_jit_single_compile_across_reg():
+    from tractor_jax.jax.optimizer import lasso_fista_jit
+    X, y, _ = random_problem()
+    G = jnp.array(X.T @ X)
+    b = jnp.array(X.T @ y)
+    lam = 1.0 * jnp.sqrt(jnp.diag(G))
+    before = lasso_fista_jit._cache_size()
+    for reg in (0.0, 1e-8, 1e-4, 0.2):
+        lasso_fista_jit(G, b, lam, nonneg=True, n_iter=200, reg=reg)
+    assert lasso_fista_jit._cache_size() - before <= 1
+
+
+def test_pad_normal_eq_invariance():
+    from tractor_jax.jax.batching import pad_normal_eq
+    from tractor_jax.jax.optimizer import lasso_fista_jit
+    X, y, _ = random_problem(n=80, p=37)
+    G = X.T @ X
+    b = X.T @ y
+    lam = 1.5 * np.sqrt(np.diag(G))
+    free = np.zeros(37)
+    free[0] = 1.0
+    f0, _ = lasso_fista_jit(jnp.asarray(G), jnp.asarray(b), jnp.asarray(lam),
+                            nonneg=True, free=jnp.asarray(free), n_iter=4000,
+                            reg=1e-8)
+    Gp, bp, lamp, freep, n = pad_normal_eq(G, b, lam, free, bucket=64)
+    assert Gp.shape == (64, 64) and n == 37
+    fp, _ = lasso_fista_jit(jnp.asarray(Gp), jnp.asarray(bp),
+                            jnp.asarray(lamp), nonneg=True,
+                            free=jnp.asarray(freep), n_iter=4000, reg=1e-8)
+    fp = np.asarray(fp)
+    np.testing.assert_allclose(fp[:n], np.asarray(f0), rtol=0, atol=1e-12)
+    assert np.all(fp[n:] == 0.0)
