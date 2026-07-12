@@ -18,6 +18,7 @@ from .batching import (
     batches_in_axes, make_batched_solver, clear_solver_cache,
     penalty_weights_from_slots, pad_normal_eq,
 )
+from .pipeline import prefetch_pipeline, lagged_collect
 from .rendering import (
     render_pixelized_psf, render_galaxy_fft, render_point_source_pixelized,
     render_galaxy_mog, render_point_source_mog
@@ -32,6 +33,7 @@ __all__ = [
     "BatchBundle", "build_padded_batches", "psf_to_fft", "slice_fluxes",
     "batches_in_axes", "make_batched_solver", "clear_solver_cache",
     "penalty_weights_from_slots", "pad_normal_eq",
+    "prefetch_pipeline", "lagged_collect",
     "render_pixelized_psf", "render_galaxy_fft",
     "render_point_source_pixelized", "render_galaxy_mog",
     "render_point_source_mog",
