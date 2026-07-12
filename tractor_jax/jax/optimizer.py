@@ -299,6 +299,7 @@ def extract_model_data(
     fixed_max_factor=None,
     img_source_indices=None,
     compact_fluxes=False,
+    use_psf_fft_cache=True,
 ):
     """
     Extract all data needed for JAX optimization from a Tractor object.
@@ -458,35 +459,51 @@ def extract_model_data(
             s = getattr(psf, "sampling", 1.0)
             local_factor = 1.0/s if s < 1.0 else 1.0
 
-            if abs(local_factor - p_sampling) > 1e-3:
-                # Resize PSF image to match target resolution
-                raw_img = jnp.array(psf.img)
-                ph, pw = raw_img.shape
-                ratio = p_sampling / local_factor
-                new_shape = (int(round(ph * ratio)), int(round(pw * ratio)))
-
-                resized_img = jax.image.resize(raw_img, new_shape, method='lanczos3')
-
-                # Normalize flux to preserve sum
-                orig_sum = jnp.sum(raw_img)
-                new_sum = jnp.sum(resized_img)
-                resized_img = resized_img * (orig_sum / new_sum)
-
-                raw_img = resized_img
+            # The padded oversampled rfft2 depends only on the PSF stamp and
+            # the (target shape, sampling) geometry, so staple it on the PSF
+            # object — repeated extracts over the same PSF (buckets, tiles,
+            # re-fits) skip the resize+FFT. Mirrors the CPU-side
+            # PixelizedPSF.fftcache convention (same stamp-immutability
+            # assumption).
+            fft_key = (target_H, target_W, round(float(p_sampling), 9))
+            cached_fft = (getattr(psf, "_jax_fft_cache", {}).get(fft_key)
+                          if use_psf_fft_cache else None)
+            if cached_fft is not None:
+                p_fft = cached_fft
             else:
-                raw_img = jnp.array(psf.img)
+                if abs(local_factor - p_sampling) > 1e-3:
+                    # Resize PSF image to match target resolution
+                    raw_img = jnp.array(psf.img)
+                    ph, pw = raw_img.shape
+                    ratio = p_sampling / local_factor
+                    new_shape = (int(round(ph * ratio)), int(round(pw * ratio)))
 
-            ph, pw = raw_img.shape
+                    resized_img = jax.image.resize(raw_img, new_shape, method='lanczos3')
 
-            # Pad to (target_H, target_W), centered
-            pad_img = jnp.zeros((target_H, target_W))
-            cy, cx = target_H // 2, target_W // 2
-            y0 = cy - ph // 2
-            x0 = cx - pw // 2
+                    # Normalize flux to preserve sum
+                    orig_sum = jnp.sum(raw_img)
+                    new_sum = jnp.sum(resized_img)
+                    resized_img = resized_img * (orig_sum / new_sum)
 
-            pad_img = pad_img.at[y0 : y0 + ph, x0 : x0 + pw].set(raw_img)
-            pad_img = jnp.fft.ifftshift(pad_img)
-            p_fft = jfft.rfft2(pad_img)
+                    raw_img = resized_img
+                else:
+                    raw_img = jnp.array(psf.img)
+
+                ph, pw = raw_img.shape
+
+                # Pad to (target_H, target_W), centered
+                pad_img = jnp.zeros((target_H, target_W))
+                cy, cx = target_H // 2, target_W // 2
+                y0 = cy - ph // 2
+                x0 = cx - pw // 2
+
+                pad_img = pad_img.at[y0 : y0 + ph, x0 : x0 + pw].set(raw_img)
+                pad_img = jnp.fft.ifftshift(pad_img)
+                p_fft = jfft.rfft2(pad_img)
+                if use_psf_fft_cache:
+                    if not hasattr(psf, "_jax_fft_cache"):
+                        psf._jax_fft_cache = {}
+                    psf._jax_fft_cache[fft_key] = p_fft
 
         elif isinstance(psf, GaussianMixturePSF):
             p_type = 1
