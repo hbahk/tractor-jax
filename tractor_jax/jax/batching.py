@@ -366,26 +366,33 @@ def build_padded_batches(
     target_h = int(round(padded_h * max_factor))
     target_w = int(round(padded_w * max_factor))
 
-    # Classify sources per view; look each galaxy's MoG profile up ONCE here
-    # and stash it for the fill loop below.
+    # Classify sources per view (vectorized) and look each DISTINCT sersic
+    # index's MoG profile up once (catalogs carry ~1e2 distinct values for
+    # ~1e4 galaxy slots).
+    shape_r_arr = np.asarray(catalog["shape_r"], dtype=np.float64)
     classification = []
     max_ps = 0
     max_gal = 0
-    max_mog_k = 1
-    shape_r = catalog["shape_r"]
     for v in views:
-        ps_idx, gal_idx, gal_profs = [], [], []
-        for ci in v["src_indices"]:
-            if shape_r[ci] == 0:
-                ps_idx.append(ci)
-            else:
-                gal_idx.append(ci)
-                prof = profile_lookup_fn(float(catalog["sersic"][ci]))
-                gal_profs.append(prof)
-                max_mog_k = max(max_mog_k, len(prof.amp))
-        classification.append((ps_idx, gal_idx, gal_profs))
+        src = np.asarray(v["src_indices"], dtype=np.intp)
+        isgal = shape_r_arr[src] > 0 if src.size else np.zeros(0, bool)
+        ps_idx = src[~isgal]
+        gal_idx = src[isgal]
+        classification.append((ps_idx, gal_idx))
         max_ps = max(max_ps, len(ps_idx))
         max_gal = max(max_gal, len(gal_idx))
+
+    all_gal_ci = (np.concatenate([g for _, g in classification])
+                  if max_gal else np.zeros(0, np.intp))
+    if all_gal_ci.size:
+        sersic_arr = np.asarray(catalog["sersic"], dtype=np.float64)
+        uniq_sersic, gal_prof_inv = np.unique(sersic_arr[all_gal_ci],
+                                              return_inverse=True)
+        uniq_profs = [profile_lookup_fn(float(s)) for s in uniq_sersic]
+        max_mog_k = max((len(p.amp) for p in uniq_profs), default=1)
+    else:
+        uniq_profs, gal_prof_inv = [], np.zeros(0, np.intp)
+        max_mog_k = 1
 
     # Fixed-shape caps: pad the per-view widths so the jitted solver sees one
     # shape across every batch built with the same caps.
@@ -409,11 +416,17 @@ def build_padded_batches(
     n_flux = max_ps + max_gal + (1 if fit_background else 0)
     bg_idx = max_ps + max_gal
 
-    data_list = []
-    invvar_list = []
-    init_flux_list = []
-    src_slot_per_view = []
-    counts = []
+    base_dtype = views[0]["data"].dtype
+    data_arr = np.zeros((n_views, base_h, base_w), dtype=base_dtype)
+    iv_arr = np.zeros((n_views, base_h, base_w),
+                      dtype=views[0]["invvar"].dtype)
+    for vi, view in enumerate(views):
+        data_arr[vi] = view["data"]
+        iv_arr[vi] = view["invvar"]
+    d_pad = np.zeros((n_views, padded_h, padded_w), dtype=dtype)
+    iv_pad = np.zeros((n_views, padded_h, padded_w), dtype=dtype)
+    d_pad[:, :base_h, :base_w] = data_arr
+    iv_pad[:, :base_h, :base_w] = iv_arr
 
     ps_pos = np.zeros((n_views, max_ps, 2), dtype=dtype)
     ps_fidx = np.zeros((n_views, max_ps), dtype=np.int32)
@@ -428,72 +441,80 @@ def build_padded_batches(
     gal_mean = np.zeros((n_views, max_gal, max_mog_k, 2), dtype=dtype)
     gal_var = np.tile(np.eye(2, dtype=dtype),
                       (n_views, max_gal, max_mog_k, 1, 1))
+    init_flux = np.zeros((n_views, n_flux), dtype=dtype)
 
     cd_inv = (np.eye(2, dtype=dtype) if cd_inv is None
               else np.asarray(cd_inv, dtype=dtype))
 
-    shape_ab = catalog["shape_ab"] if max_gal else None
-    shape_phi = catalog["shape_phi"] if max_gal else None
+    sx_arr = np.asarray(sx, dtype=np.float64)
+    sy_arr = np.asarray(sy, dtype=np.float64)
+    origins = np.asarray([v["origin"] for v in views], dtype=np.float64)
 
-    for vi, view in enumerate(views):
-        d = view["data"]
-        iv = view["invvar"]
-        h, w = d.shape
+    # Flat (view, within-view-slot, catalog-row) index triplets for one
+    # fancy-indexed scatter per array instead of a Python loop per source.
+    def _flat(idx_lists):
+        if not any(len(x) for x in idx_lists):
+            return (np.zeros(0, np.intp),) * 3
+        vids = np.concatenate([np.full(len(x), vi, np.intp)
+                               for vi, x in enumerate(idx_lists)])
+        ks = np.concatenate([np.arange(len(x), dtype=np.intp)
+                             for x in idx_lists])
+        cis = np.concatenate([np.asarray(x, dtype=np.intp)
+                              for x in idx_lists])
+        return vids, ks, cis
 
-        d_pad = np.zeros((padded_h, padded_w), dtype=dtype)
-        iv_pad = np.zeros((padded_h, padded_w), dtype=dtype)
-        d_pad[:h, :w] = d
-        iv_pad[:h, :w] = iv
-        data_list.append(jnp.asarray(d_pad))
-        invvar_list.append(jnp.asarray(iv_pad))
+    ps_v, ps_k, ps_ci = _flat([c[0] for c in classification])
+    gal_v, gal_k, gal_ci = _flat([c[1] for c in classification])
 
-        ps_indices, gal_indices, gal_profs = classification[vi]
-        counts.append((len(ps_indices), len(gal_indices)))
+    def _seed(vids, ks, cis, slot_offset):
+        """init flux = the data pixel under each in-bounds source."""
+        px = sx_arr[cis] - origins[vids, 0]
+        py = sy_arr[cis] - origins[vids, 1]
+        ix = np.rint(px).astype(np.intp)
+        iy = np.rint(py).astype(np.intp)
+        ok = (0 <= ix) & (ix < base_w) & (0 <= iy) & (iy < base_h)
+        vals = data_arr[vids[ok], iy[ok], ix[ok]].astype(np.float64)
+        vals = np.where(np.isfinite(vals), vals, 0.0)
+        init_flux[vids[ok], slot_offset + ks[ok]] = vals
+        return px, py
 
-        slots = {}
-        for k, ci in enumerate(ps_indices):
-            slots[ci] = k
-        for k, ci in enumerate(gal_indices):
-            slots[ci] = max_ps + k
-        src_slot_per_view.append(slots)
+    if ps_ci.size:
+        px, py = _seed(ps_v, ps_k, ps_ci, 0)
+        ps_pos[ps_v, ps_k, 0] = px
+        ps_pos[ps_v, ps_k, 1] = py
+        ps_fidx[ps_v, ps_k] = ps_k
+        ps_mask[ps_v, ps_k] = 1.0
 
-        init_f = np.zeros(n_flux, dtype=dtype)
-        x0, y0 = view["origin"]
-
-        def _seed_init(px, py, slot):
-            ix, iy = int(round(px)), int(round(py))
-            if 0 <= iy < h and 0 <= ix < w:
-                val = float(d[iy, ix])
-                init_f[slot] = val if np.isfinite(val) else 0.0
-
-        for k, ci in enumerate(ps_indices):
-            px = float(sx[ci]) - x0
-            py = float(sy[ci]) - y0
-            ps_pos[vi, k, 0] = px
-            ps_pos[vi, k, 1] = py
-            ps_fidx[vi, k] = slots[ci]
-            ps_mask[vi, k] = 1.0
-            _seed_init(px, py, slots[ci])
-
-        for k, ci in enumerate(gal_indices):
-            px = float(sx[ci]) - x0
-            py = float(sy[ci]) - y0
-            gal_pos[vi, k, 0] = px
-            gal_pos[vi, k, 1] = py
-            gal_fidx[vi, k] = slots[ci]
-            gal_mask[vi, k] = 1.0
-            gal_cd[vi, k] = cd_inv
-            gal_shape[vi, k, 0] = float(shape_r[ci])
-            gal_shape[vi, k, 1] = float(shape_ab[ci])
-            gal_shape[vi, k, 2] = float(shape_phi[ci])
-            prof = gal_profs[k]
+    if gal_ci.size:
+        px, py = _seed(gal_v, gal_k, gal_ci, max_ps)
+        gal_pos[gal_v, gal_k, 0] = px
+        gal_pos[gal_v, gal_k, 1] = py
+        gal_fidx[gal_v, gal_k] = max_ps + gal_k
+        gal_mask[gal_v, gal_k] = 1.0
+        gal_cd[gal_v, gal_k] = cd_inv
+        gal_shape[gal_v, gal_k, 0] = shape_r_arr[gal_ci]
+        gal_shape[gal_v, gal_k, 1] = np.asarray(catalog["shape_ab"],
+                                                dtype=np.float64)[gal_ci]
+        gal_shape[gal_v, gal_k, 2] = np.asarray(catalog["shape_phi"],
+                                                dtype=np.float64)[gal_ci]
+        # profiles: one scatter per DISTINCT sersic value
+        for u_i, prof in enumerate(uniq_profs):
+            sel = gal_prof_inv == u_i
             K = len(prof.amp)
-            gal_amp[vi, k, :K] = np.asarray(prof.amp, dtype=dtype)
-            gal_mean[vi, k, :K] = np.asarray(prof.mean, dtype=dtype)
-            gal_var[vi, k, :K] = np.asarray(prof.var, dtype=dtype)
-            _seed_init(px, py, slots[ci])
+            gal_amp[gal_v[sel], gal_k[sel], :K] = np.asarray(prof.amp,
+                                                             dtype=dtype)
+            gal_mean[gal_v[sel], gal_k[sel], :K] = np.asarray(prof.mean,
+                                                              dtype=dtype)
+            gal_var[gal_v[sel], gal_k[sel], :K] = np.asarray(prof.var,
+                                                             dtype=dtype)
 
-        init_flux_list.append(init_f)
+    src_slot_per_view = []
+    counts = []
+    for ps_idx, gal_idx in classification:
+        slots = {int(ci): k for k, ci in enumerate(ps_idx)}
+        slots.update({int(ci): max_ps + k for k, ci in enumerate(gal_idx)})
+        src_slot_per_view.append(slots)
+        counts.append((len(ps_idx), len(gal_idx)))
 
     # PSF FFTs: transform once per distinct PSF object (identity within this
     # call) and broadcast when every view shares one PSF; the optional
@@ -524,8 +545,8 @@ def build_padded_batches(
         psf_fft_stack = jnp.stack([unique_fft[id(v["psf"])] for v in views])
 
     images_data = {
-        "data": jnp.stack(data_list),
-        "invvar": jnp.stack(invvar_list),
+        "data": jnp.asarray(d_pad),
+        "invvar": jnp.asarray(iv_pad),
         "psf": {
             "type_code": jnp.zeros(n_views, dtype=jnp.int32),
             "sampling": jnp.full(n_views, target_sampling, dtype=jnp.float32),
@@ -560,11 +581,7 @@ def build_padded_batches(
         batches["Background"] = {"flux_idx": jnp.asarray([bg_idx],
                                                          dtype=jnp.int32)}
 
-    if max_ps > 0 or max_gal > 0:
-        init = np.stack(init_flux_list)
-    else:
-        init = np.zeros((n_views, n_flux), dtype=dtype)
-    initial_fluxes = jnp.asarray(init, dtype=dtype)
+    initial_fluxes = jnp.asarray(init_flux, dtype=dtype)
 
     meta = {"max_ps": max_ps, "max_gal": max_gal, "max_mog_k": max_mog_k,
             "n_flux": n_flux, "bg_idx": bg_idx,
