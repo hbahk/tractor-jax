@@ -50,6 +50,8 @@ __all__ = [
     "clear_solver_cache",
     "penalty_weights_from_slots",
     "pad_normal_eq",
+    "autotune_batch_size",
+    "estimate_solve_bytes_per_view",
 ]
 
 _SOLVER_FNS = {
@@ -191,6 +193,100 @@ def make_batched_solver(solver="linear", *, in_axes, return_variances=True,
     if cache:
         _solver_cache[key] = fn
     return fn
+
+
+def estimate_solve_bytes_per_view(n_flux, target_shape, dtype_bytes=4):
+    """Rough per-view device-memory bound for one vmapped flux solve.
+
+    The dominant transient is the unit-flux template stack ``A`` rendered at
+    the oversampled target grid (``n_flux x target_H x target_W``), plus the
+    Gram/normal-equation blocks (``~2 x n_flux^2``) and the padded
+    data/invvar/model planes (``~4 x target_H x target_W``). This is a
+    heuristic upper-ish bound for sizing batches (see
+    :func:`autotune_batch_size`'s ``per_item_bytes``), not an exact
+    accounting — cuFFT workspace in particular can add a comparable amount,
+    so budget conservatively on shared GPUs.
+    """
+    t_h, t_w = target_shape
+    n_flux = int(n_flux)
+    return int(dtype_bytes * (n_flux * t_h * t_w + 2 * n_flux * n_flux
+                              + 4 * t_h * t_w))
+
+
+def autotune_batch_size(run_batch, *, start=1, max_batch=1024, min_gain=0.10,
+                        repeats=3, per_item_bytes=None,
+                        mem_budget_bytes=None):
+    """Pick the smallest vmap batch size at the throughput knee.
+
+    Small views (few sources, small stamps) under-utilize the device, so
+    batching more of them per solve raises throughput — but only until the
+    kernels saturate; past that knee a bigger batch adds latency and memory
+    pressure without more items/s (and near the memory limit it REGRESSES:
+    the measured B=16/32 slowdown-then-OOM of the 100x100 vmap experiments).
+    The right size is therefore the knee, not "as large as memory allows".
+
+    Parameters
+    ----------
+    run_batch : callable
+        ``run_batch(B)`` builds-or-reuses a size-``B`` batch, runs ONE solve
+        to completion (block until ready), and returns. The first call at
+        each ``B`` is the untimed warmup (jit compile); the following
+        ``repeats`` calls are timed. Each distinct ``B`` is a new XLA trace,
+        so candidates are the doubling sequence ``start, 2*start, ...`` —
+        production batches should be padded to the chosen size (masked pad
+        views are output-preserving under the engine's Jacobi ridge).
+    start, max_batch : int
+        Candidate range (inclusive; ``max_batch`` also caps the answer).
+    min_gain : float
+        Stop once doubling improves items/s by less than this fraction (or
+        regresses); the previous candidate is returned.
+    repeats : int
+        Timed repetitions per candidate (min is taken — robust to node
+        contention).
+    per_item_bytes, mem_budget_bytes : int, optional
+        Analytic memory cap: candidates are limited to
+        ``mem_budget_bytes // per_item_bytes`` (see
+        :func:`estimate_solve_bytes_per_view`). On shared GPUs pass a
+        conservative budget (~half the free memory).
+
+    Returns
+    -------
+    (best_B, report) : (int, dict)
+        The chosen batch size and ``{B: measured items/s}`` for every
+        candidate tried.
+    """
+    if start < 1:
+        raise ValueError(f"start must be >= 1, got {start}")
+    if repeats < 1:
+        raise ValueError(f"repeats must be >= 1, got {repeats}")
+    mem_cap = None
+    if mem_budget_bytes is not None:
+        if not per_item_bytes or per_item_bytes <= 0:
+            raise ValueError("mem_budget_bytes requires per_item_bytes > 0")
+        mem_cap = max(1, int(mem_budget_bytes // per_item_bytes))
+
+    import time as _time
+
+    report = {}
+    prev_b = None
+    prev_tp = None
+    b = start
+    while b <= max_batch and (mem_cap is None or b <= mem_cap):
+        run_batch(b)                    # warmup: compile, untimed
+        best_t = float("inf")
+        for _ in range(repeats):
+            t0 = _time.perf_counter()
+            run_batch(b)
+            best_t = min(best_t, _time.perf_counter() - t0)
+        tp = b / best_t
+        report[b] = tp
+        if prev_tp is not None and tp < prev_tp * (1.0 + min_gain):
+            # Plateau or regression: the previous (smaller) candidate gives
+            # the same-or-better items/s with less latency and memory.
+            return prev_b, report
+        prev_b, prev_tp = b, tp
+        b *= 2
+    return prev_b, report
 
 
 def pad_normal_eq(G, b, lam, free=None, *, bucket=128):
