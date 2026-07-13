@@ -389,6 +389,7 @@ def build_padded_batches(
     max_ps_cap=None,
     max_gal_cap=None,
     max_mog_k_cap=None,
+    pad_bucket=None,
     psf_fft_cache=None,
     dtype=np.float32,
 ):
@@ -424,7 +425,15 @@ def build_padded_batches(
     max_ps_cap, max_gal_cap, max_mog_k_cap : int, optional
         Fixed per-view array widths; a view exceeding a cap raises
         ``ValueError`` instead of silently changing the padded shape (which
-        would force an XLA retrace). Masked pad slots carry no source; with
+        would force an XLA retrace).
+    pad_bucket : int, optional
+        Round the NATURAL ``max_ps``/``max_gal`` up to a multiple of this
+        instead of fixing them with caps: a few padded shapes per field
+        (one retrace each) in exchange for near-natural matrix sizes. This
+        is the middle ground between caps (one shape, maximal padding —
+        e.g. a 465-wide eigfloor eigh paying the field maximum on every
+        cutout) and no caps (per-cutout retraces). Caps, if also given,
+        still validate/override after bucketing. Masked pad slots carry no source; with
         the Jacobi per-source ridge the padding is output-preserving (exact
         under eigfloor/x64; ~1e-5 bright-source level for float32 linear,
         larger only for near-null-space fluxes in over-crowded views).
@@ -489,6 +498,12 @@ def build_padded_batches(
     else:
         uniq_profs, gal_prof_inv = [], np.zeros(0, np.intp)
         max_mog_k = 1
+
+    # Bucketed padding: round natural widths up so a field yields only a
+    # few distinct padded shapes while each stays near its natural size.
+    if pad_bucket:
+        max_ps = int(math.ceil(max(max_ps, 1) / pad_bucket) * pad_bucket)
+        max_gal = int(math.ceil(max(max_gal, 1) / pad_bucket) * pad_bucket)
 
     # Fixed-shape caps: pad the per-view widths so the jitted solver sees one
     # shape across every batch built with the same caps.

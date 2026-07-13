@@ -208,6 +208,32 @@ def test_caps_pad_invariance_eigfloor():
         np.testing.assert_allclose(x, y, rtol=0, atol=1e-12)
 
 
+def test_pad_bucket_rounds_and_matches_eigfloor():
+    scene = parent_scene()
+    views = carve_views(scene)
+    plain = build(scene, views)
+    bucketed = build(scene, views, pad_bucket=8)
+    # widths rounded up to the bucket, never below the natural maxima
+    assert bucketed.meta["max_ps"] % 8 == 0
+    assert bucketed.meta["max_gal"] % 8 == 0
+    assert bucketed.meta["max_ps"] >= plain.meta["max_ps"]
+    assert bucketed.meta["max_gal"] >= plain.meta["max_gal"]
+    f0, _ = solve(plain, "eigfloor", floor=1e-2)
+    f1, _ = solve(bucketed, "eigfloor", floor=1e-2)
+    a = slice_fluxes(f0, plain.meta)
+    b = slice_fluxes(f1, bucketed.meta)
+    for x, y in zip(a, b):
+        np.testing.assert_allclose(x, y, rtol=0, atol=1e-12)
+
+
+def test_pad_bucket_respects_caps():
+    scene = parent_scene()
+    views = carve_views(scene)
+    both = build(scene, views, pad_bucket=8, max_ps_cap=16, max_gal_cap=16)
+    assert both.meta["max_ps"] == 16
+    assert both.meta["max_gal"] == 16
+
+
 def test_cap_overflow_raises():
     scene = parent_scene()
     views = carve_views(scene)
