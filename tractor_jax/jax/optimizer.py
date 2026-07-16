@@ -1913,6 +1913,168 @@ def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
     return optimized_fluxes
 
 
+def _eigfloor_prior_core(AtWA, AtWd, lambda_diag, f_prior, floor=1e-4,
+                         return_variances=False):
+    """
+    Ridge-toward-prior eigfloor solve on prebuilt normal equations.
+
+    Solves ``(AtWA + Lambda) f = AtWd + Lambda f_prior`` with
+    ``Lambda = diag(lambda_diag)``, in the Jacobi-normalized coordinates of
+    `solve_fluxes_eigfloor` (``D = sqrt(diag(AtWA))``, from the UNregularized
+    Gram, so a ``lambda_diag = 0`` coordinate keeps its unit diagonal). The
+    eigenvalue floor acts on the REGULARIZED normalized Gram
+    ``Ghat + D^{-1} Lambda D^{-1}`` (floor after adding Lambda), and the
+    variances are ``diag((AtWA + Lambda)^{-1})`` with the same floored
+    spectrum — the prior tightens the reported uncertainty, as a Gaussian
+    prior should.
+
+    With ``lambda_diag = 0`` everywhere this reproduces the eigfloor solve
+    on (AtWA, AtWd) exactly.
+
+    Parameters
+    ----------
+    AtWA : jax.numpy.ndarray
+        Normal matrix ``A^T W A``, shape (n, n).
+    AtWd : jax.numpy.ndarray
+        Right-hand side ``A^T W d``, shape (n,).
+    lambda_diag : jax.numpy.ndarray
+        Per-coordinate Gaussian-prior precision ``1/sigma_prior^2``,
+        shape (n,); 0 = unregularized (protected). Must be finite —
+        map ``sigma_prior = 0`` to a large finite value, not inf.
+    f_prior : jax.numpy.ndarray
+        Per-coordinate prior mean, shape (n,); ignored where
+        ``lambda_diag = 0``.
+    floor : float, optional
+        Relative eigenvalue floor, in units of the largest eigenvalue of
+        the regularized normalized Gram.
+    return_variances : bool, optional
+        If True, also return ``diag((AtWA + Lambda)^{-1})`` (floored).
+
+    Returns
+    -------
+    fluxes : jax.numpy.ndarray
+        Solution, shape (n,). Dead slots (``AtWA_jj = 0``) are pinned to 0.
+    variances : jax.numpy.ndarray
+        Shape (n,), only if ``return_variances``; inf on dead slots.
+    """
+    Fjj = jnp.clip(jnp.diag(AtWA), 0.0)
+    live = Fjj > 0
+    D = jnp.where(live, jnp.sqrt(jnp.where(live, Fjj, 1.0)), 1.0)
+
+    lam_hat = lambda_diag / (D * D)
+    Ghat = AtWA / (D[:, jnp.newaxis] * D[jnp.newaxis, :]) + jnp.diag(lam_hat)
+    bhat = AtWd / D + lam_hat * (D * f_prior)
+
+    evals, evecs = jnp.linalg.eigh(Ghat)      # ascending eigenvalues
+    emax = jnp.clip(evals[-1], 1e-30)
+    evals_f = jnp.maximum(evals, floor * emax)
+
+    xhat = evecs @ ((evecs.T @ bhat) / evals_f)
+    fluxes = jnp.where(live, xhat / D, 0.0)
+
+    if return_variances:
+        # diag of D^{-1} V diag(1/evals_f) V^T D^{-1}
+        var_hat = jnp.sum(evecs * evecs / evals_f[jnp.newaxis, :], axis=1)
+        variances = jnp.where(live, var_hat / (D * D), jnp.inf)
+        return fluxes, variances
+
+    return fluxes
+
+
+def solve_fluxes_eigfloor_prior(initial_fluxes, image_data, batches,
+                                lambda_diag=None, f_prior=None,
+                                return_variances=False, sampling_factor=None,
+                                floor=1e-4):
+    """
+    Eigfloor solve with per-source Gaussian flux priors (ridge-toward-prior).
+
+    Operates on a SINGLE image; designed to be vmapped, like
+    `solve_fluxes_eigfloor`. Solves::
+
+        (AtWA + Lambda) f = AtWd + Lambda f_prior,
+        Lambda = diag(lambda_diag) = diag(1 / sigma_prior^2)
+
+    - ``lambda_diag_j = 0``: protected source, exactly the current eigfloor
+      behavior (unbiased). With ``lambda_diag = 0`` everywhere the output is
+      identical to `solve_fluxes_eigfloor`.
+    - ``lambda_diag_j > 0``: nuisance source ridged toward its externally
+      predicted flux ``f_prior_j`` (typical ``sigma_prior ~ 0.5-1 x
+      f_prior``).
+
+    The solve happens in the same Jacobi-normalized coordinates as
+    `solve_fluxes_eigfloor` (``D`` from the UNregularized diagonal), and the
+    eigenvalue floor is applied to the regularized normalized Gram — i.e.
+    floor AFTER adding Lambda. Variances are ``diag((AtWA + Lambda)^{-1})``
+    with the floored spectrum.
+
+    Parameters
+    ----------
+    initial_fluxes : jax.numpy.ndarray
+        Flux parameter vector, shape (n_flux,); only its length is used.
+    image_data : dict
+        Single-image data with keys ``data``, ``invvar`` and ``psf``.
+    batches : dict
+        Per-image slices of the batched source data.
+    lambda_diag : jax.numpy.ndarray, optional
+        Per-flux prior precisions ``1/sigma_prior^2``, shape (n_flux,);
+        must be FINITE (map sigma -> 0 to a large finite value). ``None``
+        means all zero (pure eigfloor). Build with
+        :func:`tractor_jax.jax.batching.prior_arrays_from_slots`.
+    f_prior : jax.numpy.ndarray, optional
+        Per-flux prior means, shape (n_flux,); ignored where
+        ``lambda_diag = 0``. ``None`` means all zero.
+    return_variances : bool, optional
+        If True, also return flux variances.
+    sampling_factor : float, optional
+        High-resolution oversampling factor forwarded to the template
+        renderer.
+    floor : float, optional
+        Relative eigenvalue floor, in units of the largest eigenvalue of
+        the regularized normalized Gram matrix.
+
+    Returns
+    -------
+    optimized_fluxes : jax.numpy.ndarray
+        Solved fluxes, shape (n_flux,).
+    variances : jax.numpy.ndarray
+        Flux variances, shape (n_flux,). Only returned if
+        ``return_variances`` is True.
+
+    Notes
+    -----
+    Because the floor is relative to lambda_max of the REGULARIZED Gram, an
+    extreme prior precision (``lambda_hat = lambda / AtWA_jj >> 1/floor``)
+    inflates the floor felt by every other direction; keep ``lambda_diag``
+    at physically motivated values (sigma_prior a fraction of the predicted
+    flux) rather than using it to hard-pin sources.
+
+    Dead slots (all-zero template, e.g. shape padding or a fully-masked
+    source) are pinned to flux 0 with infinite variance regardless of any
+    prior placed on them, so padding is prior-safe.
+    """
+    n_flux = initial_fluxes.shape[0]
+
+    if lambda_diag is None:
+        lambda_diag = jnp.zeros(n_flux, dtype=initial_fluxes.dtype)
+    if f_prior is None:
+        f_prior = jnp.zeros(n_flux, dtype=initial_fluxes.dtype)
+
+    templates = _render_source_templates(image_data, batches, n_flux,
+                                         sampling_factor=sampling_factor)
+
+    data_flat = image_data["data"].ravel()
+    w_flat = image_data["invvar"].ravel()
+    A = templates.reshape(n_flux, -1).T
+
+    Aw = A * w_flat[:, jnp.newaxis]
+    AtWA = Aw.T @ A
+    AtWd = Aw.T @ data_flat
+
+    return _eigfloor_prior_core(AtWA, AtWd, lambda_diag, f_prior,
+                                floor=floor,
+                                return_variances=return_variances)
+
+
 def _power_iter_lmax(G, n_steps=16):
     """
     Largest eigenvalue of a symmetric PSD matrix via power iteration.

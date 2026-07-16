@@ -36,6 +36,7 @@ import jax.numpy.fft as jfft
 from tractor_jax.jax.optimizer import (
     solve_fluxes_linear,
     solve_fluxes_eigfloor,
+    solve_fluxes_eigfloor_prior,
     solve_fluxes_lasso,
 )
 from tractor_jax.sersic import SersicMixture
@@ -49,6 +50,7 @@ __all__ = [
     "make_batched_solver",
     "clear_solver_cache",
     "penalty_weights_from_slots",
+    "prior_arrays_from_slots",
     "pad_normal_eq",
     "autotune_batch_size",
     "estimate_solve_bytes_per_view",
@@ -57,6 +59,7 @@ __all__ = [
 _SOLVER_FNS = {
     "linear": solve_fluxes_linear,
     "eigfloor": solve_fluxes_eigfloor,
+    "eigfloor_prior": solve_fluxes_eigfloor_prior,
     "lasso": solve_fluxes_lasso,
 }
 
@@ -101,6 +104,71 @@ def penalty_weights_from_slots(src_slot_per_image, n_images, n_flux,
     return jnp.asarray(pw)
 
 
+def prior_arrays_from_slots(src_slot_per_image, n_images, n_flux,
+                            f_prior_per_source, sigma_prior_per_source,
+                            protected=None):
+    """(lambda_diag, f_prior) runtime arrays for ``solver="eigfloor_prior"``,
+    each of shape (n_images, n_flux).
+
+    Scatters per-CATALOG-source Gaussian flux priors into the padded
+    per-image flux slots, mirroring :func:`penalty_weights_from_slots`:
+    ``src_slot_per_image`` maps, per image, catalog index -> slot in that
+    image's flux vector (as returned by the batch builders).
+
+    Slot semantics (0/inf-safe by construction):
+
+    - padding slots, the background slot, and sources absent from an image
+      never appear in the slot maps -> ``lambda_diag = 0`` there (no prior;
+      dead padding slots are additionally pinned by the solver itself);
+    - ``protected`` catalog sources get ``lambda_diag = 0`` (exact eigfloor
+      behavior, unbiased);
+    - a source whose ``f_prior`` or ``sigma_prior`` is non-finite, or whose
+      ``sigma_prior <= 0``, gets ``lambda_diag = 0`` — never an inf/NaN
+      precision (map "pin this source" to a small positive sigma instead).
+
+    Parameters
+    ----------
+    src_slot_per_image : sequence of dict
+        Per image, ``{catalog index: flux slot}``.
+    n_images, n_flux : int
+        Output array shape.
+    f_prior_per_source, sigma_prior_per_source : array
+        Predicted flux and prior width per CATALOG row (same flux units as
+        the fit; typical ``sigma_prior ~ 0.5-1 x f_prior``).
+    protected : iterable of int or bool array, optional
+        Catalog indices (or a per-catalog-row boolean mask) to leave
+        unregularized.
+
+    Returns
+    -------
+    (lambda_diag, f_prior) : (jax.numpy.ndarray, jax.numpy.ndarray)
+        Both (n_images, n_flux); ``lambda_diag = 1/sigma_prior^2``.
+    """
+    lam = np.zeros((n_images, n_flux), dtype=np.float64)
+    fpr = np.zeros((n_images, n_flux), dtype=np.float64)
+    fp_arr = np.asarray(f_prior_per_source, dtype=np.float64)
+    sp_arr = np.asarray(sigma_prior_per_source, dtype=np.float64)
+    if protected is None:
+        prot = set()
+    else:
+        p = np.asarray(protected)
+        if p.dtype == bool:
+            prot = set(np.flatnonzero(p).tolist())
+        else:
+            prot = set(int(x) for x in np.ravel(p))
+    for i, slots in enumerate(src_slot_per_image):
+        for ci, slot in slots.items():
+            if ci in prot:
+                continue
+            f0 = fp_arr[ci]
+            s0 = sp_arr[ci]
+            if not (np.isfinite(f0) and np.isfinite(s0) and s0 > 0):
+                continue
+            lam[i, slot] = 1.0 / (s0 * s0)
+            fpr[i, slot] = f0
+    return jnp.asarray(lam), jnp.asarray(fpr)
+
+
 def _freeze(obj):
     """Recursively convert dicts/lists to sorted tuples for use as cache keys."""
     if isinstance(obj, dict):
@@ -124,7 +192,7 @@ def make_batched_solver(solver="linear", *, in_axes, return_variances=True,
 
     Parameters
     ----------
-    solver : {"linear", "eigfloor", "lasso"}
+    solver : {"linear", "eigfloor", "eigfloor_prior", "lasso"}
         Which ``solve_fluxes_*`` backend to wrap.
     in_axes : dict
         vmap ``in_axes`` for the ``batches`` argument, matching its structure
@@ -150,6 +218,14 @@ def make_batched_solver(solver="linear", *, in_axes, return_variances=True,
         ``solver="lasso"``, where it is a per-image runtime argument of shape
         ``(n_images, n_flux)``; ``None`` means unpenalized weights of 1
         (identical to the solver's own default).
+
+        For ``solver="eigfloor_prior"`` the callable instead accepts
+        ``fn(initial_fluxes, images_data, batches, lambda_diag=None,
+        f_prior=None)`` where ``lambda_diag`` and ``f_prior`` are per-image
+        RUNTIME arguments of shape ``(n_images, n_flux)`` (build them with
+        :func:`prior_arrays_from_slots`); ``None`` means all-zero, i.e.
+        exactly the ``"eigfloor"`` solve. Like lasso's ``penalty_weights``,
+        varying their values reuses one compiled executable.
     """
     if solver not in _SOLVER_FNS:
         raise ValueError(f"unknown solver {solver!r}; "
@@ -178,6 +254,20 @@ def make_batched_solver(solver="linear", *, in_axes, return_variances=True,
             if penalty_weights is None:
                 penalty_weights = jnp.ones_like(initial_fluxes)
             return jfn(initial_fluxes, images_data, batches, penalty_weights)
+    elif solver == "eigfloor_prior":
+        def _solve(init, imgd, bat, lam, fp):
+            return base(init, imgd, bat, lambda_diag=lam, f_prior=fp,
+                        return_variances=return_variances, **solver_kwargs)
+        jfn = jax.jit(jax.vmap(_solve, in_axes=(0, 0, in_axes, 0, 0)))
+
+        def fn(initial_fluxes, images_data, batches, lambda_diag=None,
+               f_prior=None):
+            if lambda_diag is None:
+                lambda_diag = jnp.zeros_like(initial_fluxes)
+            if f_prior is None:
+                f_prior = jnp.zeros_like(initial_fluxes)
+            return jfn(initial_fluxes, images_data, batches,
+                       lambda_diag, f_prior)
     else:
         vfn = partial(base, return_variances=return_variances,
                       **solver_kwargs)
