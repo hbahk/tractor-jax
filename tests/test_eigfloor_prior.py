@@ -227,13 +227,15 @@ def test_sigma_limits_single_source():
     f_ols = AtWd[0] / AtWA[0, 0]
     fp = 35.0
 
-    # sigma -> 0: huge (finite) precision; single source, so the floor
-    # (relative to the one regularized eigenvalue) is a no-op.
+    # sigma -> 0: huge (finite) precision. The solver caps the NORMALIZED
+    # precision lam_hat at 1e6 for eigh conditioning (and the eigen-floor is
+    # relative to the DATA Gram, so the pin does not crush other directions),
+    # so the pin lands on f_prior to ~|f_ols - f_prior|/f_prior / 1e6.
     lam_pin = 1e12 * AtWA[0, 0]
     f_pin = solve_fluxes_eigfloor_prior(
         init, single, sb, lambda_diag=jnp.array([lam_pin]),
         f_prior=jnp.array([fp]), floor=1e-4)
-    np.testing.assert_allclose(float(f_pin[0]), fp, rtol=1e-9)
+    np.testing.assert_allclose(float(f_pin[0]), fp, rtol=1e-5)
 
     # sigma -> inf: lambda -> 0, exact OLS/eigfloor.
     f_free = solve_fluxes_eigfloor_prior(

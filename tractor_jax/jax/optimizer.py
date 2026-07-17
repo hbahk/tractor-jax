@@ -1961,13 +1961,26 @@ def _eigfloor_prior_core(AtWA, AtWd, lambda_diag, f_prior, floor=1e-4,
     live = Fjj > 0
     D = jnp.where(live, jnp.sqrt(jnp.where(live, Fjj, 1.0)), 1.0)
 
-    lam_hat = lambda_diag / (D * D)
-    Ghat = AtWA / (D[:, jnp.newaxis] * D[jnp.newaxis, :]) + jnp.diag(lam_hat)
+    # lam_hat can be enormous even with sane sigma_prior: Jacobi
+    # normalization divides by D^2 = AtWA_jj, so a weak-overlap source
+    # (template power ~ 0, e.g. at the image edge) has lam_hat = lam / D^2
+    # -> 1e10+. Two consequences handled here:
+    #   (1) the eigen-FLOOR must be relative to the UNregularized (data)
+    #       Gram's largest eigenvalue — the floor exists to regularize
+    #       data degeneracies; prior-dominated directions are already
+    #       conditioned by Lambda. Flooring on the regularized emax would
+    #       scale the floor with lam_hat_max and crush every direction
+    #       (protected sources included).
+    #   (2) cap lam_hat for eigh conditioning: 1e6 is far stiffer than any
+    #       physical prior while keeping the matrix scale-mixed range sane.
+    lam_hat = jnp.minimum(lambda_diag / (D * D), 1e6)
+    Ghat_data = AtWA / (D[:, jnp.newaxis] * D[jnp.newaxis, :])
+    Ghat = Ghat_data + jnp.diag(lam_hat)
     bhat = AtWd / D + lam_hat * (D * f_prior)
 
     evals, evecs = jnp.linalg.eigh(Ghat)      # ascending eigenvalues
-    emax = jnp.clip(evals[-1], 1e-30)
-    evals_f = jnp.maximum(evals, floor * emax)
+    emax_data = jnp.clip(_power_iter_lmax(Ghat_data), 1e-30)
+    evals_f = jnp.maximum(evals, floor * emax_data)
 
     xhat = evecs @ ((evecs.T @ bhat) / evals_f)
     fluxes = jnp.where(live, xhat / D, 0.0)
