@@ -4,7 +4,7 @@ Every tractor-jax consumer alternates a Python/numpy-heavy CPU build
 (``extract_model_data`` / ``build_padded_batches``) with a jitted GPU solve
 per work unit (tile / cutout / exposure). Run serially, the GPU idles during
 the build and vice versa. :func:`prefetch_pipeline` overlaps them with a
-bounded look-ahead:
+bounded look-ahead::
 
     for built in prefetch_pipeline(tiles, build_tile, depth=2):
         fut = solver(*built)            # jitted; dispatches asynchronously

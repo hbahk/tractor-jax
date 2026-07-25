@@ -107,8 +107,9 @@ def penalty_weights_from_slots(src_slot_per_image, n_images, n_flux,
 def prior_arrays_from_slots(src_slot_per_image, n_images, n_flux,
                             f_prior_per_source, sigma_prior_per_source,
                             protected=None):
-    """(lambda_diag, f_prior) runtime arrays for ``solver="eigfloor_prior"``,
-    each of shape (n_images, n_flux).
+    """Build the runtime prior arrays for the eigfloor_prior solver.
+
+    Returns ``(lambda_diag, f_prior)``, each of shape (n_images, n_flux).
 
     Scatters per-CATALOG-source Gaussian flux priors into the padded
     per-image flux slots, mirroring :func:`penalty_weights_from_slots`:
@@ -380,10 +381,12 @@ def autotune_batch_size(run_batch, *, start=1, max_batch=1024, min_gain=0.10,
 
 
 def pad_normal_eq(G, b, lam, free=None, *, bucket=128):
-    """Zero-pad a normal-equation lasso problem to the next ``bucket``
-    multiple of its size, so repeated :func:`~tractor_jax.jax.optimizer.
-    lasso_fista_jit` calls with varying ``n`` hit a small set of compiled
-    shapes instead of recompiling per problem.
+    """Zero-pad a normal-equation lasso problem to a bucket multiple.
+
+    Padding the problem to the next ``bucket`` multiple of its size means
+    repeated :func:`~tractor_jax.jax.optimizer.lasso_fista_jit` calls with
+    varying ``n`` hit a small set of compiled shapes instead of recompiling
+    per problem.
 
     Dead pad slots have ``G_jj = 0`` and ``lam_j = 0``, which the solver's
     dead-slot convention pins to exactly zero — slice the solution back with
