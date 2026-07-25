@@ -580,6 +580,11 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
         dx = px - int(px)
         dy = py - int(py)
         _, _, img = self._sampleImage(None, dx, dy)
+        # _sampleImage point-samples the oversampled model onto the native grid,
+        # so a unit-flux PSF comes out summing to ~sampling**2; rescale by the
+        # pixel-area factor so FFT-convolved (galaxy) models carry the same unit
+        # flux as the point-source patch path (which applies this same scale).
+        img = img * (1.0 / self.sampling ** 2)
         pad, cx, cy = self._padInImage(sz, sz, img=img)
         cx += dx
         cy += dy
