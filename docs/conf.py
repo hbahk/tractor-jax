@@ -55,5 +55,13 @@ html_title = f"Tractor-JAX v{release}"
 html_theme_options = {
     "github_url": "https://github.com/hbahk/tractor-jax",
     "show_toc_level": 2,
+    # The artwork's cube seams are near-white, which glares on a dark navbar;
+    # the dark variant swaps them for a dark seam.
+    "logo": {
+        "image_light": "_static/tractorjax-logo.svg",
+        "image_dark": "_static/tractorjax-logo-dark.svg",
+        "alt_text": "Tractor-JAX",
+    },
 }
+html_favicon = "_static/favicon.svg"
 html_static_path = ["_static"]

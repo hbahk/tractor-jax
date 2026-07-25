@@ -222,6 +222,7 @@ __marimo__/
 *.fits
 *.fits.gz
 *.png
+!docs/_static/*.png
 *.csv
 *.npy
 *.npz
