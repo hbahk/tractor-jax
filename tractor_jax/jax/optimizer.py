@@ -32,6 +32,37 @@ from tractor_jax.jax.rendering import (
 from tractor_jax.jax.tiling import tile_image, project_catalog, filter_sources_by_box
 
 
+def psf_kind(psf):
+    """Classify a PSF for the batched renderer.
+
+    Returns ``("pixelized", psf)`` for a `PixelizedPSF` — or for a hybrid that
+    wraps one in ``.pix``, whose pixelized model is the accurate one — and
+    ``("mog", mixture)`` for anything exposing a mixture-of-Gaussians
+    representation (`GaussianMixturePSF`, `NCircularGaussianPSF`,
+    `GaussianMixtureEllipsePSF`, ...).
+
+    Raises
+    ------
+    TypeError
+        If the PSF is neither. This is deliberate: an unrecognised PSF used to
+        fall through to an all-zero template, so the solve silently returned
+        flux 0 with infinite variance for every source instead of failing.
+    """
+    if isinstance(psf, PixelizedPSF) or isinstance(getattr(psf, "pix", None),
+                                                   PixelizedPSF):
+        return "pixelized", psf
+    mog = getattr(psf, "mog", None)
+    if mog is None:
+        getter = getattr(psf, "getMixtureOfGaussians", None)
+        mog = getter() if getter is not None else None
+    if mog is not None and hasattr(mog, "amp"):
+        return "mog", mog
+    raise TypeError(
+        f"unsupported PSF for the batched JAX path: {type(psf).__name__}. "
+        "Use a PixelizedPSF, a GaussianMixturePSF, or any PSF exposing "
+        "getMixtureOfGaussians().")
+
+
 def compute_image_shapes(images, stats):
     """
     Compute the required target-grid shape for each image.
@@ -418,9 +449,9 @@ def extract_model_data(
     # Max MoG K for padding
     max_mog_K = 0
     for img in images:
-        psf = img.getPsf()
-        if isinstance(psf, GaussianMixturePSF):
-            max_mog_K = max(max_mog_K, len(psf.mog.amp))
+        kind, obj = psf_kind(img.getPsf())
+        if kind == "mog":
+            max_mog_K = max(max_mog_K, len(obj.amp))
 
     # Ensure at least K=1 to avoid empty arrays
     max_mog_K = max(max_mog_K, 1)
@@ -453,7 +484,9 @@ def extract_model_data(
         p_mean = jnp.zeros((max_mog_K, 2))
         p_var = jnp.tile(jnp.eye(2), (max_mog_K, 1, 1))
 
-        if isinstance(psf, PixelizedPSF):
+        psf_kind_name, psf_mog = psf_kind(psf)
+
+        if psf_kind_name == "pixelized":
             p_type = 0
 
             s = getattr(psf, "sampling", 1.0)
@@ -505,14 +538,14 @@ def extract_model_data(
                         psf._jax_fft_cache = {}
                     psf._jax_fft_cache[fft_key] = p_fft
 
-        elif isinstance(psf, GaussianMixturePSF):
+        else:
             p_type = 1
-            K = len(psf.mog.amp)
+            K = len(psf_mog.amp)
             pad_len = max_mog_K - K
 
-            amp = jnp.array(psf.mog.amp)
-            mean = jnp.array(psf.mog.mean)
-            var = jnp.array(psf.mog.var)
+            amp = jnp.array(psf_mog.amp)
+            mean = jnp.array(psf_mog.mean)
+            var = jnp.array(psf_mog.var)
 
             if pad_len > 0:
                 amp = jnp.pad(amp, (0, pad_len), constant_values=0)
@@ -531,10 +564,6 @@ def extract_model_data(
             p_var = var
 
             # Dummy FFT (Zeros)
-            p_fft = jnp.zeros((target_H, target_W // 2 + 1), dtype=jnp.complex64)
-
-        else:
-            # Unknown
             p_fft = jnp.zeros((target_H, target_W // 2 + 1), dtype=jnp.complex64)
 
         psf_type_code_list.append(p_type)
