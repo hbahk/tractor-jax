@@ -67,13 +67,17 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION=0.45
 
 ## Precision
 
-JAX defaults to float32. If you need calibration-grade variances, enable float64
-**before any array is created**:
+JAX defaults to float32, which is also the validated production default here —
+fluxes *and* their reported errors are calibrated in fp32 ({doc}`performance`).
+
+Enable float64 when you need exactness under padding/batching choices or are
+working on faint, near-degenerate fluxes. It must be set **before any array is
+created**:
 
 ```python
 import jax
 jax.config.update("jax_enable_x64", True)
 ```
 
-Budget roughly 3.5× the runtime for float64 on a data-center GPU
-({doc}`performance`).
+Budget ~2.5× the runtime on a card whose FP64 rate is heavily reduced (e.g. an
+L40S); A100/H100-class cards largely remove the penalty.

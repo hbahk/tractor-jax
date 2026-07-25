@@ -78,9 +78,10 @@ import jax
 jax.config.update("jax_enable_x64", True)
 ```
 
-Legacy Tractor is float64 throughout, so an apples-to-apples comparison needs x64
-here. For production throughput, float32 fluxes are fine; variances used for
-calibration are not (see {doc}`performance`).
+Legacy Tractor is float64 throughout, so an apples-to-apples *comparison* needs
+x64 here. That is a reproducibility requirement, not an accuracy one: fp32 is the
+validated production default in this engine, with calibrated errors
+({doc}`performance`).
 
 ### Rendering happens on a grid, in batch
 

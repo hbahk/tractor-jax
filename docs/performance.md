@@ -66,9 +66,21 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.45
 ```
 
-**Precision.** Use float32 for throughput and float64 when you need
-calibration-grade variances; budget ~3.5× the runtime for the latter on a
-consumer/data-center card where FP64 is heavily rate-limited.
+**Precision.** float32 is the production default, and it is validated rather
+than merely tolerated: on an independent image simulation the fp32 production
+config recovers bright fluxes to +0.1% with calibrated errors (pull σ 1.00 for
+`linear`, 0.92 for `eigfloor`). Note that TF32 is on in every fp32 number here —
+it is the JAX GPU default and buys ~2.1× on the normal-equations GEMM at
+~1.5×10⁻⁴ relative error on $A^\top A$; the accuracy validation ran that same
+path. (Cores-equivalent figures therefore assume an Ampere-or-later card.)
+
+What float64 actually buys is **exactness under padding and batching**: pad/batch
+invariance is ~10⁻¹¹ in x64 versus percent-level deviations in fp32 on faint,
+near-null-space fluxes. Use it when you need bit-reproducible products across
+tiling choices, or for faint work in crowded groups where a stronger regularizer
+(`eigfloor`) is the other half of the answer. Budget ~2.5× end-to-end (~3.5× on
+the serial solve path) on an L40S, whose FP64 rate is 1/64 of FP32; an
+A100/H100-class card largely removes that penalty.
 
 ## CPU is not a fallback
 

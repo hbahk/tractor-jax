@@ -27,7 +27,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Calibration-grade variances want float64; set it before any array is made.
+# fp32 is the production default and is calibrated; x64 here only so the
+# printed numbers are exactly reproducible. Must precede any array creation.
 jax.config.update("jax_enable_x64", True)
 
 from tractor_jax import (Catalog, ConstantSky, Flux, GaussianMixturePSF, Image,

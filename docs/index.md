@@ -64,9 +64,9 @@ where the data are genuinely ambiguous.
   left).
 - The JAX layer is functional: no in-place mutation, shape-determining arguments
   are static.
-- Precision is a global, up-front choice — call
-  `jax.config.update("jax_enable_x64", True)` before any array is created if you
-  need calibration-grade variances.
+- Precision is a global, up-front choice. float32 is the validated production
+  default; call `jax.config.update("jax_enable_x64", True)` before any array is
+  created when you need exactness under padding and batching.
 
 ```{toctree}
 :maxdepth: 1

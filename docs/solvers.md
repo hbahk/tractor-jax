@@ -145,11 +145,15 @@ the ambiguous cases.
 
 ## Practical notes
 
-- **Precision.** Fluxes and especially variances are calibration-grade only in
-  float64. Enable it before any array is created:
-  `jax.config.update("jax_enable_x64", True)` (or
-  `JaxOptimizer(enable_x64=True)`). Expect roughly 3.5× the runtime of float32 on
-  a data-center GPU — see {doc}`performance`.
+- **Precision.** float32 is the production default and is validated: against an
+  independent image simulation it gives +0.1% bright-end bias and *calibrated*
+  reported errors (pull σ 1.00 for `linear`, 0.92 for `eigfloor`). Reach for
+  float64 (`jax.config.update("jax_enable_x64", True)` before any array is
+  created, or `JaxOptimizer(enable_x64=True)`) when you need exact invariance to
+  padding and batching choices, or when you are fitting faint near-null-space
+  fluxes in crowded groups — see {doc}`performance`. `lasso` is the most
+  precision-sensitive of the solvers, and the engine prints a note when it runs
+  in float32.
 - **Variances.** `return_variances=True` gives $\mathrm{diag}$ of the inverse
   regularized normal matrix. Dead slots — an all-zero template from shape
   padding or a fully-masked source — are pinned to flux 0 with infinite variance,
