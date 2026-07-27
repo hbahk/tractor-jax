@@ -2420,6 +2420,23 @@ def solve_fluxes_lasso(initial_fluxes, image_data, batches,
     normalization inside `_lasso_fista` makes support recovery reliable in
     f32, but calibration-grade fluxes/variances should enable x64
     (``JaxOptimizer(enable_x64=True)``).
+
+    **Not bit-reproducible run to run on GPU.** Unlike the linear/eigfloor
+    solvers, which reproduce exactly, repeating a lasso solve on identical
+    inputs and identical code can move a small number of fluxes: GPU reduction
+    order is not fixed between runs, and near the sparsity threshold a
+    coefficient that crosses zero flips the selected support discontinuously,
+    so a rounding-level perturbation becomes a visible flux change.
+
+    Measured on a full SPHEREx field (A2537, 85,415 measurements, two runs
+    minutes apart): 0.27% of fluxes differ, and the largest difference is
+    0.027 sigma — no measurement moves by even 0.1 sigma, so this is far below
+    the noise and does not affect any downstream inference. It does mean a
+    lasso product cannot be byte-compared against an earlier one; use a
+    tolerance, and do not read a small lasso-vs-lasso difference as evidence of
+    a code change. Forcing determinism (e.g. ``--xla_gpu_deterministic_ops``)
+    serializes reductions and costs throughput, which is not worth paying for a
+    0.03-sigma effect.
     """
     n_flux = initial_fluxes.shape[0]
 
