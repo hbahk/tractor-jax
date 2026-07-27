@@ -34,6 +34,7 @@ import jax.numpy as jnp
 import jax.numpy.fft as jfft
 
 from tractor_jax.jax.optimizer import (
+    _even_hr_width_pad,
     solve_fluxes_linear,
     solve_fluxes_eigfloor,
     solve_fluxes_eigfloor_prior,
@@ -560,7 +561,13 @@ def build_padded_batches(
     fft_pad_h_lr = int(math.ceil(max_psf_h / max_factor))
     fft_pad_w_lr = int(math.ceil(max_psf_w / max_factor))
     padded_h = base_h + fft_pad_h_lr
-    padded_w = base_w + fft_pad_w_lr
+    # An ODD high-res width is silently narrowed by one column downstream:
+    # the renderers recover it from the rfft2 array as `(shape[1]-1)*2`. The
+    # grid then no longer maps at an integer HR->LR factor, `downsample_image`
+    # drops to its boxcar path, and every template is resampled (~5% in
+    # sum(t^2), ~2% in flux). Buy the even width with extra LOW-RES padding,
+    # which keeps the factor exact — see `_even_hr_width_pad`.
+    padded_w = _even_hr_width_pad(base_w + fft_pad_w_lr, max_factor)
     target_h = int(round(padded_h * max_factor))
     target_w = int(round(padded_w * max_factor))
 
