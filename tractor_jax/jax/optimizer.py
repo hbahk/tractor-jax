@@ -63,6 +63,24 @@ def psf_kind(psf):
         "getMixtureOfGaussians().")
 
 
+def _even_hr_width_pad(padded_w, max_factor, max_extra=8):
+    """Grow a low-res padded width until the high-res width lands even.
+
+    The HR grid width must be even for the rfft2 round-trip, and it must stay
+    an exact integer multiple of the LR width so that ``downsample_image``
+    takes its integer-factor path. Adding one HR column satisfies the first
+    and breaks the second, which resamples every rendered template; adding
+    LR padding satisfies both (padding is zero-weight, so it is free).
+
+    Returns ``padded_w`` unchanged if no small bump works (non-integer
+    ``max_factor``); the caller then keeps the previous behaviour.
+    """
+    for extra in range(max_extra + 1):
+        if int(round((padded_w + extra) * max_factor)) % 2 == 0:
+            return padded_w + extra
+    return padded_w
+
+
 def compute_image_shapes(images, stats):
     """
     Compute the required target-grid shape for each image.
@@ -89,7 +107,7 @@ def compute_image_shapes(images, stats):
     for img in images:
         h, w = img.shape
         padded_h = h + fft_pad_h_lr
-        padded_w = w + fft_pad_w_lr
+        padded_w = _even_hr_width_pad(w + fft_pad_w_lr, max_factor)
 
         target_h = int(round(padded_h * max_factor))
         target_w = int(round(padded_w * max_factor))
@@ -419,15 +437,23 @@ def extract_model_data(
         padded_W = max_W + fft_pad_w_lr
 
         if oversample_rendering and max_factor > 1.0:
-            target_H = int(round(padded_H * max_factor))
-            target_W = int(round(padded_W * max_factor))
             # The HR width must be EVEN: downstream the true width is
             # reconstructed from the rfft2 array as (shape[1]-1)*2, which is
             # wrong for odd widths (e.g. 487 -> 486) and silently evaluates
             # the phase gradient on the wrong frequency grid — a
             # position-dependent registration drift (proj research note
             # lasso_alpha/15 render-mismatch diagnosis).
-            target_W += target_W % 2
+            #
+            # Buy that even width with EXTRA LOW-RES PADDING, never by adding
+            # one HR column: `target_W += target_W % 2` leaves target_W no
+            # longer an integer multiple of padded_W, so `downsample_image`
+            # silently drops to the boxcar path and resamples every template.
+            # On SPHEREx (max_factor 5) that shifted sum(t^2) by ~5% and
+            # fitted fluxes by ~2%, differently for every stamp size — it is
+            # what made the tiled and whole-image geometries disagree.
+            padded_W = _even_hr_width_pad(padded_W, max_factor)
+            target_H = int(round(padded_H * max_factor))
+            target_W = int(round(padded_W * max_factor))
             target_sampling = float(max_factor)
         else:
             target_H = padded_H
@@ -931,9 +957,11 @@ def extract_model_data_direct(
         fft_pad_w_lr = int(math.ceil(max_psf_w / max_factor))
         padded_H = max_H + fft_pad_h_lr
         padded_W = max_W + fft_pad_w_lr
+        # even HR width via extra LOW-RES padding, so the HR->LR downsample
+        # factor stays an exact integer (see extract_model_data)
+        padded_W = _even_hr_width_pad(padded_W, max_factor)
         target_H = int(round(padded_H * max_factor))
         target_W = int(round(padded_W * max_factor))
-        target_W += target_W % 2          # even width (rfft round-trip)
 
     # Pre-scan catalog for max MoG K
     max_gal_mog_K = 1
