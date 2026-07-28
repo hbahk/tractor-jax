@@ -271,3 +271,52 @@ def test_mismatched_view_shapes_raise():
     views[1]["data"] = views[1]["data"][:-1]
     with pytest.raises(ValueError, match="same data shape"):
         build(scene, views)
+
+
+
+def test_psf_basis_matches_explicit_blend():
+    """Fourier-domain PSF blending == building the blended kernel first.
+
+    A view may carry ``psf_basis`` + ``psf_weights`` instead of one ``psf``.
+    Every step of psf_to_fft (lanczos resize, zero-pad, ifftshift, rfft2) is
+    linear, so the batched PSF FFT must equal the transform of the explicitly
+    blended kernel. One-hot weights must reproduce the plain ``psf`` path,
+    which is what makes the driver's --psf-zone-interp a provable no-op on
+    single-zone cutouts.
+    """
+    scene = parent_scene()
+    basis = [gaussian_psf(sigma=s_) for s_ in (3.5, 4.0, 4.8)]
+    w = np.array([0.5, 0.3, 0.2])
+    blended = w[0] * basis[0] + w[1] * basis[1] + w[2] * basis[2]
+
+    def _views(psf, bas=None, wts=None):
+        vs = carve_views(scene, psf_per_view=[psf] * 3)
+        if bas is not None:
+            for v in vs:
+                v["psf_basis"] = bas
+                v["psf_weights"] = wts
+        return vs
+
+    ref = build(scene, _views(blended))
+    got = build(scene, _views(basis[0], basis, w))
+    a = np.asarray(ref.images_data["psf"]["fft"])
+    b = np.asarray(got.images_data["psf"]["fft"])
+    assert a.shape == b.shape
+    assert np.max(np.abs(a - b)) <= 1e-5 * np.max(np.abs(a))
+
+    one_hot = np.array([0.0, 1.0, 0.0])
+    plain = build(scene, _views(basis[1]))
+    hot = build(scene, _views(basis[0], basis, one_hot))
+    c = np.asarray(plain.images_data["psf"]["fft"])
+    d = np.asarray(hot.images_data["psf"]["fft"])
+    assert np.max(np.abs(c - d)) <= 1e-6 * np.max(np.abs(c))
+
+
+def test_psf_basis_all_or_none():
+    scene = parent_scene()
+    basis = [gaussian_psf(sigma=s_) for s_ in (3.5, 4.0)]
+    views = carve_views(scene)
+    views[0]["psf_basis"] = basis
+    views[0]["psf_weights"] = np.array([0.5, 0.5])
+    with pytest.raises(ValueError, match="every view or for none"):
+        build(scene, views)
