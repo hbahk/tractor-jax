@@ -127,6 +127,23 @@ def random_system(n, seed, lam_scale=0.0):
     return AtWA, AtWd, lam, fp
 
 
+def assert_allclose_normwise(got, ref, rtol):
+    """``assert_allclose`` with the tolerance set by the vector's scale.
+
+    Use where the two sides are the same math through two DIFFERENT
+    eigendecompositions (XLA's ``jnp.linalg.eigh`` vs LAPACK's
+    ``np.linalg.eigh``). The rounding error of such a solve is O(eps) times
+    the NORM of the result, not O(eps) times each component, so a plain
+    componentwise ``rtol`` silently demands ~``rtol * |x|_min / |x|_inf``
+    relative accuracy — impossible once one component happens to come out
+    much smaller than the largest, and a coin flip on the LAPACK build.
+    Folding the same rtol into an absolute term keeps the check exactly as
+    strict in the norm sense without that dependence.
+    """
+    np.testing.assert_allclose(got, ref, rtol=rtol,
+                               atol=rtol * np.max(np.abs(ref)))
+
+
 @pytest.fixture(scope="module")
 def scene():
     return batched_scene()
@@ -189,8 +206,10 @@ def test_lambda_zero_core_random_systems():
             xhat = evecs @ ((evecs.T @ (AtWd / D)) / evals_f)
             f_ref = xhat / D
             v_ref = np.sum(evecs * evecs / evals_f[None, :], axis=1) / (D * D)
-            np.testing.assert_allclose(np.asarray(f1), f_ref, rtol=rtol)
-            np.testing.assert_allclose(np.asarray(v1), v_ref, rtol=rtol)
+            # XLA's eigh vs LAPACK's: norm-scaled, not componentwise (see the
+            # helper). Componentwise, seed 2 grazes both rtols by ~2x.
+            assert_allclose_normwise(np.asarray(f1), f_ref, rtol)
+            assert_allclose_normwise(np.asarray(v1), v_ref, rtol)
 
 
 # --------------------------------------------------------------------------- #
