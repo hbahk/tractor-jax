@@ -63,6 +63,20 @@ def psf_kind(psf):
         "getMixtureOfGaussians().")
 
 
+def _even_hr_width_shrink(padded_w, max_factor, max_drop=8):
+    """Largest ``padded_w' <= padded_w`` whose high-res width is even.
+
+    The bucketed path cannot GROW the low-res width (that would overflow the
+    bucket), so it shrinks instead. Returns ``padded_w`` unchanged if no small
+    decrement works.
+    """
+    for drop in range(max_drop + 1):
+        w = padded_w - drop
+        if w > 0 and int(round(w * max_factor)) % 2 == 0:
+            return w
+    return padded_w
+
+
 def _even_hr_width_pad(padded_w, max_factor, max_extra=8):
     """Grow a low-res padded width until the high-res width lands even.
 
@@ -410,12 +424,20 @@ def extract_model_data(
         target_H, target_W = fixed_target_shape
         max_factor = fixed_max_factor
 
-        # We need padded_H/W (input resolution padded size) for padding input images.
-        # target_H >= padded_H * max_factor
-        # padded_H = floor(target_H / max_factor)
-        # We use floor to ensure that valid_H_hr (padded_H * max_factor) <= target_H
+        # The bucket is an UPPER BOUND on the HR grid, not the grid itself.
+        # Taking padded = floor(bucket/max_factor) and then rendering on the
+        # full bucket leaves target/padded non-integer (256/51 = 5.02 for a
+        # power-of-two bucket at max_factor 5), which drops
+        # `downsample_image` to its boxcar path and resamples every template.
+        # Shrink to the largest exact multiple of the LR grid that fits inside
+        # the bucket, with an even HR width for the rfft2 round-trip. The
+        # result is still deterministic per bucket, so compile-shape sharing
+        # -- the whole point of bucketing -- is preserved.
         padded_H = int(math.floor(target_H / max_factor))
         padded_W = int(math.floor(target_W / max_factor))
+        padded_W = _even_hr_width_shrink(padded_W, max_factor)
+        target_H = int(round(padded_H * max_factor))
+        target_W = int(round(padded_W * max_factor))
 
         # We enforce target_sampling to be max_factor physically
         target_sampling = float(max_factor) if max_factor > 1.0 else 1.0
@@ -939,15 +961,14 @@ def extract_model_data_direct(
 
     if fixed_target_shape is not None:
         target_H, target_W = fixed_target_shape
-        if target_W % 2:
-            # odd HR widths are ambiguous after rfft2 (see the even-width
-            # note in extract_model_data) — bump to even; callers only
-            # consume LR-shaped outputs, the HR grid is internal.
-            print(f"extract_model_data_direct: bumping odd fixed target "
-                  f"width {target_W} -> {target_W + 1}")
-            target_W += 1
+        # See extract_model_data: shrink the bucket to the largest exact
+        # integer multiple of the LR grid, with an even HR width. Bumping the
+        # HR width instead would break the integer downsample factor.
         padded_H = int(math.floor(target_H / max_factor))
         padded_W = int(math.floor(target_W / max_factor))
+        padded_W = _even_hr_width_shrink(padded_W, max_factor)
+        target_H = int(round(padded_H * max_factor))
+        target_W = int(round(padded_W * max_factor))
     else:
         max_H = max(f['data'].shape[0] for f in frames)
         max_W = max(f['data'].shape[1] for f in frames)
