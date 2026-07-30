@@ -572,6 +572,15 @@ def extract_model_data(
 
                 ph, pw = raw_img.shape
 
+                if ph % 2 == 0 or pw % 2 == 0:
+                    raise ValueError(
+                        f"PSF kernel {ph}x{pw} has an even axis: the centered "
+                        "pad below anchors it by ph//2, which for an even size "
+                        "is half a pixel off its true center (n-1)/2, so the "
+                        "kernel lands 0.5 high-res px from the ifftshift "
+                        "origin. Use an odd-sized kernel. See "
+                        "batching.psf_to_fft's even_parity handling.")
+
                 # Pad to (target_H, target_W), centered
                 pad_img = jnp.zeros((target_H, target_W))
                 cy, cx = target_H // 2, target_W // 2
@@ -1034,6 +1043,13 @@ def extract_model_data_direct(
             resized = resized * (jnp.sum(raw_psf) / jnp.sum(resized))
             raw_psf = resized
             ph, pw = raw_psf.shape
+
+        if ph % 2 == 0 or pw % 2 == 0:
+            raise ValueError(
+                f"PSF kernel {ph}x{pw} has an even axis: the centered pad "
+                "below anchors it by ph//2, half a pixel off the true center "
+                "(n-1)/2 for an even size, so it lands 0.5 high-res px from "
+                "the ifftshift origin. Use an odd-sized kernel.")
 
         pad_psf = jnp.zeros((target_H, target_W))
         cy, cx = target_H // 2, target_W // 2
