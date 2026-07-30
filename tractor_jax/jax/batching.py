@@ -25,6 +25,7 @@ recompile per call. This module centralizes that pattern:
   per-image ``{catalog index -> flux slot}`` maps the batch builders return.
 """
 import math
+import warnings
 from functools import partial
 from typing import NamedTuple
 
@@ -46,6 +47,8 @@ __all__ = [
     "BatchBundle",
     "build_padded_batches",
     "psf_to_fft",
+    "psf_fft_phase_ramp",
+    "shift_psf_fft",
     "slice_fluxes",
     "batches_in_axes",
     "make_batched_solver",
@@ -429,12 +432,156 @@ class BatchBundle(NamedTuple):
     meta: dict
 
 
-def psf_to_fft(psf_img, *, psf_sampling, target_shape, target_sampling):
+def psf_fft_phase_ramp(fft_shape, shift_hr):
+    """Unit-modulus phase ramp that translates an ``rfft2``-ed PSF.
+
+    A translation is exactly a linear phase in the Fourier domain, so a
+    sub-pixel PSF re-registration costs one elementwise multiply on an array
+    the renderer already holds — no resampling, no interpolation kernel, no
+    extra render cost.
+
+    Parameters
+    ----------
+    fft_shape : tuple of int
+        Shape of the ``rfft2`` array the ramp will multiply, ``(H, W // 2 + 1)``
+        (only the last two entries are read). The real-space grid width is
+        recovered as ``W = (fft_shape[-1] - 1) * 2``, the same inversion the
+        renderers use — so this is only correct for the EVEN ``W`` that
+        :func:`build_padded_batches` guarantees via ``_even_hr_width_pad``.
+    shift_hr : (dy, dx)
+        Translation in **oversampled (high-resolution) grid pixels** — the
+        units of the FFT grid itself, NOT native image pixels. One native pixel
+        is ``target_sampling`` HR pixels (5.0 in production). ``(dy, dx)``
+        order, i.e. (axis 0, axis 1).
+
+    Returns
+    -------
+    numpy.ndarray
+        Complex128 ``(H, W // 2 + 1)`` ramp, built in float64 regardless of the
+        dtype it will be applied to (cast at the multiply, see
+        :func:`shift_psf_fft`).
+
+    Notes
+    -----
+    Sign convention: the returned ramp is ``exp(-2i pi (dx f_x + dy f_y))``,
+    which moves PSF content TOWARD LARGER x/y for positive ``dx``/``dy`` —
+    the same sense (and the same expression) that
+    :func:`~tractor_jax.jax.rendering.render_point_source_fft` uses to place a
+    source at ``pos``. So ``shift_hr`` is "where to move the kernel", in the
+    same direction convention as a source position.
+
+    Consequently, if a delivered kernel's core sits at offset ``c`` relative to
+    the array center that the pipeline pins on the catalog position, the shift
+    to APPLY is ``-c``: for the SPHEREx L2 planes, whose core is measured at
+    ``dx = dy = -0.05`` native px, the correction is ``+0.05`` native px on
+    both axes.
+
+    Frequency conventions for the ``ifftshift``-ed kernel layout: axis 0 gets
+    the full ``fftfreq(H)`` set (the kernel is not halved on that axis), axis 1
+    gets ``rfftfreq(W)``. The ramp is built as an outer product of two 1-D
+    exponentials, which is both cheaper than a 2-D ``exp`` and exact at DC:
+    ``fftfreq(H)[0] == rfftfreq(W)[0] == 0`` so ``ramp[0, 0]`` is exactly
+    ``1 - 0j`` and total flux (the DC bin) is preserved BIT-EXACTLY, not
+    approximately.
+    """
+    h = int(fft_shape[-2])
+    wf = int(fft_shape[-1])
+    w = (wf - 1) * 2
+    dy = float(shift_hr[0])
+    dx = float(shift_hr[1])
+    # float64 throughout: the ramp is a pure geometric quantity and is cast to
+    # the PSF FFT's dtype only at the multiply, so nothing already flowing
+    # through the batch changes dtype.
+    fy = np.fft.fftfreq(h)
+    fx = np.fft.rfftfreq(w)
+    ry = np.exp(-2j * np.pi * (dy * fy))
+    rx = np.exp(-2j * np.pi * (dx * fx))
+    return ry[:, None] * rx[None, :]
+
+
+def shift_psf_fft(psf_fft, shift_hr):
+    """Translate an ``rfft2``-ed PSF by ``shift_hr`` = ``(dy, dx)`` HIGH-RES
+    (oversampled) pixels, via :func:`psf_fft_phase_ramp`.
+
+    ``psf_fft`` may be a single ``(H, Wf)`` transform or a leading-axis stack
+    (e.g. a ``(K, H, Wf)`` PSF basis); the ramp broadcasts. The ramp is cast to
+    ``psf_fft.dtype`` before the multiply, so the result keeps the input's
+    dtype (complex64 or complex128, following ``jax_enable_x64``).
+
+    ``shift_hr = (0.0, 0.0)`` is an exact identity: the ramp is then exactly
+    ``1 - 0j`` everywhere and the complex multiply is bit-preserving (the sign
+    of a zero component may flip, which no numeric comparison sees).
+    """
+    ramp = psf_fft_phase_ramp(psf_fft.shape, shift_hr)
+    return psf_fft * jnp.asarray(ramp, dtype=psf_fft.dtype)
+
+
+_EVEN_PARITY_MODES = ("raise", "warn", "fix", "allow")
+
+
+def _even_parity_message(ph, pw, target_sampling):
+    """Message naming the exact mis-centring an even-sized kernel causes."""
+    axes = []
+    if ph % 2 == 0:
+        axes.append(f"axis 0 (height {ph})")
+    if pw % 2 == 0:
+        axes.append(f"axis 1 (width {pw})")
+    native = 0.5 / float(target_sampling) if target_sampling else float("nan")
+    return (
+        f"psf_to_fft: EVEN post-resize PSF size on {' and '.join(axes)} "
+        f"(shape ({ph}, {pw})). The center-pad offset `cy - ph // 2` puts the "
+        f"kernel's geometric center exactly 0.5 oversampled pixel BELOW the "
+        f"ifftshift origin on each even axis, so every source rendered with "
+        f"this PSF is mis-registered by exactly -0.5 high-res px "
+        f"(= {native:.4g} native px at target_sampling={target_sampling}) on "
+        f"that axis. Pass even_parity='fix' to remove it exactly with a "
+        f"+0.5 high-res px phase ramp, or 'warn'/'allow' to keep the legacy "
+        f"(mis-centered) behavior. Odd sizes are unaffected."
+    )
+
+
+def psf_to_fft(psf_img, *, psf_sampling, target_shape, target_sampling,
+               shift_hr=None, even_parity="raise"):
     """rfft2 of a PSF resampled to ``target_sampling``, center-padded to
     ``target_shape`` and ``ifftshift``-ed — the layout ``images_data['psf']
     ['fft']`` expects. Resampling (lanczos3, flux-renormalized) only happens
     when the PSF's own oversampling ``1/psf_sampling`` differs from
-    ``target_sampling``."""
+    ``target_sampling``.
+
+    Parameters
+    ----------
+    psf_img : array
+        PSF kernel, oversampled by ``1 / psf_sampling``.
+    psf_sampling : float
+        PSF pixel size in native image pixels (0.2 => 5x oversampled).
+    target_shape : (int, int)
+        Output high-res grid ``(H, W)``; ``W`` must be even (the renderers
+        recover it as ``(rfft_width - 1) * 2``).
+    target_sampling : float
+        Oversampling factor of the target grid (5.0 in production).
+    shift_hr : (dy, dx), optional
+        Sub-pixel re-registration, in **oversampled (high-res) grid pixels**
+        — see :func:`psf_fft_phase_ramp` for the units and the sign
+        convention (positive moves the kernel toward larger x/y; the shift to
+        apply is MINUS the measured core offset). ``None`` (the default) skips
+        the ramp entirely and is bit-identical to the pre-ramp behavior.
+    even_parity : {"raise", "warn", "fix", "allow"}
+        What to do when the (post-resize) kernel has an EVEN size on either
+        axis, which makes the ``cy - ph // 2`` center-pad mis-place the kernel
+        by exactly -0.5 high-res px on that axis:
+
+        - ``"raise"`` (default) — ``ValueError`` naming the consequence;
+        - ``"warn"`` — ``RuntimeWarning``, legacy (mis-centered) result;
+        - ``"fix"`` — add ``+0.5`` high-res px on each even axis via the phase
+          ramp, composing with ``shift_hr``; the kernel center then lands
+          exactly on the ifftshift origin;
+        - ``"allow"`` — silent legacy behavior.
+
+        Odd sizes take exactly the legacy code path in every mode.
+    """
+    if even_parity not in _EVEN_PARITY_MODES:
+        raise ValueError(f"even_parity must be one of {_EVEN_PARITY_MODES}, "
+                         f"got {even_parity!r}")
     target_h, target_w = target_shape
     psf = np.asarray(psf_img, dtype=np.float64)
     ph, pw = psf.shape
@@ -449,13 +596,37 @@ def psf_to_fft(psf_img, *, psf_sampling, target_shape, target_sampling):
             psf_j = psf_j * (s_in / s_out)
         psf = np.asarray(psf_j)
         ph, pw = psf.shape
+
+    # LATENT PARITY BUG, made explicit. `y0 = cy - ph // 2` lands the kernel's
+    # geometric center on `cy` (which ifftshift sends to the origin) only for
+    # ODD ph: for even ph the center is at ph/2 - 0.5, so it lands at cy - 0.5,
+    # i.e. every source is rendered -0.5 high-res px off. Production is safe
+    # only because the delivered kernels happen to be odd (51, 73) and
+    # psf_sampling=0.2 / target_sampling=5.0 make 1.0/0.2 == 5.0 bit-exactly,
+    # so the resize branch above (which could produce an even shape) never runs.
+    fix_y = fix_x = 0.0
+    if ph % 2 == 0 or pw % 2 == 0:
+        msg = _even_parity_message(ph, pw, target_sampling)
+        if even_parity == "raise":
+            raise ValueError(msg)
+        if even_parity == "warn":
+            warnings.warn(msg, RuntimeWarning, stacklevel=2)
+        elif even_parity == "fix":
+            fix_y = 0.5 if ph % 2 == 0 else 0.0
+            fix_x = 0.5 if pw % 2 == 0 else 0.0
+
     pad_psf = np.zeros((target_h, target_w), dtype=np.float64)
     cy, cx = target_h // 2, target_w // 2
     y0 = cy - ph // 2
     x0 = cx - pw // 2
     pad_psf[y0:y0 + ph, x0:x0 + pw] = psf
     pad_psf = np.fft.ifftshift(pad_psf)
-    return jfft.rfft2(jnp.asarray(pad_psf))
+    out = jfft.rfft2(jnp.asarray(pad_psf))
+    if shift_hr is not None or fix_y or fix_x:
+        dy = fix_y + (float(shift_hr[0]) if shift_hr is not None else 0.0)
+        dx = fix_x + (float(shift_hr[1]) if shift_hr is not None else 0.0)
+        out = shift_psf_fft(out, (dy, dx))
+    return out
 
 
 def slice_fluxes(fluxes, meta):
@@ -485,6 +656,7 @@ def build_padded_batches(
     max_mog_k_cap=None,
     pad_bucket=None,
     psf_fft_cache=None,
+    even_parity="raise",
     dtype=np.float32,
 ):
     """Pad + stack per-view source problems into one vmap-ready batch.
@@ -508,6 +680,29 @@ def build_padded_batches(
         any view supplies ``psf_basis`` then all must.
         this view), ``origin`` ``(x0, y0)`` of the view in the ``sx``/``sy``
         pixel frame.
+
+        Optionally also, for sub-pixel PSF re-registration (opt-in; absent =
+        no ramp = bit-identical to not passing it at all):
+
+        ``psf_shift`` ``(dy, dx)``
+            One shift for this view's PSF, in **NATIVE image pixels** (this is
+            the caller's unit; the builder multiplies by ``target_sampling`` to
+            reach the high-res FFT grid). Positive moves the kernel toward
+            larger x/y, so the value to pass is MINUS the measured kernel core
+            offset — for the SPHEREx L2 planes, whose core sits at
+            ``dx = dy ~ -0.05`` native px, pass ``(+0.05, +0.05)``. On the
+            ``psf_basis`` path this is the degenerate "every zone kernel shares
+            one shift" case and is applied to every basis element.
+        ``psf_basis_shifts`` ``(K, 2)``
+            One ``(dy, dx)`` per ``psf_basis`` element, in NATIVE pixels.
+            Each zone kernel has its own core offset, so the ramp is applied
+            PER BASIS ELEMENT BEFORE the weighted blend:
+            ``sum_k w_k * (rfft2(K_k) * phase_k)``. (Ramping after the blend
+            is only valid when every element shares one shift — that is what
+            ``psf_shift`` is for.) Requires ``psf_basis``.
+
+        Like ``psf_basis``, each key is all-or-none across the batch, and
+        ``psf_shift`` and ``psf_basis_shifts`` are mutually exclusive.
     catalog : table
         Needs ``shape_r`` (0 => point source), ``shape_ab``, ``shape_phi``,
         ``sersic`` columns for galaxies.
@@ -541,8 +736,14 @@ def build_padded_batches(
         larger only for near-null-space fluxes in over-crowded views).
     psf_fft_cache : MutableMapping, optional
         Caller-owned cross-call cache for PSF FFTs, keyed on the PSF object's
-        identity and the FFT geometry. The caller must keep the PSF arrays
-        alive for the cache's lifetime (id reuse after gc would alias).
+        identity, the FFT geometry and the requested sub-pixel shift. The
+        caller must keep the PSF arrays alive for the cache's lifetime (id
+        reuse after gc would alias).
+    even_parity : {"raise", "warn", "fix", "allow"}
+        Passed to :func:`psf_to_fft`; governs EVEN-sized (post-resize) PSF
+        kernels, which the center-pad mis-places by exactly -0.5 high-res px
+        per even axis. Default ``"raise"``. Odd kernels are unaffected in every
+        mode.
 
     Returns
     -------
@@ -558,6 +759,25 @@ def build_padded_batches(
     for v in views:
         if v["data"].shape != (base_h, base_w):
             raise ValueError("All views must share the same data shape")
+
+    # Sub-pixel PSF re-registration keys: opt-in, and all-or-none per batch
+    # (same discipline as psf_basis — a half-shifted batch would silently mix
+    # two registrations into one solve).
+    use_basis = any(v.get("psf_basis") is not None for v in views)
+    n_shift = sum(v.get("psf_shift") is not None for v in views)
+    n_bshift = sum(v.get("psf_basis_shifts") is not None for v in views)
+    if n_shift and n_shift != n_views:
+        raise ValueError("build_padded_batches: psf_shift must be given for "
+                         "every view or for none")
+    if n_bshift and n_bshift != n_views:
+        raise ValueError("build_padded_batches: psf_basis_shifts must be given "
+                         "for every view or for none")
+    if n_shift and n_bshift:
+        raise ValueError("build_padded_batches: psf_shift and "
+                         "psf_basis_shifts are mutually exclusive")
+    if n_bshift and not use_basis:
+        raise ValueError("build_padded_batches: psf_basis_shifts requires "
+                         "psf_basis")
 
     def _psf_shapes(v):
         b = v.get("psf_basis")
@@ -653,11 +873,24 @@ def build_padded_batches(
     d_pad[:, :base_h, :base_w] = data_arr
     iv_pad[:, :base_h, :base_w] = iv_arr
 
-    ps_pos = np.zeros((n_views, max_ps, 2), dtype=dtype)
+    # Source POSITIONS are geometry, not pixel data: they are built in float64
+    # and left there. Storing them at `dtype` (float32 by default) quantised
+    # every requested position to ~1e-7 relative — e.g. x=10.2 became
+    # 10.19999980926514 — a 2e-7..1.6e-6 native-px registration error over a
+    # 40..100 px stamp, which is pure loss and of the same kind as (though far
+    # smaller than) the PSF core offset this module's phase ramp corrects.
+    # Nothing downstream depends on their being float32: `pos_pix` is only ever
+    # multiplied by the per-axis HR factors (`pos_pix * f_xy + (f_xy - 1) / 2`,
+    # a float64 `jnp.array` under x64) and fed to the render phase ramp, so the
+    # dtype of the rendered templates is unchanged; and with `jax_enable_x64`
+    # off, `jnp.asarray` downcasts these to float32 exactly as before, so the
+    # arrays reaching the device are bit-identical there.
+    pos_dtype = np.float64
+    ps_pos = np.zeros((n_views, max_ps, 2), dtype=pos_dtype)
     ps_fidx = np.zeros((n_views, max_ps), dtype=np.int32)
     ps_mask = np.zeros((n_views, max_ps), dtype=dtype)
 
-    gal_pos = np.zeros((n_views, max_gal, 2), dtype=dtype)
+    gal_pos = np.zeros((n_views, max_gal, 2), dtype=pos_dtype)
     gal_fidx = np.zeros((n_views, max_gal), dtype=np.int32)
     gal_mask = np.zeros((n_views, max_gal), dtype=dtype)
     gal_cd = np.tile(np.eye(2, dtype=dtype), (n_views, max_gal, 1, 1))
@@ -741,19 +974,40 @@ def build_padded_batches(
         src_slot_per_view.append(slots)
         counts.append((len(ps_idx), len(gal_idx)))
 
-    # PSF FFTs: transform once per distinct PSF object (identity within this
-    # call) and broadcast when every view shares one PSF; the optional
-    # caller-owned psf_fft_cache extends the reuse across calls.
-    def _fft_for(psf_arr):
+    # Sub-pixel PSF re-registration. Callers give shifts in NATIVE image
+    # pixels; the FFT grid is oversampled by target_sampling, and the batch
+    # path maps at EXACTLY that factor per axis (target_h = padded_h *
+    # max_factor and _even_hr_width_pad keeps target_w = padded_w *
+    # max_factor), which is the same factor the renderers use to scale source
+    # positions. So one native px is target_sampling high-res px, exactly.
+    def _shift_hr(shift_native):
+        if shift_native is None:
+            return None
+        s = np.asarray(shift_native, dtype=np.float64).reshape(-1)
+        if s.size != 2:
+            raise ValueError("psf shift must be a (dy, dx) pair, got shape "
+                             f"{np.shape(shift_native)}")
+        return (float(s[0]) * target_sampling, float(s[1]) * target_sampling)
+
+    def _shift_key(shift_hr):
+        return None if shift_hr is None else (shift_hr[0], shift_hr[1])
+
+    # PSF FFTs: transform once per distinct (PSF object, requested shift) — the
+    # object identity holds within this call — and broadcast when every view
+    # shares one PSF; the optional caller-owned psf_fft_cache extends the reuse
+    # across calls.
+    def _fft_for(psf_arr, shift_hr=None):
         if psf_fft_cache is not None:
             key = (id(psf_arr), psf_arr.shape, target_h, target_w,
-                   round(target_sampling, 9), round(psf_sampling, 9))
+                   round(target_sampling, 9), round(psf_sampling, 9),
+                   _shift_key(shift_hr), even_parity)
             hit = psf_fft_cache.get(key)
             if hit is not None:
                 return hit
         fft = psf_to_fft(psf_arr, psf_sampling=psf_sampling,
                          target_shape=(target_h, target_w),
-                         target_sampling=target_sampling)
+                         target_sampling=target_sampling,
+                         shift_hr=shift_hr, even_parity=even_parity)
         if psf_fft_cache is not None:
             psf_fft_cache[key] = fft
         return fft
@@ -778,7 +1032,22 @@ def build_padded_batches(
             basis_fft_cache[bid] = hit
         return hit
 
-    if any(v.get("psf_basis") is not None for v in views):
+    # One ramp per distinct high-res shift, reused across views: a batch has
+    # O(K) distinct kernel offsets (per detector/zone) but O(1e2) views, and
+    # the ramp is a (H, W//2+1) complex array per shift.
+    ramp_cache = {}
+
+    def _ramp(shift_hr, dtype):
+        key = (_shift_key(shift_hr), np.dtype(dtype).str)
+        hit = ramp_cache.get(key)
+        if hit is None:
+            hit = jnp.asarray(
+                psf_fft_phase_ramp((target_h, target_w // 2 + 1), shift_hr),
+                dtype=dtype)
+            ramp_cache[key] = hit
+        return hit
+
+    if use_basis:
         if not all(v.get("psf_basis") is not None for v in views):
             raise ValueError("build_padded_batches: psf_basis must be given "
                              "for every view or for none")
@@ -788,19 +1057,39 @@ def build_padded_batches(
             w = jnp.asarray(v["psf_weights"], dtype=bf.real.dtype)
             if w.shape[0] != bf.shape[0]:
                 raise ValueError("psf_weights length must match psf_basis")
+            # Each zone kernel carries its OWN core offset, so the ramp goes on
+            # PER BASIS ELEMENT, BEFORE the blend:
+            #   sum_k w_k * (rfft2(K_k) * phase_k)
+            # A single post-blend ramp is only equivalent when every element
+            # shares one shift, which is exactly the ``psf_shift`` case below.
+            bshifts = v.get("psf_basis_shifts")
+            if bshifts is not None:
+                sh = np.asarray(bshifts, dtype=np.float64)
+                if sh.shape != (bf.shape[0], 2):
+                    raise ValueError(
+                        "psf_basis_shifts must have shape (K, 2) matching "
+                        f"psf_basis; got {sh.shape} for K={bf.shape[0]}")
+                ramps = jnp.stack([_ramp(_shift_hr(s), bf.dtype) for s in sh])
+                bf = bf * ramps
+            elif v.get("psf_shift") is not None:
+                bf = bf * _ramp(_shift_hr(v["psf_shift"]), bf.dtype)
             per_view.append(jnp.tensordot(w, bf, axes=(0, 0)))
         psf_fft_stack = jnp.stack(per_view)
     else:
         unique_fft = {}
         for v in views:
-            pid = id(v["psf"])
-            if pid not in unique_fft:
-                unique_fft[pid] = _fft_for(v["psf"])
+            key = (id(v["psf"]), _shift_key(_shift_hr(v.get("psf_shift"))))
+            if key not in unique_fft:
+                unique_fft[key] = _fft_for(v["psf"],
+                                           _shift_hr(v.get("psf_shift")))
         if len(unique_fft) == 1:
             one = next(iter(unique_fft.values()))
             psf_fft_stack = jnp.broadcast_to(one[None], (n_views,) + one.shape)
         else:
-            psf_fft_stack = jnp.stack([unique_fft[id(v["psf"])] for v in views])
+            psf_fft_stack = jnp.stack([
+                unique_fft[(id(v["psf"]),
+                            _shift_key(_shift_hr(v.get("psf_shift"))))]
+                for v in views])
 
     images_data = {
         "data": jnp.asarray(d_pad),
