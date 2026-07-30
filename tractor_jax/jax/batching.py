@@ -23,6 +23,15 @@ recompile per call. This module centralizes that pattern:
   compiled executable instead of forcing a retrace.
 - :func:`penalty_weights_from_slots` builds those weights from the
   per-image ``{catalog index -> flux slot}`` maps the batch builders return.
+
+The PSF side of the batch builder also lives here: :func:`psf_to_fft` produces
+the ``images_data['psf']['fft']`` layout, and :func:`psf_fft_phase_ramp` /
+:func:`shift_psf_fft` re-register a kernel by a SUB-PIXEL amount as a linear
+phase in that same Fourier domain — one elementwise multiply on an array the
+renderer already holds, no resampling and no extra render cost. Opt in per view
+with ``psf_shift`` / ``psf_basis_shifts`` (see
+:func:`build_padded_batches`); absent, the transform is bit-identical to the
+pre-ramp behavior.
 """
 import math
 import warnings
@@ -483,6 +492,14 @@ def psf_fft_phase_ramp(fft_shape, shift_hr):
     ``fftfreq(H)[0] == rfftfreq(W)[0] == 0`` so ``ramp[0, 0]`` is exactly
     ``1 - 0j`` and total flux (the DC bin) is preserved BIT-EXACTLY, not
     approximately.
+
+    One caveat, harmless at the sub-0.1-native-px scale this exists for: on an
+    EVEN axis the Nyquist bin's phase factor is ``exp(-i pi d)``, whose
+    imaginary part ``irfft2`` cannot represent in a real output, so a shift of
+    exactly +-0.5 px annihilates that bin. For a properly oversampled kernel
+    there is nothing there — measured centroid residual 0.0 for a clean 50x50
+    Gaussian at ``d = 0.5``, and 2.8e-6 high-res px for a deliberately
+    hard-truncated 24x24 one.
     """
     h = int(fft_shape[-2])
     wf = int(fft_shape[-1])
@@ -609,7 +626,7 @@ def psf_to_fft(psf_img, *, psf_sampling, target_shape, target_sampling,
         msg = _even_parity_message(ph, pw, target_sampling)
         if even_parity == "raise":
             raise ValueError(msg)
-        if even_parity == "warn":
+        elif even_parity == "warn":
             warnings.warn(msg, RuntimeWarning, stacklevel=2)
         elif even_parity == "fix":
             fix_y = 0.5 if ph % 2 == 0 else 0.0
@@ -1022,19 +1039,19 @@ def build_padded_batches(
     # a per-view transform. The one non-linearity is psf_to_fft's post-resize
     # sum renormalization, whose per-kernel scale factors differ; with
     # sum-normalized zone kernels the residual is ~5e-7 of the DC term.
+    #
+    # Sub-pixel re-registration rides along for free: each zone kernel carries
+    # its OWN core offset, so the ramp goes on PER BASIS ELEMENT and BEFORE the
+    # blend, ``sum_k w_k * (rfft2(K_k) * phase_k)``. (One post-blend ramp is
+    # only equivalent when every element shares one shift — that is what
+    # ``psf_shift`` is for.) Because the ramped basis depends on the basis and
+    # the shift table but NOT on a view's weights, it is cached exactly like the
+    # unramped one: a batch whose views share one per-(detector, zone) shift
+    # table pays for the ramp once, not once per view (measured on 100 views x
+    # K=9 at a 255x131 rfft grid: 33.0 ms unshifted, 33.9 ms with one shared
+    # psf_shift, 36.2 ms with a per-zone table — against 83.3 ms when the
+    # multiply is redone per view).
     basis_fft_cache = {}
-
-    def _basis_fft(basis):
-        bid = id(basis)
-        hit = basis_fft_cache.get(bid)
-        if hit is None:
-            hit = jnp.stack([_fft_for(k) for k in basis])
-            basis_fft_cache[bid] = hit
-        return hit
-
-    # One ramp per distinct high-res shift, reused across views: a batch has
-    # O(K) distinct kernel offsets (per detector/zone) but O(1e2) views, and
-    # the ramp is a (H, W//2+1) complex array per shift.
     ramp_cache = {}
 
     def _ramp(shift_hr, dtype):
@@ -1047,32 +1064,71 @@ def build_padded_batches(
             ramp_cache[key] = hit
         return hit
 
+    shift_keys_cache = {}
+
+    def _basis_shift_keys(bshifts, n_basis):
+        """Per-element high-res shifts of one ``psf_basis_shifts`` table.
+
+        Memoized on the table's identity — like ``psf_basis`` itself, views are
+        expected to hand over the SAME per-(detector, zone) object — so the
+        native->high-res conversion runs once per table, not once per view.
+        """
+        cid = id(bshifts)
+        hit = shift_keys_cache.get(cid)
+        if hit is None:
+            sh = np.asarray(bshifts, dtype=np.float64)
+            if sh.shape != (n_basis, 2):
+                raise ValueError(
+                    "psf_basis_shifts must have shape (K, 2) matching "
+                    f"psf_basis; got {sh.shape} for K={n_basis}")
+            hit = tuple(_shift_key(_shift_hr(s)) for s in sh)
+            shift_keys_cache[cid] = hit
+        return hit
+
+    def _basis_fft(basis, shift_keys=None):
+        """(K, H, W//2+1) transforms of one basis, optionally phase-ramped.
+
+        ``shift_keys`` is ``None`` (no ramp), a 1-tuple (one shift shared by
+        every element) or a K-tuple (one per element), each entry a high-res
+        ``(dy, dx)``.
+        """
+        key = (id(basis), shift_keys)
+        hit = basis_fft_cache.get(key)
+        if hit is not None:
+            return hit
+        base = basis_fft_cache.get((id(basis), None))
+        if base is None:
+            base = jnp.stack([_fft_for(k) for k in basis])
+            basis_fft_cache[(id(basis), None)] = base
+        if shift_keys is None:
+            hit = base
+        elif len(shift_keys) == 1:
+            hit = base * _ramp(shift_keys[0], base.dtype)
+        else:
+            hit = base * jnp.stack([_ramp(s, base.dtype) for s in shift_keys])
+        basis_fft_cache[key] = hit
+        return hit
+
     if use_basis:
         if not all(v.get("psf_basis") is not None for v in views):
             raise ValueError("build_padded_batches: psf_basis must be given "
                              "for every view or for none")
         per_view = []
         for v in views:
-            bf = _basis_fft(v["psf_basis"])
-            w = jnp.asarray(v["psf_weights"], dtype=bf.real.dtype)
-            if w.shape[0] != bf.shape[0]:
+            base = _basis_fft(v["psf_basis"])
+            n_basis = base.shape[0]
+            w = jnp.asarray(v["psf_weights"], dtype=base.real.dtype)
+            if w.shape[0] != n_basis:
                 raise ValueError("psf_weights length must match psf_basis")
-            # Each zone kernel carries its OWN core offset, so the ramp goes on
-            # PER BASIS ELEMENT, BEFORE the blend:
-            #   sum_k w_k * (rfft2(K_k) * phase_k)
-            # A single post-blend ramp is only equivalent when every element
-            # shares one shift, which is exactly the ``psf_shift`` case below.
             bshifts = v.get("psf_basis_shifts")
             if bshifts is not None:
-                sh = np.asarray(bshifts, dtype=np.float64)
-                if sh.shape != (bf.shape[0], 2):
-                    raise ValueError(
-                        "psf_basis_shifts must have shape (K, 2) matching "
-                        f"psf_basis; got {sh.shape} for K={bf.shape[0]}")
-                ramps = jnp.stack([_ramp(_shift_hr(s), bf.dtype) for s in sh])
-                bf = bf * ramps
+                shift_keys = _basis_shift_keys(bshifts, n_basis)
             elif v.get("psf_shift") is not None:
-                bf = bf * _ramp(_shift_hr(v["psf_shift"]), bf.dtype)
+                shift_keys = (_shift_key(_shift_hr(v["psf_shift"])),)
+            else:
+                shift_keys = None
+            bf = (base if shift_keys is None
+                  else _basis_fft(v["psf_basis"], shift_keys))
             per_view.append(jnp.tensordot(w, bf, axes=(0, 0)))
         psf_fft_stack = jnp.stack(per_view)
     else:
