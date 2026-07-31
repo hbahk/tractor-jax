@@ -1113,11 +1113,19 @@ def build_padded_batches(
         if not all(v.get("psf_basis") is not None for v in views):
             raise ValueError("build_padded_batches: psf_basis must be given "
                              "for every view or for none")
-        per_view = []
-        for v in views:
-            base = _basis_fft(v["psf_basis"])
-            n_basis = base.shape[0]
-            w = jnp.asarray(v["psf_weights"], dtype=base.real.dtype)
+        # Blend per GROUP of views sharing (basis, shifts), not per view. In
+        # the driver every tile of a cutout hands over the SAME basis object
+        # and the SAME shift table, so this is one group and the whole blend
+        # is a single (T, K) x (K, H, Wf) tensordot — one dispatch instead of
+        # one per tile (~50/cutout), which put the eager per-tile launches on
+        # the CPU-bound build stage's critical path (measured +21.6 ms/cutout
+        # at K=9-12; see proj research note 2026-07-28-node-comparison, §PSF).
+        groups = {}                       # gkey -> [bf, [view idx], [weights]]
+        gorder = []
+        for i, v in enumerate(views):
+            basis = v["psf_basis"]
+            n_basis = len(basis)
+            w = np.asarray(v["psf_weights"], dtype=np.float64)
             if w.shape[0] != n_basis:
                 raise ValueError("psf_weights length must match psf_basis")
             bshifts = v.get("psf_basis_shifts")
@@ -1127,10 +1135,35 @@ def build_padded_batches(
                 shift_keys = (_shift_key(_shift_hr(v["psf_shift"])),)
             else:
                 shift_keys = None
-            bf = (base if shift_keys is None
-                  else _basis_fft(v["psf_basis"], shift_keys))
-            per_view.append(jnp.tensordot(w, bf, axes=(0, 0)))
-        psf_fft_stack = jnp.stack(per_view)
+            gkey = (id(basis), shift_keys)
+            g = groups.get(gkey)
+            if g is None:
+                bf = (_basis_fft(basis) if shift_keys is None
+                      else _basis_fft(basis, shift_keys))
+                g = groups[gkey] = [bf, [], []]
+                gorder.append(gkey)
+            g[1].append(i)
+            g[2].append(w)
+        # precision="highest": the grouped blend is a real GEMM, which XLA
+        # would otherwise run in TF32 on Ampere+ (10-bit mantissa, ~5e-4
+        # relative on the kernel -- most of the fp32 parity budget). The
+        # per-view path was a matvec and never hit TF32, so pin full fp32.
+        if len(groups) == 1:
+            bf, _, ws = groups[gorder[0]]
+            wmat = jnp.asarray(np.stack(ws), dtype=bf.real.dtype)   # (T, K)
+            psf_fft_stack = jnp.tensordot(wmat, bf, axes=(1, 0),
+                                          precision="highest")
+        else:
+            blended, idx = [], []
+            for gkey in gorder:
+                bf, idxs, ws = groups[gkey]
+                wmat = jnp.asarray(np.stack(ws), dtype=bf.real.dtype)
+                blended.append(jnp.tensordot(wmat, bf, axes=(1, 0),
+                                              precision="highest"))
+                idx.extend(idxs)
+            # invert the group-major ordering back to view order
+            perm = np.argsort(np.asarray(idx))
+            psf_fft_stack = jnp.concatenate(blended, axis=0)[perm]
     else:
         unique_fft = {}
         for v in views:
