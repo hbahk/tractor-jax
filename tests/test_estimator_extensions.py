@@ -266,6 +266,36 @@ def test_eigfloor_dead_slots_pinned():
     assert np.all(np.isinf(np.array(v)))
 
 
+def test_eigfloor_many_dead_slots_preserve_live_solution():
+    """Large padding blocks are inert and remain finite on the live block.
+
+    This mirrors the production padded-width regime that previously exposed
+    a CUDA ``eigh`` non-convergence: the dead block must not change either
+    the eigfloor solution or its variances.
+    """
+    tr, _ = toy_scene()
+    single, sb, f0 = single_image_inputs(tr)
+    f_live, v_live = solve_fluxes_eigfloor(
+        f0, single, sb, return_variances=True, floor=1e-2)
+
+    n_dead = 512
+    f0_pad = jnp.pad(f0, (0, n_dead))
+    sb_pad = jax.tree_util.tree_map(lambda x: x, sb)
+    # Source render indices still address the original live coordinates; the
+    # appended flux slots therefore have exactly zero templates.
+    f_pad, v_pad = solve_fluxes_eigfloor(
+        f0_pad, single, sb_pad, return_variances=True, floor=1e-2)
+
+    assert np.all(np.isfinite(np.asarray(f_pad)))
+    assert np.all(np.isfinite(np.asarray(v_pad)[:len(f0)]))
+    assert np.all(np.asarray(f_pad)[len(f0):] == 0.0)
+    assert np.all(np.isposinf(np.asarray(v_pad)[len(f0):]))
+    np.testing.assert_allclose(np.asarray(f_pad)[:len(f0)],
+                               np.asarray(f_live), rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(np.asarray(v_pad)[:len(f0)],
+                               np.asarray(v_live), rtol=1e-12, atol=1e-12)
+
+
 # --------------------------------------------------------------------------- #
 # B5. high-level path: optimize_fluxes(solver="eigfloor") ~ linear on a
 #     well-separated scene (all eigenvalues above the floor)

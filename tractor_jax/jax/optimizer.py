@@ -1989,6 +1989,17 @@ def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
     D = jnp.where(live, jnp.sqrt(jnp.where(live, Fjj, 1.0)), 1.0)
 
     Ghat = AtWA / (D[:, jnp.newaxis] * D[jnp.newaxis, :])
+    # Padded flux vectors can contain hundreds of exactly dead coordinates.
+    # Leaving their rows/columns at zero is mathematically harmless, but
+    # CUDA's symmetric eigensolver can fail to converge on the resulting
+    # large null block (returning NaN for every eigenpair).  Replace that
+    # discarded block by an identity block before ``eigh``.  The live block
+    # is unchanged and has unit diagonal, hence lambda_max >= 1: dead
+    # eigenvalues of 1 cannot change ``emax`` or the floor applied to live
+    # modes.  Dead outputs are still forced to 0/inf below.
+    live_outer = live[:, jnp.newaxis] & live[jnp.newaxis, :]
+    Ghat = (jnp.where(live_outer, Ghat, 0.0)
+            + jnp.diag((~live).astype(Ghat.dtype)))
     bhat = AtWd / D
 
     evals, evecs = jnp.linalg.eigh(Ghat)      # ascending eigenvalues
@@ -2069,7 +2080,13 @@ def _eigfloor_prior_core(AtWA, AtWd, lambda_diag, f_prior, floor=1e-4,
     #       physical prior while keeping the matrix scale-mixed range sane.
     lam_hat = jnp.minimum(lambda_diag / (D * D), 1e6)
     Ghat_data = AtWA / (D[:, jnp.newaxis] * D[jnp.newaxis, :])
-    Ghat = Ghat_data + jnp.diag(lam_hat)
+    live_outer = live[:, jnp.newaxis] & live[jnp.newaxis, :]
+    Ghat_data = jnp.where(live_outer, Ghat_data, 0.0)
+    # As in the blind eigfloor solver, pin the otherwise all-zero dead block
+    # to identity before the GPU eigendecomposition.  This changes only
+    # coordinates whose returned flux/variance are discarded as 0/inf.
+    Ghat = Ghat_data + jnp.diag(
+        lam_hat + (~live).astype(Ghat_data.dtype))
     bhat = AtWd / D + lam_hat * (D * f_prior)
 
     evals, evecs = jnp.linalg.eigh(Ghat)      # ascending eigenvalues
