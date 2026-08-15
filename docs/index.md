@@ -38,9 +38,10 @@ fluxes, variances = optimize_fluxes(
 :width: 100%
 ```
 
-That figure comes from the {doc}`worked_example`, which runs on a laptop CPU in
-seconds: the estimators agree exactly on well-measured sources and diverge only
-where the data are genuinely ambiguous.
+That figure comes from the {doc}`worked_example` — a critically undersampled,
+SPHEREx-like scene of stars and galaxies that runs on a laptop CPU: the
+estimators agree exactly on well-measured sources and diverge only where the
+data are genuinely ambiguous.
 
 ## Highlights
 
@@ -49,7 +50,8 @@ where the data are genuinely ambiguous.
   memoized across calls.
 - **A menu of estimators.** Plain least squares, an eigenvalue floor for
   degenerate blends, Gaussian flux priors, and L1 with selection and debiasing —
-  see {doc}`solvers`.
+  see {doc}`solvers`, and {doc}`eigfloor` for the derivation behind the blind
+  default.
 - **Undersampling handled correctly.** Sources are rendered on an oversampled
   grid and integrated back to native pixels; flux conservation is a tested
   contract.
@@ -82,6 +84,7 @@ worked_example
 :caption: Guides
 
 solvers
+eigfloor
 architecture
 performance
 migration

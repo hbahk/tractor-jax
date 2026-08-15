@@ -52,6 +52,16 @@ normalization). After normalization $\lambda_\max(\hat G) \le n$ regardless of
 units, background, or depth, and `floor` is a pure correlation-degeneracy
 threshold.
 
+Because $\hat G$ has unit diagonal, its normalized coordinates are **S/N**: the
+floor is a threshold in significance, not in flux. Mode by mode the estimator is
+the least-squares answer scaled by a **filter factor**
+$\varphi_k = \min(1, \lambda_k / \lambda_f)$ — exactly 1 above the floor, tapered
+below it. For a blended pair with template correlation $\rho$ the two modes are
+the sum ($\lambda_+ = 1+\rho$, never floored) and the split
+($\lambda_- = 1-\rho$), and the floor engages only when
+$\rho > (1-\texttt{floor})/(1+\texttt{floor})$ — at `eig_floor=1e-2`, **only
+pairs whose templates overlap by more than 98% are touched at all**.
+
 The result: well-constrained sources (eigenvalue $\sim 1$) are solved *exactly*,
 while only the genuinely degenerate directions — the anti-correlated flux splits
 of blended groups — get damped. It is **symmetric and sign-free**: no
@@ -63,7 +73,9 @@ optimize_fluxes(tractor, solver="eigfloor", eig_floor=1e-2)
 ```
 
 This is the recommended default for **blind** photometry — measuring everything
-in a catalog, including sources far below detection, with calibrated errors.
+in a catalog, including sources far below detection, with calibrated errors. See
+{doc}`eigfloor` for the derivation, the prior it corresponds to, and what its
+error bars do and do not contain.
 
 ## `eigfloor_prior` — eigfloor plus Gaussian flux priors
 
@@ -135,7 +147,7 @@ summary of what it finds:
 | situation | `linear` | `eigfloor` | `lasso` |
 |---|---|---|---|
 | isolated, well-measured source | identical | identical | identical |
-| degenerate blend (0.4 px apart) | split wanders | split damped | split wanders |
+| degenerate blend ($\rho = 0.989$) | split wanders | split damped | split wanders |
 | the blend's **total** flux | correct | correct | correct |
 | faint source (S/N ≈ 0.4) | signed noise | signed noise | **zeroed** |
 

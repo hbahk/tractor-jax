@@ -69,9 +69,10 @@ fluxes, variances = optimize_fluxes(
 ```
 
 The [worked example](https://tractor-jax.readthedocs.io/en/latest/worked_example.html)
-(`examples/fit_blended_sources.py`, runs on CPU in seconds) fits a scene with a
-degenerate blend and an undetected source, showing where the estimators agree
-and where they don't:
+(`examples/fit_blended_sources.py`, runs on CPU in a couple of minutes) fits an
+undersampled SPHEREx-like scene of stars and galaxies with a degenerate blend
+and an undetected source, showing where the estimators agree and where they
+don't:
 
 <p align="center">
   <img src="docs/_static/example_solvers.png" alt="recovered flux per source for three solvers" width="720">

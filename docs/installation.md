@@ -32,7 +32,7 @@ sphinx-build -b html tractor-jax/docs tractor-jax/docs/_build/html
 ## GPU or CPU?
 
 CPU is the right choice for development, testing, and running the
-{doc}`worked_example` — everything works, in seconds, on a laptop.
+{doc}`worked_example` — everything works on a laptop, in a couple of minutes.
 
 It is **not** a production target. The engine's speed comes from a GPU +
 batching co-design, and on CPU the same code is slower than the classic

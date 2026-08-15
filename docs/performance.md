@@ -99,7 +99,7 @@ is render/GEMM-bound rather than solver-bound (the numbers barely move between
 solvers). On CPU-only hardware, use the legacy Tractor.
 
 CPU execution is still the right choice for **development and testing** — the
-test suite and the {doc}`worked_example` run on CPU in seconds.
+test suite and the {doc}`worked_example` run on CPU in a couple of minutes.
 
 ## Reproducing
 
