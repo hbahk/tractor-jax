@@ -142,9 +142,9 @@ choice of filter factor.
 
 The scalar-ridge row is not hypothetical. With $\tau = 10^{-2}$ a well-measured
 mode at $\lambda \approx 1$ gets $\varphi = 1/1.01 = 0.990$, a 1% shrinkage; in
-S/N coordinates the bias is $(1-\varphi)\times \mathrm{S/N}$, so at S/N $\approx
-22$ that is $0.0099 \times 22 = 0.22\sigma$ — the $-0.22\sigma$ bias measured for
-a scalar ridge at S/N 10–30, straight out of the formula. `eigfloor` gives
+S/N coordinates the bias is $(1-\varphi)\times \mathrm{S/N}$, so at a S/N of 22
+that is $0.0099 \times 22 = 0.22\sigma$ — the $-0.22\sigma$ bias measured for a
+scalar ridge at S/N 10–30, straight out of the formula. `eigfloor` gives
 $\varphi = 1$ exactly on the same mode, hence $|\text{median}\,\chi| \le 0.1\sigma$.
 Two measurements, one equation, opposite ends.
 
