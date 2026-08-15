@@ -4,6 +4,16 @@ All notable changes to Tractor-JAX. This project follows
 [Semantic Versioning](https://semver.org/); while the major version is 0 the
 public API may still change between minor releases.
 
+## [Unreleased]
+
+### Changed
+
+- **Relicensed to GPL-2.0-only.** The Tractor is licensed under the GPLv2
+  *without* an "or later" clause (its `COPYING` grants "version 2" only), so
+  the 0.1.0 relicense to GPL-3.0-or-later was not permitted for this
+  derivative work. `LICENSE` now carries the GPLv2 text and `COPYING` the
+  grant notice, matching upstream.
+
 ## [0.1.0] — 2026-07-25
 
 First versioned release. The engine had been developed continuously since the

@@ -7,8 +7,8 @@ name = "tractor-jax"
 dynamic = ["version"]
 description = "JAX-accelerated astronomical image modeling and forced photometry"
 readme = "README.md"
-license = "GPL-3.0-or-later"
-license-files = ["LICENSE"]
+license = "GPL-2.0-only"
+license-files = ["LICENSE", "COPYING"]
 authors = [
     { name = "Hyeonguk Bahk", email = "bahkhyeonguk@gmail.com" },
 ]

@@ -7,8 +7,8 @@
     <img src="https://github.com/hbahk/tractor-jax/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://tractor-jax.readthedocs.io/en/latest/">
     <img src="https://readthedocs.org/projects/tractor-jax/badge/?version=latest" alt="Documentation Status"></a>
-  <a href="https://www.gnu.org/licenses/gpl-3.0">
-    <img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg" alt="License"></a>
+  <a href="https://www.gnu.org/licenses/old-licenses/gpl-2.0">
+    <img src="https://img.shields.io/badge/license-GPL--2.0--only-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+">
 </p>
 
@@ -139,5 +139,6 @@ the original lives at [`dstndstn/tractor`](https://github.com/dstndstn/tractor).
 
 ## License
 
-GPL-3.0-or-later. The Tractor is licensed GPLv2-or-later, and this derivative is
-distributed under GPLv3 under the "or later" clause.
+GPL-2.0-only. Tractor-JAX is a derivative work of The Tractor, which is
+licensed under the GPLv2 (version 2 only), so this package is distributed
+under the same terms. See `LICENSE` and `COPYING`.
