@@ -242,7 +242,10 @@ $\lambda_\max(\hat G)$ — from *the data's own* spectrum — so the prior is
 data-dependent and there is no frequentist coverage guarantee to be had from the
 formula. That is the reason a survey pipeline built on `eigfloor` needs an
 empirical, per-S/N error calibration downstream. It is a derived conclusion, not
-an ad-hoc patch.
+an ad-hoc patch — and a mild one: measured end-to-end on SPHEREx production
+photometry, the per-S/N factors come out at $c \approx 0.8$–$1.05$, i.e. the
+reported errors were already nearly honest, erring conservative exactly where the
+sandwich says they should.
 
 ## 7. Two caveats worth stating
 
@@ -259,10 +262,19 @@ fields of different crowding.
 if $\rho_{ij}$ is the same in every channel then $\varphi_-$ is the same in every
 channel: the shrinkage is achromatic, the individual fluxes of a blend are wrong
 but its *colours* survive, and photo-$z$ tolerates it. When the PSF varies with
-wavelength — as it does for SPHEREx — $\rho_{ij}(\lambda)$ varies too, the
-shrinkage becomes wavelength-dependent, and a blended pair can carry a residual
-colour term. The diagnostic is the slope of $\chi(\lambda)$ for the members of a
-blended pair.
+wavelength $\rho_{ij}(\lambda)$ varies too, the shrinkage becomes
+wavelength-dependent, and a blended pair can carry a residual colour term. The
+diagnostic is the residual slope $d\langle r\rangle/d\ln\lambda$ of blended
+versus isolated targets. On SPHEREx production photometry this differential came
+out **null** — $-0.2 \pm 1.5\,\%/\ln\lambda$, i.e. achromatic to
+$<3.2\,\%/\ln\lambda$ (95%) even for sub-pixel pairs — because the PSF's
+chromaticity is weak (FWHM $\propto \lambda^{0.13}$), so the expected effect sits
+below the measurement floor. The same test convicted the alternative: *cutting*
+faint neighbours instead of modelling them absorbs their light into the targets
+with a strongly one-signed chromatic slope ($+1.3$ to $+13\,\%/\ln\lambda$,
+brighter to fainter). Selection destroys colours; shrinkage does not. For an
+instrument with a strongly chromatic PSF the null must be re-derived, not
+assumed.
 
 ## Next steps
 
