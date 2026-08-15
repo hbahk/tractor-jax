@@ -451,6 +451,76 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
                                   native_img, img)
         return xlo, ylo, native_img
 
+    def _integrateImage(self, img, dx, dy, k):
+        '''Block-integrate an oversampled PSF stamp down to native pixels.
+
+        Shifts ``img`` so that its centre lands ``(dx, dy)`` NATIVE pixels off
+        the centre of the output array, then sums each ``k x k`` block, where
+        ``k = 1/sampling`` must be an integer. The result is the native-pixel
+        PSF *integrated over* each pixel, and carries the same total flux as
+        ``img`` -- unlike :meth:`_sampleImage`, which point-samples the
+        oversampled model and therefore returns a PSF that is too narrow by
+        the pixel response.
+
+        Returns ``(xl, yl, native_img)`` with the same centring convention as
+        :meth:`_sampleImage`.
+        '''
+        # Target High Res size
+        target_h = self.nativeH * k
+        target_w = self.nativeW * k
+
+        h, w = img.shape
+
+        # Pad to target size first (centering roughly)
+        # Add margin for shifting
+        margin = int(np.ceil(max(abs(dx * k), abs(dy * k)))) + 10
+
+        canvas_h = max(h, target_h) + 2 * margin
+        canvas_w = max(w, target_w) + 2 * margin
+
+        # Define crop region in center of canvas
+        crop_x0 = (canvas_w - target_w) // 2
+        crop_y0 = (canvas_h - target_h) // 2
+
+        target_center_x_in_canvas = crop_x0 + (target_w - 1) / 2.0
+        target_center_y_in_canvas = crop_y0 + (target_h - 1) / 2.0
+
+        # Desired peak position
+        desired_x = target_center_x_in_canvas + dx * k
+        desired_y = target_center_y_in_canvas + dy * k
+
+        # Place img such that its peak (w//2) is close to desired_x
+        # curr_x = w//2 + pw
+        # pw ~ desired_x - w//2
+        pw = int(round(desired_x - (w // 2)))
+        ph = int(round(desired_y - (h // 2)))
+
+        # Clamp to canvas
+        pw = max(0, min(canvas_w - w, pw))
+        ph = max(0, min(canvas_h - h, ph))
+
+        pad_img = np.zeros((canvas_h, canvas_w), dtype=img.dtype)
+        pad_img[ph:ph+h, pw:pw+w] = img
+
+        curr_x = (w // 2) + pw
+        curr_y = (h // 2) + ph
+
+        shift_x = desired_x - curr_x
+        shift_y = desired_y - curr_y
+
+        shifted = lanczos_shift_image(pad_img, shift_x, shift_y)
+
+        # Crop to target size
+        crop = shifted[crop_y0 : crop_y0 + target_h, crop_x0 : crop_x0 + target_w]
+
+        # Binning
+        crop = crop.reshape(self.nativeH, k, self.nativeW, k)
+        downsampled = crop.sum(axis=(1, 3))
+
+        xl = -(self.nativeW // 2)
+        yl = -(self.nativeH // 2)
+        return xl, yl, downsampled
+
     def _getOversampledPointSourcePatch(self, px, py, minval=0., modelMask=None,
                                         radius=None, **kwargs):
         # get PSF image at desired pixel location
@@ -484,71 +554,13 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
         if is_integer_factor and radius is None:
             k = int(round(factor))
 
-            # Target High Res size
-            target_h = self.nativeH * k
-            target_w = self.nativeW * k
-
-            h, w = img.shape
-
-            # Pad to target size first (centering roughly)
-            # Add margin for shifting
-            margin = int(np.ceil(max(abs(dx * k), abs(dy * k)))) + 10
-
-            canvas_h = max(h, target_h) + 2 * margin
-            canvas_w = max(w, target_w) + 2 * margin
-
-            # Define crop region in center of canvas
-            crop_x0 = (canvas_w - target_w) // 2
-            crop_y0 = (canvas_h - target_h) // 2
-
-            target_center_x_in_canvas = crop_x0 + (target_w - 1) / 2.0
-            target_center_y_in_canvas = crop_y0 + (target_h - 1) / 2.0
-
-            # Desired peak position
-            desired_x = target_center_x_in_canvas + dx * k
-            desired_y = target_center_y_in_canvas + dy * k
-
-            # Place img such that its peak (w//2) is close to desired_x
-            # curr_x = w//2 + pw
-            # pw ~ desired_x - w//2
-            pw = int(round(desired_x - (w // 2)))
-            ph = int(round(desired_y - (h // 2)))
-
-            # Clamp to canvas
-            pw = max(0, min(canvas_w - w, pw))
-            ph = max(0, min(canvas_h - h, ph))
-
-            pad_img = np.zeros((canvas_h, canvas_w), dtype=img.dtype)
-            pad_img[ph:ph+h, pw:pw+w] = img
-
-            curr_x = (w // 2) + pw
-            curr_y = (h // 2) + ph
-
-            shift_x = desired_x - curr_x
-            shift_y = desired_y - curr_y
-
-            shifted = lanczos_shift_image(pad_img, shift_x, shift_y)
-
-            # Crop to target size
-            crop = shifted[crop_y0 : crop_y0 + target_h, crop_x0 : crop_x0 + target_w]
-
-            # Binning
-            crop = crop.reshape(self.nativeH, k, self.nativeW, k)
-            downsampled = crop.sum(axis=(1, 3))
+            xl, yl, downsampled = self._integrateImage(img, dx, dy, k)
 
             # Adjust scaling.
             # We want to return something that, when multiplied by 'scale' (k^2), gives the Flux.
             # 'downsampled' IS the Flux (sum).
             # So we return downsampled / k^2.
             img = downsampled / (k**2)
-
-            # Calculate xl, yl
-            # The patch is centered at (ix, iy).
-            # Size (nativeW, nativeH).
-            # xl = -nativeW // 2
-            # yl = -nativeH // 2
-            xl = -(self.nativeW // 2)
-            yl = -(self.nativeH // 2)
 
         else:
             xl,yl,img = self._sampleImage(img, dx, dy)
@@ -579,12 +591,24 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
         # shift by fractional pixel
         dx = px - int(px)
         dy = py - int(py)
-        _, _, img = self._sampleImage(None, dx, dy)
-        # _sampleImage point-samples the oversampled model onto the native grid,
-        # so a unit-flux PSF comes out summing to ~sampling**2; rescale by the
-        # pixel-area factor so FFT-convolved (galaxy) models carry the same unit
-        # flux as the point-source patch path (which applies this same scale).
-        img = img * (1.0 / self.sampling ** 2)
+        factor = 1. / self.sampling
+        if abs(factor - round(factor)) < 1e-4:
+            # Integer oversampling: BLOCK-INTEGRATE the oversampled model down
+            # to native pixels, exactly as the point-source patch path does.
+            # Point-sampling it instead (the fallback below) drops the pixel
+            # response, which leaves the effective PSF too narrow: galaxies
+            # convolved with it come out ~5% too peaked relative to the
+            # (correct) template renderer in jax/optimizer.py, even though the
+            # total flux is right.
+            _, _, img = self._integrateImage(self.getImage(px, py), dx, dy,
+                                             int(round(factor)))
+        else:
+            _, _, img = self._sampleImage(None, dx, dy)
+            # _sampleImage point-samples the oversampled model onto the native
+            # grid, so a unit-flux PSF comes out summing to ~sampling**2;
+            # rescale by the pixel-area factor so FFT-convolved (galaxy) models
+            # carry the same unit flux as the point-source patch path.
+            img = img * (1.0 / self.sampling ** 2)
         pad, cx, cy = self._padInImage(sz, sz, img=img)
         cx += dx
         cy += dy
