@@ -65,3 +65,5 @@ html_theme_options = {
 }
 html_favicon = "_static/favicon.svg"
 html_static_path = ["_static"]
+
+html_extra_path = ["googlee20a25095441ea75.html"]
