@@ -165,15 +165,16 @@ legacy Tractor on one core of the same node, K=1.
 | card, depth | `linear` | `eigfloor` | `eigfloor_prior` | `lasso` | CPU one core |
 |---|---:|---:|---:|---:|---:|
 | H100, full depth | 119 @M=6 (8.4 ms) | 71.5 @M=8 (14.0 ms) | 58.0 @M=8 (17.2) | 54.9 @M=8 (18.2) | 4.25 s |
-| H100, `m_z<21` | 317 @M=8 (3.2 ms) | 282 @M=8 (3.5 ms) | 268 @M=8 (3.7) | 113 @M=6 (8.8) | 0.70 s |
+| H100, `m_z<21` | 387 @M=12 (2.6 ms) | 301 @M=10 (3.3 ms) | 310 @M=12 (3.2) | 113 @M=6 (8.8) | 0.70 s |
 | L40S, full depth | 68.8 @M=8 (14.5 ms) | 43.7 @M=8 (22.9 ms) | 33.3 @M=6 (30.0) | 33.1 @M=6 (30.2) | 4.83 s |
 | L40S, `m_z<21` | 319 @M=16 (3.1 ms) | 331 @M=16 (3.0 ms) | 158 @M=8 (6.3) | 119 @M=8 (8.4) | 0.78 s |
 
 One-core equivalents (card rate over the same node's one-core rate): H100
-full depth `linear` 507, `eigfloor` 304, `m_z<21` 222 / 197; L40S 332 / 211
-and 250 / 260. At `m_z<21` both cards are still host-stream-bound at the
-largest M run (H100: 16-core allocation; L40S: efficiency 0.4 at M=16), so
-those rows are lower bounds on the card. The H100 rows are the paper's
+full depth `linear` 507, `eigfloor` 304, `m_z<21` 271 / 210; L40S 332 / 211
+and 250 / 260. At `m_z<21` the H100 plateaus near 300–390 cutouts/s for
+M = 10–16 (16 workers on the partition's 16-CPU-per-job cap; rows noisy
+above M=10) and the L40S is still host-stream-bound at M=16 (efficiency 0.4),
+so the L40S row is a lower bound on that card. The H100 rows are the paper's
 (`manuscript/macros.tex`, provenance there); the earlier table at the top of
 this file is the paper's previous protocol (full grid, legacy host, M=3).
 
