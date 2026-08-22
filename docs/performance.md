@@ -1,114 +1,117 @@
 # Performance and hardware
 
-Measured numbers from a production SPHEREx run, and what they imply for sizing
-your own hardware. All figures are from the pinned "F3" benchmark (2026-07-17)
-on **1× NVIDIA L40S** with a 56-core host; the workload is 100×100 pixel cutouts
-at full catalog depth (~3700 sources per cutout), tile 15 / halo 3,
-`pad_bucket=32`, float32.
+Measured numbers from the SPHEREx production configuration (tiled driver, tile
+15 / halo 3, `pad_bucket=32`, float32, full-catalog depth: ~3,700 fitted
+sources per 100×100-pixel cutout, 49 tiles of 21×21 pixels), and what they
+imply for sizing hardware. Two protocols appear below; do not mix them:
 
-## Against the legacy CPU Tractor
+* **service** — wall time per completed cutout per card, host read +
+  construction + record extraction included, measured as one single-worker
+  pass plus `M` co-scheduled worker processes on one card;
+* **GPU solve** — the jitted vmapped solve alone (template rendering +
+  normal equations + factorization) on prebuilt inputs, warm, per cutout.
 
-The reference is the legacy pipeline as deployed — plain forced photometry, one
-pinned core, float64: **10.77 s per cutout**.
+## Service rates (2026-08, production configuration)
 
-| solver | serial ms/cutout | GPU solve | pipelined | 1 GPU ≈ N legacy cores |
-|---|---|---|---|---|
-| `linear` | 101.9 | 41.5 | **55.1** | **195** |
-| `lasso` | 114.2 | 53.6 | **75.8** | **142** |
-| `eigfloor` | 190.0 | 130.0 | **154.6** | **70** |
-| `eigfloor_prior` | 200.8 | 130.2 | **171.2** | **63** |
+| card | estimator | single worker | `M=3` on one card | 
+|---|---|---:|---:|
+| NVIDIA H100 80 GB | `linear` | 13.6 cutouts/s (74 ms) | 31.5 cutouts/s (31.7 ms) |
+| NVIDIA H100 80 GB | `eigfloor` | 14.0 (72 ms) | 29.1 (34.4 ms) |
+| NVIDIA H100 80 GB | `eigfloor_prior` | 11.8 (85 ms) | 22.7 (44.1 ms) |
+| NVIDIA H100 80 GB | `lasso` | 13.3 (75 ms) | 23.1 (43.3 ms) |
+| NVIDIA L40S | `linear` | 12.3 (81 ms) | 19.9 (50.3 ms) |
+| NVIDIA L40S | `eigfloor` | 6.2 (162 ms) | 6.8 (146 ms) |
 
-The `linear` row is the strict same-problem comparison: identical estimator on
-both engines. The other rows compare *our production estimators* against that
-deployed baseline, so they are conservative — a same-estimator CPU
-implementation would be slower than the plain solve, raising those numbers.
+A single worker is **host-bound** on either card (the host stage is ~55 ms of
+the 74 ms: FITS read, background, catalog projection, batch construction,
+record extraction); `M=3` is the operated point, not the card's limit (the
+H100 sweep reaches 31.3 cutouts/s at `M=5`). Against the tiled legacy Tractor
+on one CPU core (4.2–4.8 s per cutout at the same configuration) one H100
+keeps pace with about 130 cores at full depth — a throughput equivalence,
+not a latency speedup, and a full-depth statement: at the `m_z<21` science
+depth the CPU path falls 6.1× while the card falls only 2.0–2.4×, so the
+card/core ratio is about three times smaller there.
 
-At the node level, on the same 96 cutouts: **1 GPU = 9.95 cutouts/s** versus a
-legacy CPU pool at 1.58 (24 processes) or 2.06 (48 processes; the 56-core node
-saturates) — **6.3× / 4.9× per node**, before the pipelining gain above. One-time
-compilation is ~133 s of per-shape traces, or ~12 s with fixed caps.
+## Where the GPU time goes, and the rendering options
 
-## Multi-GPU
+On the L40S the `linear` GPU solve of a full-depth cutout is 44.5 ms, of which
+**39 ms (88%) is template rendering**: every source drawn on the full padded
+160×160 high-res tile grid by an inverse FFT, both PSF branches evaluated and
+selected with `jnp.where`, the stamps materialized (~3 GB transient per
+cutout). Batching tiles of several cutouts into one launch changes nothing
+(≤ 1%); the kernels are already bandwidth-bound.
 
-Cutout-parallel work scales essentially linearly: **2× L40S = 26.19 vs 13.17
-cutouts/s, 99.4% scaling efficiency**. Independent images are independent solves,
-so there is nothing to synchronize (see {doc}`architecture`).
+Two opt-in options (2026-08-22) attack that directly; the defaults are the
+historical path, bit for bit.
 
-Running **two processes on one card** (memory fraction 0.4) is solver-dependent
-and not a general win: **+16% for `lasso`** (it fills read/host-sync idle gaps)
-but only **+2% for `linear`** — the dense solve already saturates the card — and
-**0% for the eigfloor family**, whose host-synchronous `eigh` serializes the GPU.
+| option | where | effect (L40S, per cutout, `linear`) |
+|---|---|---|
+| `psf_type="fft"` (solver kwarg) | trace only the pixelized-PSF branch instead of both | full depth 44.5 → 33.0 ms; `m_z<21` 12.1 → 9.1 ms |
+| `render_stamp=80` (`build_padded_batches`) + `render_mode="auto"` | point sources and compact galaxies on an 80×80 high-res stamp, large galaxies on the full grid | render 39 → 12 ms, solve **44.5 → 16.4 ms** at full depth; **12.1 → 4.4 ms** at `m_z<21` |
 
-## What each knob buys
+`S=80` is the recommended stamp (`S=60` loses on large-galaxy fallbacks,
+`S=100` on per-source work). The stamp path is numerically equivalent to the
+full grid, not bit-identical: templates agree to ~2e-6 of the peak inside the
+weighted image on real cutouts, and the resulting fluxes move by 40–140× less
+than float32 arithmetic itself moves them (median), with the same tails; it
+differs by construction only in the zero-weight padding, where the full grid's
+periodic wrap parks light from sources near the low tile edge. See
+`tests/test_render_stamp.py` and the CHANGELOG for the contract.
 
-| change | effect |
-|---|---|
-| `pad_bucket=32` vs fixed caps | removes padded-width inflation of the host-synchronous solves; products bit-identical |
-| halo 3 (from a wider halo) | GPU solve 1.6× faster (68.7→41.4 ms linear, 186→130 eigfloor) |
-| `prefetch="thread"` vs sync | 1.29–1.40× end to end; recovers 63–66% of the ideal overlap window |
-| float64 vs float32 | ~3.5× slower end to end on the L40S (its FP64 rate is 1/64 of FP32) |
-| `eigfloor_prior` vs `eigfloor` | GPU solve identical (130.2 vs 130.0 ms) — the prior terms are free; the +11% is CPU-side prior evaluation |
-| tile-chunked `vmap` | **rejected** — up to 2× slower and cancels the prefetch gain; solve whole images in one `vmap` |
+The `eigfloor` family is additionally bound by cuSOLVER's symmetric
+eigensolver on L40S-class cards (~95 ms per cutout at full depth, ~45 ms at
+`m_z<21`, host-synchronous), which neither option touches; on the H100 that
+term is ~10 ms. A batched Jacobi eigensolver is the open engine item there.
 
-Note the shape of these results: after the solve itself is fast, the wins come
-from *not recompiling* and from *keeping the host off the critical path*.
+## Multi-GPU and co-scheduling
+
+Cutout-parallel work scales linearly across cards (two L40S: 99.9–100.6% at
+`M=3`). Co-scheduling several worker processes on one card fills the host
+gaps: `linear` +38%, `lasso` +22%, `eigfloor_prior` +22%, `eigfloor` +9% at
+`M=3` on the L40S; on the H100 the `M` sweep is 13.3 / 25.2 / 30.9 / 31.2 /
+31.3 / 31.3 cutouts/s for `M=1…6`.
 
 ## Choosing hardware
 
 **GPU memory** is set by the batch: the dense solve is $O(p^2)$ in stored
-matrices and $O(p^3)$ in work for $p$ free fluxes per view.
-{func}`~tractor_jax.jax.batching.estimate_solve_bytes_per_view` gives a per-view
-estimate, and `autotune_batch_size` finds the throughput knee empirically. If you
-share a card, cap the pool: JAX otherwise preallocates most of it.
+matrices and $O(p^3)$ in work for $p$ free fluxes per view, and the full-grid
+renderer materializes one high-res stamp per source (`render_stamp` removes
+most of that). `estimate_solve_bytes_per_view` gives a per-view estimate and
+`autotune_batch_size` finds the throughput knee empirically. If you share a
+card, cap the pool: JAX otherwise preallocates most of it.
 
 ```bash
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.45
 ```
 
-**Precision.** float32 is the production default, and it is validated rather
-than merely tolerated: on an independent image simulation the fp32 production
-config recovers bright fluxes to +0.1% with calibrated errors (pull σ 1.00 for
-`linear`, 0.92 for `eigfloor`). Note that TF32 is on in every fp32 number here —
-it is the JAX GPU default and buys ~2.1× on the normal-equations GEMM at
-~1.5×10⁻⁴ relative error on $A^\top A$; the accuracy validation ran that same
-path. (Cores-equivalent figures therefore assume an Ampere-or-later card.)
-
-What float64 actually buys is **exactness under padding and batching**: pad/batch
-invariance is ~10⁻¹¹ in x64 versus percent-level deviations in fp32 on faint,
-near-null-space fluxes. Use it when you need bit-reproducible products across
-tiling choices, or for faint work in crowded groups where a stronger regularizer
-(`eigfloor`) is the other half of the answer. Budget ~2.5× end-to-end (~3.5× on
-the serial solve path) on an L40S, whose FP64 rate is 1/64 of FP32; an
-A100/H100-class card largely removes that penalty.
+**Precision.** float32 (with TF32 GEMMs, the JAX GPU default) is the
+production default for the regularized estimators and is validated against
+simulation truth (pull σ 1.003 / 1.001 for the plain solve in the whole-cutout
+and tiled geometries). It is **not** licensed for the unregularized `linear`
+solve at full catalog depth, where fp32 departs from fp64 by more than the
+target flux (5.1 mJy on a 3.5 mJy source) while the eigenvalue-floored solve
+stays within 8e-3 mJy. float64 costs ~1.7× on the H100 and ~3.5× on the L40S
+(its FP64 rate is 1/64 of FP32).
 
 ## CPU is not a fallback
 
-Running the same code with `JAX_PLATFORMS=cpu` is **not** a slower-but-usable
-mode — it is slower than the legacy CPU Tractor:
-
-| configuration | s/cutout | vs legacy |
-|---|---|---|
-| tractor-jax, 1 CPU core | 34 | 3.2× **slower** than legacy 1 core |
-| tractor-jax, 24 CPU cores | 7.8–9.0 | ~12× slower than legacy 24-proc |
-| tractor-jax, full 56-core node | 6.3 | ≈ 1.7 legacy cores |
-
-The speed of this engine is a **GPU + batching co-design**, not "JAX being fast".
-XLA-CPU threading recovers only 4.4–5.4× across the whole node, and the workload
-is render/GEMM-bound rather than solver-bound (the numbers barely move between
-solvers). On CPU-only hardware, use the legacy Tractor.
-
-CPU execution is still the right choice for **development and testing** — the
-test suite and the {doc}`worked_example` run on CPU in a couple of minutes.
+Running the same code with `JAX_PLATFORMS=cpu` is slower than the legacy CPU
+Tractor (34 s per cutout on one core against 4.9 s): the dense, padded,
+full-grid formulation does roughly 7× more arithmetic than the sparse
+compact-stamp legacy path, and only the GPU pays for that cheaply. Use CPU
+execution for development and the test suite (a couple of minutes), the
+legacy Tractor for CPU-only production.
 
 ## Reproducing
 
 The benchmark harness lives in the analysis project that drives this engine
-(`analysis/run_paper_bench_final.sh`, `analysis/bench_multigpu_point.py`), not in
-this repository. Two measurement cautions carried over from that work:
+(`analysis/bench_multigpu_point.py`, `analysis/bench_batch_across_cutouts.py`,
+`analysis/run_depth_service_bench.sh`, `analysis/run_render_host_e2e_bench.sh`
+in `proj-spherex-gpupipe`), not in this repository. Two measurement cautions:
 
-- **Warm up before timing.** A two-point wall-clock fit is invalid with
-  `pad_bucket`: later cutouts introduce new padded shapes, and the mid-run
-  recompiles inflate the difference by ~2.5×. Time a steady state after warmup.
-- **Compilation is not throughput.** Report the one-time trace cost separately
-  from the per-item steady state.
+- **Warm up before timing.** With `pad_bucket`, later cutouts introduce new
+  padded shapes and the mid-run recompiles inflate a two-point wall-clock fit
+  by ~2.5×. Time a steady state after a full warm-up pass.
+- **Compilation is not throughput.** Report the one-time trace cost (~25–40 s
+  per shape family) separately from the per-item steady state.
