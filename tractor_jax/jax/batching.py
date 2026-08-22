@@ -1356,31 +1356,31 @@ def build_padded_batches(
     }
     if stamp_stack is not None:
         psf_dict["fft_stamp"] = stamp_stack
-    images_data = {
-        "data": jnp.asarray(d_pad),
-        "invvar": jnp.asarray(iv_pad),
-        "psf": psf_dict,
-    }
+    # Host arrays are gathered into one pytree and moved to the device in ONE
+    # device_put below (the same canonicalization jnp.asarray applies, one
+    # transfer call instead of ~15 -- the per-call Python overhead was ~2 ms
+    # per cutout on the build stage's critical path).
+    host_images = {"data": d_pad, "invvar": iv_pad}
 
     batches = {}
     if max_ps > 0:
         batches["PointSource"] = {
-            "flux_idx": jnp.asarray(ps_fidx),
-            "pos_pix": jnp.asarray(ps_pos),
-            "mask": jnp.asarray(ps_mask),
+            "flux_idx": ps_fidx,
+            "pos_pix": ps_pos,
+            "mask": ps_mask,
         }
     n_large_max = 0
     if max_gal > 0:
         batches["Galaxy"] = {
-            "flux_idx": jnp.asarray(gal_fidx),
-            "pos_pix": jnp.asarray(gal_pos),
-            "wcs_cd_inv": jnp.asarray(gal_cd),
-            "shapes": jnp.asarray(gal_shape),
-            "mask": jnp.asarray(gal_mask),
+            "flux_idx": gal_fidx,
+            "pos_pix": gal_pos,
+            "wcs_cd_inv": gal_cd,
+            "shapes": gal_shape,
+            "mask": gal_mask,
             "profile": {
-                "amp": jnp.asarray(gal_amp),
-                "mean": jnp.asarray(gal_mean),
-                "var": jnp.asarray(gal_var),
+                "amp": gal_amp,
+                "mean": gal_mean,
+                "var": gal_var,
             },
         }
         if stamp_meta is not None:
@@ -1419,14 +1419,20 @@ def build_padded_batches(
                 if rows:
                     large_idx[vi, :len(rows)] = rows
                     large_mask[vi, :len(rows)] = 1.0
-            batches["Galaxy"]["stamp_mask"] = jnp.asarray(stamp_mask)
-            batches["Galaxy"]["large_idx"] = jnp.asarray(large_idx)
-            batches["Galaxy"]["large_mask"] = jnp.asarray(large_mask)
+            batches["Galaxy"]["stamp_mask"] = stamp_mask
+            batches["Galaxy"]["large_idx"] = large_idx
+            batches["Galaxy"]["large_mask"] = large_mask
     if fit_background:
-        batches["Background"] = {"flux_idx": jnp.asarray([bg_idx],
-                                                         dtype=jnp.int32)}
+        batches["Background"] = {"flux_idx": np.asarray([bg_idx], dtype=np.int32)}
 
-    initial_fluxes = jnp.asarray(init_flux, dtype=dtype)
+    # One transfer for every host array (dtype canonicalization as jnp.asarray)
+    host_images, batches, initial_fluxes = jax.device_put(
+        (host_images, batches, np.asarray(init_flux, dtype=dtype)))
+    images_data = {
+        "data": host_images["data"],
+        "invvar": host_images["invvar"],
+        "psf": psf_dict,
+    }
 
     meta = {"max_ps": max_ps, "max_gal": max_gal, "max_mog_k": max_mog_k,
             "n_flux": n_flux, "bg_idx": bg_idx,
