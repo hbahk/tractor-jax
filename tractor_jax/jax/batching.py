@@ -573,6 +573,36 @@ def _even_parity_message(ph, pw, target_sampling):
     )
 
 
+# Per-process memo of the enclosed-flux radii: the Sersic mixtures are looked
+# up by sersic index and the kernels are shared objects in the drivers, and the
+# bisection per distinct profile per call (~100 profiles x 60 steps of numpy
+# scalars) cost ~40 ms per cutout before this cache.
+_ENCLOSED_RADIUS_CACHE = {}
+
+
+def _mog_enclosed_radius_cached(key, amp, var, frac):
+    k = ("mog", key, round(float(frac), 12))
+    hit = _ENCLOSED_RADIUS_CACHE.get(k)
+    if hit is None:
+        hit = _mog_enclosed_radius(amp, var, frac)
+        _ENCLOSED_RADIUS_CACHE[k] = hit
+    return hit
+
+
+def _kernel_enclosed_radius_cached(psf_img, frac):
+    arr = np.asarray(psf_img)
+    # identity + a content fingerprint: an id reused by a different kernel of
+    # the same shape and peak would only move the compact/large split, which
+    # is a conservative extent estimate, never the rendering itself
+    cy, cx = np.unravel_index(int(np.argmax(arr)), arr.shape)
+    k = ("kern", id(psf_img), arr.shape, float(arr[cy, cx]), round(float(frac), 12))
+    hit = _ENCLOSED_RADIUS_CACHE.get(k)
+    if hit is None:
+        hit = _kernel_enclosed_radius(arr, frac)
+        _ENCLOSED_RADIUS_CACHE[k] = hit
+    return hit
+
+
 def _mog_enclosed_radius(amp, var, frac, r_max=200.0, n_iter=60):
     """Radius (in the mixture's own length unit) enclosing ``frac`` of the
     flux of a circular mixture of Gaussians ``sum_k amp_k N(0, var_k I)``.
@@ -1301,7 +1331,7 @@ def build_padded_batches(
                 if id(kern) in kern_ids:
                     continue
                 kern_ids.add(id(kern))
-                psf_r_hr = max(psf_r_hr, ratio * _kernel_enclosed_radius(
+                psf_r_hr = max(psf_r_hr, ratio * _kernel_enclosed_radius_cached(
                     kern, stamp_flux_frac))
         stamp_meta = {"S": S, "k": k_hr, "psf_r_hr": float(psf_r_hr)}
 
@@ -1358,8 +1388,10 @@ def build_padded_batches(
                 cd_norm = float(np.linalg.norm(
                     np.asarray(cd_inv, dtype=np.float64), 2))
                 r_prof = np.asarray([
-                    _mog_enclosed_radius(p.amp, p.var, stamp_flux_frac)
-                    for p in uniq_profs], dtype=np.float64)     # units of r_e
+                    _mog_enclosed_radius_cached(round(float(s), 9), p.amp, p.var,
+                                                stamp_flux_frac)
+                    for s, p in zip(uniq_sersic, uniq_profs)],
+                    dtype=np.float64)                           # units of r_e
                 re_deg = np.maximum(1.0 / 30.0, shape_r_arr[gal_ci]) / 3600.0
                 r_gal_native = r_prof[gal_prof_inv] * re_deg * cd_norm
                 radius_hr = (r_gal_native * k_hr + stamp_meta["psf_r_hr"] + 1.0)
