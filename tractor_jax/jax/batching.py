@@ -1166,11 +1166,19 @@ def build_padded_batches(
     # K=9 at a 255x131 rfft grid: 33.0 ms unshifted, 33.9 ms with one shared
     # psf_shift, 36.2 ms with a per-zone table — against 83.3 ms when the
     # multiply is redone per view).
-    basis_fft_cache = {}
-    ramp_cache = {}
+    # The ramped / blended basis transforms depend on the basis object, the
+    # shift table and the grid -- not on a view's weights -- so when the caller
+    # hands over a cross-call cache they live there too (namespaced keys, next
+    # to the per-kernel transforms): a driver that keeps one kernel list per
+    # detector then pays the K stacks, ramps and multiplies once per detector
+    # instead of once per cutout (~100 eager dispatches per cutout otherwise).
+    # Same contract as the per-kernel cache: the caller keeps the basis and
+    # shift-table objects alive for the cache's lifetime.
+    basis_fft_cache = psf_fft_cache if psf_fft_cache is not None else {}
+    ramp_cache = psf_fft_cache if psf_fft_cache is not None else {}
 
     def _ramp(shift_hr, dtype, th=target_h, tw=target_w):
-        key = (_shift_key(shift_hr), np.dtype(dtype).str, th, tw)
+        key = ("ramp", _shift_key(shift_hr), np.dtype(dtype).str, th, tw)
         hit = ramp_cache.get(key)
         if hit is None:
             hit = jnp.asarray(
@@ -1208,14 +1216,17 @@ def build_padded_batches(
         ``(dy, dx)``. ``(th, tw)`` selects the transform grid (the padded
         tile grid by default, the compact stamp grid for ``render_stamp``).
         """
-        key = (id(basis), shift_keys, th, tw)
+        key = ("basis", id(basis), shift_keys, th, tw,
+               round(target_sampling, 9), round(psf_sampling, 9), even_parity)
         hit = basis_fft_cache.get(key)
         if hit is not None:
             return hit
-        base = basis_fft_cache.get((id(basis), None, th, tw))
+        base_key = ("basis", id(basis), None, th, tw,
+                    round(target_sampling, 9), round(psf_sampling, 9), even_parity)
+        base = basis_fft_cache.get(base_key)
         if base is None:
             base = jnp.stack([_fft_for(k, th=th, tw=tw) for k in basis])
-            basis_fft_cache[(id(basis), None, th, tw)] = base
+            basis_fft_cache[base_key] = base
         if shift_keys is None:
             hit = base
         elif len(shift_keys) == 1:
