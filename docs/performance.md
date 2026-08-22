@@ -71,8 +71,14 @@ takes the solve from 49 to 39 ms per cutout (4 threads), one worker from 14.9
 to 20.0 cutouts/s and three co-scheduled workers from 20.7 to 54.0 cutouts/s,
 because each stream's eigh now runs on its own host threads; at full depth
 (334×334 Grams) it loses (141 vs 111 ms; 5.8 vs 7.8 cutouts/s on a
-loaded host) and on an H100 it is not worth its threads. A batched GPU
-Jacobi eigensolver remains the open engine item for full depth.
+loaded host) and on an H100 it is not worth its threads. At full depth the
+driver-side lever is *per-tile size bucketing* (the SPHEREx driver's
+`TILE_SIZE_BUCKETS=3`): tiles are grouped by live-source count and each
+group is built and solved as its own bundle padded to its own maxima, so
+the 150-source tiles stop paying the 385-wide eigendecomposition of the
+330-source ones — 40% off the eigfloor GPU solve per cutout at the float32
+level, with three fixed shapes per cutout. A batched GPU Jacobi eigensolver
+remains the open engine item for the rest.
 
 ## Multi-GPU and co-scheduling
 
