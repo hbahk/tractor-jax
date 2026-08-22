@@ -2170,12 +2170,11 @@ def _host_eigh_numpy(a, nthreads):
     pool, not the library, provides the parallelism."""
     import numpy as _np
     from concurrent.futures import ThreadPoolExecutor
-    try:                      # scipy's syevd keeps fp32 in fp32: ~1.4-1.6x
-        from scipy.linalg import eigh as _sp_eigh    # faster than numpy's
-        def _eigh1(m):
-            return _sp_eigh(m, driver="evd", check_finite=False)
-    except Exception:         # pragma: no cover
-        _eigh1 = _np.linalg.eigh
+    # numpy's eigh gufunc releases the GIL, so the pool really runs the 49
+    # matrices in parallel (49x102^2: 47 ms serial -> 15 ms on 4 threads).
+    # scipy.linalg.eigh(driver="evd") is faster serially (35 ms) but holds
+    # the GIL and stays at 35 ms for any pool size; do not switch to it.
+    _eigh1 = _np.linalg.eigh
     a = _np.asarray(a)
     dt = a.dtype
     if a.ndim == 2:
