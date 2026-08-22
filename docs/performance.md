@@ -146,6 +146,14 @@ and the driver's bucketing unnecessary (they remain as opt-ins for old
 stacks). One gotcha: an `LD_LIBRARY_PATH` that points at an older CUDA
 (`/usr/local/cuda/lib64`) makes the 0.11 CUDA plugin fail to load cuSPARSE
 and fall back to CPU silently; clear it or fix it in the env's activate.d.
+End to end on the L40S (production env cloned with only jax upgraded, same
+CUDA libraries, stamp 80): eigfloor GPU solve per cutout 49.9 → 5.5 ms at
+`m_z<21` and 123 → 32 ms at full depth; card rates `M`=1/3 12.4/15.6 →
+48.7/125.9 cutouts/s and 6.4/7.9 → 23.1/32.6. The one regression is the
+stamp render itself, 25–37% slower under the newer XLA (3.3 → 4.2 ms at
+`m_z<21`, 12.4 → 17.0 at full depth; no XLA flag recovers it), which costs
+the render-bound `linear` family 15–26% — bisect across jax 0.6–0.10 is the
+open item.
 
 ## Choosing hardware
 
