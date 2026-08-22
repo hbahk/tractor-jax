@@ -28,6 +28,30 @@ public API may still change between minor releases.
   solvers with the default kwargs are unchanged (`tests/test_render_stamp.py`
   pins both the agreement and the bit-identity of the default path).
   `batches_in_axes` includes the optional Galaxy keys when present.
+- **Host eigensolver for the eigfloor family (opt-in).** `solve_fluxes_eigfloor`
+  and `solve_fluxes_eigfloor_prior` take `eig_method` (`"cusolver"`, the
+  default, is the historical `jnp.linalg.eigh`; `"host"`) and
+  `eig_host_threads`. `"host"` ships the batch of Jacobi-normalized Grams to
+  the host through `jax.pure_callback` (`vmap_method="expand_dims"`: one
+  callback per vmapped solve) and diagonalizes them with numpy's LAPACK
+  (`ssyevd`, releases the GIL) on a thread pool, one matrix per task; pin
+  BLAS to one thread (`OPENBLAS/OMP/MKL_NUM_THREADS=1`) so the pool, not
+  the library, provides the parallelism. Motivation: on L40S-class cards
+  cuSOLVER's per-matrix `syevd` is host-synchronous and dominates the
+  eigfloor solve (~45 of 49 ms per 49-tile cutout at `m_z<21`, ~95 of 111 ms
+  at full depth with the stamp renderer), identically on every co-scheduled
+  worker. Measured on one L40S: solve per cutout 49 → 39 ms at `m_z<21`
+  (4 threads); card rate 14.9 → 20.0 cutouts/s with one worker and
+  20.7 → 54.0 with three; at full depth (334×334 Grams) it loses
+  (111 → 141 ms, 7.8 → 5.8 cutouts/s on a loaded host) and on an H100
+  (cuSOLVER ~10 ms per cutout) it is not worth its threads — keep the
+  default there. The host path is an fp32 eigensolver-level equivalent
+  (fluxes agree to 1e-3, floored inverse ~2e-4 relative), not bit-identical;
+  the default path is unchanged (`tests/test_eig_method.py` pins array
+  equality). Evaluated and rejected on the way: the pure-JAX QDWH eigensolver
+  (`jax._src.lax.eigh`), 10–90× slower at these sizes and inaccurate at fp32
+  termination sizes; scipy's `eigh(driver="evd")`, faster serially but
+  GIL-bound in the pool.
 
 ### Changed
 

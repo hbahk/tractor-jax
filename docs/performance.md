@@ -59,9 +59,20 @@ periodic wrap parks light from sources near the low tile edge. See
 `tests/test_render_stamp.py` and the CHANGELOG for the contract.
 
 The `eigfloor` family is additionally bound by cuSOLVER's symmetric
-eigensolver on L40S-class cards (~95 ms per cutout at full depth, ~45 ms at
-`m_z<21`, host-synchronous), which neither option touches; on the H100 that
-term is ~10 ms. A batched Jacobi eigensolver is the open engine item there.
+eigensolver on L40S-class cards (~45 of the 49 ms solve per cutout at
+`m_z<21`, ~95 of 111 ms at full depth with the stamp; host-synchronous and
+per-matrix, so co-scheduled workers queue on it), which neither rendering
+option touches; on the H100 that term is ~10 ms. The opt-in
+`eig_method="host"` (solver kwarg, 2026-08-22) runs that eigendecomposition
+on host LAPACK instead — numpy `ssyevd` on `eig_host_threads` threads through
+`jax.pure_callback`, BLAS pinned to one thread — and is an fp32
+eigensolver-level equivalent, not bit-identical. On one L40S at `m_z<21` it
+takes the solve from 49 to 39 ms per cutout (4 threads), one worker from 14.9
+to 20.0 cutouts/s and three co-scheduled workers from 20.7 to 54.0 cutouts/s,
+because each stream's eigh now runs on its own host threads; at full depth
+(334×334 Grams) it loses (141 vs 111 ms; 5.8 vs 7.8 cutouts/s on a
+loaded host) and on an H100 it is not worth its threads. A batched GPU
+Jacobi eigensolver remains the open engine item for full depth.
 
 ## Multi-GPU and co-scheduling
 
