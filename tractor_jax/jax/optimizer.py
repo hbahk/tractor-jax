@@ -2159,9 +2159,63 @@ def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=Fa
     return optimized_fluxes
 
 
+_EIG_METHODS = ("cusolver", "host")
+_HOST_EIGH_POOLS = {}
+
+
+def _host_eigh_numpy(a, nthreads):
+    """LAPACK eigh (numpy) on a batch of symmetric matrices, one thread-pool
+    task per matrix.  Ascending eigenvalues, like ``jnp.linalg.eigh``.  Keep
+    the BLAS itself single-threaded (OPENBLAS/OMP/MKL_NUM_THREADS=1) so the
+    pool, not the library, provides the parallelism."""
+    import numpy as _np
+    from concurrent.futures import ThreadPoolExecutor
+    a = _np.asarray(a)
+    dt = a.dtype
+    if a.ndim == 2:
+        w, v = _np.linalg.eigh(a)
+        return w.astype(dt, copy=False), v.astype(dt, copy=False)
+    lead = a.shape[:-2]
+    flat = a.reshape((-1,) + a.shape[-2:])
+    nthreads = max(int(nthreads), 1)
+    pool = _HOST_EIGH_POOLS.get(nthreads)
+    if pool is None:
+        pool = _HOST_EIGH_POOLS[nthreads] = ThreadPoolExecutor(nthreads)
+    res = list(pool.map(lambda i: _np.linalg.eigh(flat[i]), range(flat.shape[0])))
+    w = _np.stack([r[0] for r in res]).astype(dt, copy=False).reshape(lead + (a.shape[-1],))
+    v = _np.stack([r[1] for r in res]).astype(dt, copy=False).reshape(a.shape)
+    return w, v
+
+
+def _eigh_dispatch(Ghat, eig_method="cusolver", eig_host_threads=4):
+    """Symmetric eigendecomposition of the (normalized) Gram for the floor.
+
+    ``"cusolver"`` (default) is ``jnp.linalg.eigh`` -- on GPU a per-matrix
+    cuSOLVER ``syevd`` with host synchronization, which on L40S-class cards
+    costs ~1 ms per 100x100 and ~2 ms per 330x330 matrix regardless of how
+    many are batched.  ``"host"`` ships the batch to the host through
+    ``jax.pure_callback`` and runs LAPACK on ``eig_host_threads`` threads
+    (one matrix per task): measured on one L40S with 49 matrices per cutout,
+    48 -> 16 ms at n=102 (4 threads) and 104 -> 86 ms at n=334 (8 threads);
+    on an H100 the cuSOLVER path is ~10 ms per cutout and the host path loses.
+    The two decompositions differ at the fp32 eigensolver level (floored
+    inverse ~2e-4 relative), not bit for bit.  Under ``vmap`` the callback
+    receives the whole batch at once (``vmap_method="expand_dims"``).
+    """
+    if eig_method not in _EIG_METHODS:
+        raise ValueError(f"eig_method must be one of {_EIG_METHODS}, got {eig_method!r}")
+    if eig_method == "cusolver":
+        return jnp.linalg.eigh(Ghat)      # ascending eigenvalues
+    w_shape = jax.ShapeDtypeStruct(Ghat.shape[:-1], Ghat.dtype)
+    v_shape = jax.ShapeDtypeStruct(Ghat.shape, Ghat.dtype)
+    return jax.pure_callback(partial(_host_eigh_numpy, nthreads=int(eig_host_threads)),
+                             (w_shape, v_shape), Ghat, vmap_method="expand_dims")
+
+
 def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
                           return_variances=False, sampling_factor=None,
-                          floor=1e-4, psf_type=None, render_mode="auto"):
+                          floor=1e-4, psf_type=None, render_mode="auto",
+                          eig_method="cusolver", eig_host_threads=4):
     """
     Direct linear solve with an eigenvalue floor on the Jacobi-normalized AtWA.
 
@@ -2257,7 +2311,7 @@ def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
             + jnp.diag((~live).astype(Ghat.dtype)))
     bhat = AtWd / D
 
-    evals, evecs = jnp.linalg.eigh(Ghat)      # ascending eigenvalues
+    evals, evecs = _eigh_dispatch(Ghat, eig_method, eig_host_threads)   # ascending
     emax = jnp.clip(evals[-1], 1e-30)
     evals_f = jnp.maximum(evals, floor * emax)
 
@@ -2274,7 +2328,8 @@ def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
 
 
 def _eigfloor_prior_core(AtWA, AtWd, lambda_diag, f_prior, floor=1e-4,
-                         return_variances=False):
+                         return_variances=False, eig_method="cusolver",
+                         eig_host_threads=4):
     """
     Ridge-toward-prior eigfloor solve on prebuilt normal equations.
 
@@ -2344,7 +2399,7 @@ def _eigfloor_prior_core(AtWA, AtWd, lambda_diag, f_prior, floor=1e-4,
         lam_hat + (~live).astype(Ghat_data.dtype))
     bhat = AtWd / D + lam_hat * (D * f_prior)
 
-    evals, evecs = jnp.linalg.eigh(Ghat)      # ascending eigenvalues
+    evals, evecs = _eigh_dispatch(Ghat, eig_method, eig_host_threads)   # ascending
     emax_data = jnp.clip(_power_iter_lmax(Ghat_data), 1e-30)
     evals_f = jnp.maximum(evals, floor * emax_data)
 
@@ -2363,7 +2418,8 @@ def _eigfloor_prior_core(AtWA, AtWd, lambda_diag, f_prior, floor=1e-4,
 def solve_fluxes_eigfloor_prior(initial_fluxes, image_data, batches,
                                 lambda_diag=None, f_prior=None,
                                 return_variances=False, sampling_factor=None,
-                                floor=1e-4, psf_type=None, render_mode="auto"):
+                                floor=1e-4, psf_type=None, render_mode="auto",
+                                eig_method="cusolver", eig_host_threads=4):
     """
     Eigfloor solve with per-source Gaussian flux priors (ridge-toward-prior).
 
@@ -2452,6 +2508,7 @@ def solve_fluxes_eigfloor_prior(initial_fluxes, image_data, batches,
     AtWd = Aw.T @ data_flat
 
     return _eigfloor_prior_core(AtWA, AtWd, lambda_diag, f_prior,
+                                eig_method=eig_method, eig_host_threads=eig_host_threads,
                                 floor=floor,
                                 return_variances=return_variances)
 
