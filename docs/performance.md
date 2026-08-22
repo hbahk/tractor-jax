@@ -134,6 +134,19 @@ reproduces (29.1). Neither `eig_method="host"` nor the driver's size
 bucketing pays on the H100 (39.0 / 111.7 and 25.3 / 31.7 against the rows
 above): both are remedies for cards whose per-matrix eigensolver is slow.
 
+**That slowness is a jax version, not the card.** On the same L40S,
+`jnp.linalg.eigh` on 49 matrices takes 49.0 / 106.8 / 124.3 ms (n = 102 /
+334 / 385) under jax 0.5.3 and **0.96 / 13.9 / 16.6 ms** under jax 0.11.1
+(cuSOLVER 11.7.5; 51× at n = 102, 7.5× at n = 385; same reconstruction
+error): jaxlib 0.5 ran a batched `eigh` one matrix at a time with
+`syevd` and a host sync each, the current jaxlib uses cuSOLVER's batched
+path. Upgrading jax removes the L40S eigfloor wall outright — eigfloor then
+costs about what linear costs at `m_z<21` — and makes `eig_method="host"`
+and the driver's bucketing unnecessary (they remain as opt-ins for old
+stacks). One gotcha: an `LD_LIBRARY_PATH` that points at an older CUDA
+(`/usr/local/cuda/lib64`) makes the 0.11 CUDA plugin fail to load cuSPARSE
+and fall back to CPU silently; clear it or fix it in the env's activate.d.
+
 ## Choosing hardware
 
 **GPU memory** is set by the batch: the dense solve is $O(p^2)$ in stored

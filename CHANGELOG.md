@@ -51,7 +51,12 @@ public API may still change between minor releases.
   equality). Evaluated and rejected on the way: the pure-JAX QDWH eigensolver
   (`jax._src.lax.eigh`), 10–90× slower at these sizes and inaccurate at fp32
   termination sizes; scipy's `eigh(driver="evd")`, faster serially but
-  GIL-bound in the pool.
+  GIL-bound in the pool. Found afterwards: the slow per-matrix eigensolver
+  is jaxlib 0.5's, not the card's — jax 0.11.1 on the same L40S runs the
+  batched `eigh` 51× faster at n = 102 (0.96 ms per 49 matrices) and 7.5×
+  at n = 385, so on a current jax the default path is the right one
+  everywhere and `"host"` is only a remedy for old stacks
+  (`docs/performance.md`).
 
 ### Changed
 
