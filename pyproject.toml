@@ -23,7 +23,10 @@ classifiers = [
 dependencies = [
     "numpy",
     "scipy",
-    "jax",
+    # >= 0.8.0: batched cuSOLVER syev for jnp.linalg.eigh (jax PR #31375, Oct
+    # 2025).  Older jax solves a batched eigh one matrix at a time on GPU and
+    # the eigfloor family runs 4-50x slower (docs/performance.md).
+    "jax>=0.8.0",
     "astropy",
     "photutils",
 ]

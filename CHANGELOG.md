@@ -60,6 +60,14 @@ public API may still change between minor releases.
 
 ### Changed
 
+- **Requires jax >= 0.8.0.** From that release `jnp.linalg.eigh` on NVIDIA
+  GPUs uses cuSOLVER's batched `syev` (jax issue #31368 / PR #31375); on
+  older jax a batched eigh ran one matrix at a time with a host sync each,
+  and the eigfloor family was 4–50× slower on L40S-class cards (49 ms
+  instead of 0.96 ms per 49 × 102² matrices; `docs/performance.md`). The
+  engine still runs on older jax — the pin is a performance contract, not
+  an API break — so relax it locally if you must, and expect eigfloor to be
+  eigh-bound there.
 - **Relicensed to GPL-2.0-only.** The Tractor is licensed under the GPLv2
   *without* an "or later" clause (its `COPYING` grants "version 2" only), so
   the 0.1.0 relicense to GPL-3.0-or-later was not permitted for this
