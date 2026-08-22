@@ -96,11 +96,13 @@ scheduler. And the per-stream rate is set by the host work per cutout, so the
 curve moves whenever that work moves: after the SPHEREx driver rebuilt its
 WCS from header values and this engine kept the ramped PSF-basis transforms
 in the caller-owned cache (`f443145`), one stream delivered 40.8 cutouts/s at
-`m_z<21` (25.1 before) and 31.3 at full depth (20.5), `M=3` 119 cutouts/s at
-`m_z<21` with the card a third occupied, `M=8` 262, and `M=4` 69 cutouts/s at
-full depth (GPU-bound). Fewer host streams, not bigger launches, is how the
-card gets filled: batching several cutouts into one launch changes the
-per-cutout GPU time by ≤ 7% even with the stamp.
+`m_z<21` (25.1 before) and 31.3 at full depth (20.5); after a third host round
+(dict headers, one `device_put` per bundle — `34bef60` — exact binned medians,
+cached catalog arrays) 50.0 and 38.0, with `M=3` 146 cutouts/s at `m_z<21` on
+three host cores, `M=8` 300, `M=16` 430 (card 94% occupied) and `M=6` 76
+cutouts/s at full depth (GPU-bound). Fewer host streams, not bigger launches,
+is how the card gets filled: batching several cutouts into one launch changes
+the per-cutout GPU time by ≤ 7% even with the stamp.
 
 ## Choosing hardware
 
