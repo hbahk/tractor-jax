@@ -69,7 +69,25 @@ Cutout-parallel work scales linearly across cards (two L40S: 99.9–100.6% at
 `M=3`). Co-scheduling several worker processes on one card fills the host
 gaps: `linear` +38%, `lasso` +22%, `eigfloor_prior` +22%, `eigfloor` +9% at
 `M=3` on the L40S; on the H100 the `M` sweep is 13.3 / 25.2 / 30.9 / 31.2 /
-31.3 / 31.3 cutouts/s for `M=1…6`.
+31.3 / 31.3 cutouts/s for `M=1…6` (full grid).
+
+With `render_stamp=80` the GPU solve is no longer what limits the card, and
+the operating `M` should follow the host cores available. Measured on one
+L40S with the driver's host fast paths (aggregate cutouts/s, card occupancy
+from `nvidia-smi`):
+
+| | M=1 | M=2 | M=3 | M=4 | M=6 | M=8 |
+|---|---:|---:|---:|---:|---:|---:|
+| `linear`, full depth | 20.5 (43%) | 34.6 | 44.2 | 52.3 | 49.4 | 53.7 (99%) |
+| `linear`, `m_z<21` | 25.1 (13%) | 48.0 | 67.7 | 90.0 | 124.6 | 146.6 (31%) |
+| `eigfloor`, full depth | 7.9 (97%) | 7.7 | 9.7 | 9.5 | 8.7 | 8.2 (100%) |
+
+The linear family saturates the card at full depth around `M=4` (~54
+cutouts/s, 2.5× the full-grid card rate) and at `m_z<21` is still scaling
+linearly with the number of host streams at `M=8` with the card 31% occupied;
+the eigfloor family reports 95–100% occupancy already at `M=1` and does not
+move with `M` — that is cuSOLVER's eigensolver, not the schedule. Memory is
+not the constraint with the stamp (0.9/M of the card per worker is ample).
 
 ## Choosing hardware
 
