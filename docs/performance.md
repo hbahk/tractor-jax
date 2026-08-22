@@ -157,15 +157,16 @@ open item.
 
 ## Service rates on the improved stack (2026-08-23)
 
-Stamp 80 + fft, host fast paths, jax 0.11; card driven to its throughput
-knee (cutouts/s, M co-scheduled workers; knee = smallest M within 5% of the
-sweep maximum; per-cutout service time in parentheses). CPU = the tiled
-legacy Tractor on one core of the same node, K=1.
+Stamp 80 + fft, host fast paths, jax 0.11; the card's best measured rate
+over a sweep in M (cutouts/s at that M; per-cutout service time in
+parentheses; the "knee" pick — smallest M within 5% of the maximum — differs
+by less than 5% by construction). CPU = the tiled legacy Tractor on one core
+of the same node, K=1.
 
 | card, depth | `linear` | `eigfloor` | `eigfloor_prior` | `lasso` | CPU one core |
 |---|---:|---:|---:|---:|---:|
-| H100, full depth | 119 @M=6 (8.4 ms) | 71.5 @M=8 (14.0 ms) | 58.0 @M=8 (17.2) | 54.9 @M=8 (18.2) | 4.25 s |
-| H100, `m_z<21` | 387 @M=12 (2.6 ms) | 301 @M=10 (3.3 ms) | 310 @M=12 (3.2) | 113 @M=6 (8.8) | 0.70 s |
+| H100, full depth | 121 @M=8 (8.3 ms) | 71.5 @M=8 (14.0 ms) | 58.0 @M=8 (17.2) | 54.9 @M=8 (18.2) | 4.25 s |
+| H100, `m_z<21` | 387 @M=12 (2.6 ms) | 314 @M=14 (3.2 ms) | 310 @M=12 (3.2) | 113 @M=6 (8.8) | 0.70 s |
 | L40S, full depth | 68.8 @M=8 (14.5 ms) | 43.7 @M=8 (22.9 ms) | 33.3 @M=6 (30.0) | 33.1 @M=6 (30.2) | 4.83 s |
 | L40S, `m_z<21` | 319 @M=16 (3.1 ms) | 331 @M=16 (3.0 ms) | 158 @M=8 (6.3) | 119 @M=8 (8.4) | 0.78 s |
 
