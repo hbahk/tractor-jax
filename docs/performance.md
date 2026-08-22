@@ -121,6 +121,19 @@ cutouts/s at full depth (GPU-bound). Fewer host streams, not bigger launches,
 is how the card gets filled: batching several cutouts into one launch changes
 the per-cutout GPU time by ≤ 7% even with the stamp.
 
+The same options on one **H100 80 GB** (jax 0.11, 2026-08-22, node CPU load
+52–77): GPU solve per cutout full grid → stamp 80 + fft, `linear` 21.0 → 9.3 ms
+at full depth and 6.4 → 2.9 ms at `m_z<21`, `eigfloor` 31.7 → 20.1 and 6.7 →
+3.1 ms — the eigendecomposition is ~11 ms per cutout at full depth and ~0.2 ms
+at `m_z<21` there, so eigfloor costs within 7% of linear at the science depth.
+Card rates with the stamp and the host fast paths (cutouts/s, `M`=1/3/6):
+`linear` full depth 42.5 / 89.7 / 111.4, `m_z<21` 55.2 / 162.9 / 292.7;
+`eigfloor` full depth 41.4 / 46.9 / 51.5 (GPU-bound by its eigh), `m_z<21`
+55.4 / 162.6 / 251.9; the paper-protocol `eigfloor` full-depth `M=3` row
+reproduces (29.1). Neither `eig_method="host"` nor the driver's size
+bucketing pays on the H100 (39.0 / 111.7 and 25.3 / 31.7 against the rows
+above): both are remedies for cards whose per-matrix eigensolver is slow.
+
 ## Choosing hardware
 
 **GPU memory** is set by the batch: the dense solve is $O(p^2)$ in stored
