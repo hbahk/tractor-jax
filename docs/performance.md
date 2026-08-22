@@ -89,6 +89,19 @@ the eigfloor family reports 95–100% occupancy already at `M=1` and does not
 move with `M` — that is cuSOLVER's eigensolver, not the schedule. Memory is
 not the constraint with the stamp (0.9/M of the card per worker is ample).
 
+Two caveats on reading such sweeps. `utilization.gpu` is the fraction of time
+*any* kernel is resident: many time-sliced contexts keep it near 100% while
+the SMs are far from busy, so it cannot tell a saturated card from a busy
+scheduler. And the per-stream rate is set by the host work per cutout, so the
+curve moves whenever that work moves: after the SPHEREx driver rebuilt its
+WCS from header values and this engine kept the ramped PSF-basis transforms
+in the caller-owned cache (`f443145`), one stream delivered 40.8 cutouts/s at
+`m_z<21` (25.1 before) and 31.3 at full depth (20.5), `M=3` 119 cutouts/s at
+`m_z<21` with the card a third occupied, `M=8` 262, and `M=4` 69 cutouts/s at
+full depth (GPU-bound). Fewer host streams, not bigger launches, is how the
+card gets filled: batching several cutouts into one launch changes the
+per-cutout GPU time by ≤ 7% even with the stamp.
+
 ## Choosing hardware
 
 **GPU memory** is set by the batch: the dense solve is $O(p^2)$ in stored
