@@ -1,0 +1,55 @@
+# Citation metadata for TractorJAX (Citation File Format 1.2.0).
+# Read by GitHub ("Cite this repository") and by Zenodo when a release is
+# archived through the GitHub integration.  Keep `version` in step with
+# tractor_jax/version.py and with the release tag; set `date-released` when
+# the release is cut.  A methods paper is in preparation: add a
+# `preferred-citation` block here once it has a DOI, so that citations of the
+# software resolve to the paper.
+cff-version: 1.2.0
+message: >-
+  If you use TractorJAX in your research, please cite it using the metadata
+  in this file.  A methods paper is in preparation and will be added as the
+  preferred citation when published.
+type: software
+title: TractorJAX
+abstract: >-
+  GPU-accelerated, JAX-based reimplementation of the catalog-forced
+  photometry mode of The Tractor.  Source positions and morphologies are
+  frozen at their reference-catalog values and the fluxes of every source in
+  a cutout are solved jointly in one weighted least-squares solve, with
+  optional eigenvalue-floor, external-prior (Gaussian) and L1 regularization
+  and per-source uncertainties validated against simulation truth.  Developed
+  for SPHEREx spectrophotometry.  TractorJAX is a derivative work of The
+  Tractor and is distributed under the same license.
+authors:
+  - family-names: Bahk
+    given-names: Hyeonguk
+    orcid: https://orcid.org/0009-0002-9878-1126
+    affiliation: >-
+      Astronomy Program, Department of Physics and Astronomy, Seoul National
+      University
+version: 0.1.0
+repository-code: https://github.com/hbahk/tractor-jax
+url: https://tractor-jax.readthedocs.io/
+license: GPL-2.0-only
+keywords:
+  - astronomy
+  - forced photometry
+  - deblending
+  - photometric redshifts
+  - SPHEREx
+  - JAX
+  - GPU
+references:
+  - type: software
+    title: "The Tractor: Probabilistic astronomical source detection and measurement"
+    authors:
+      - family-names: Lang
+        given-names: Dustin
+      - family-names: Hogg
+        given-names: David W.
+      - family-names: Mykytyn
+        given-names: David
+    year: 2016
+    repository-code: https://github.com/dstndstn/tractor
+    notes: "Astrophysics Source Code Library record ascl:1604.008; TractorJAX is a derivative work."
