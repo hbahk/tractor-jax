@@ -29,6 +29,7 @@ from tractor_jax.jax.rendering import (
     render_point_source_fft,
     downsample_image,
 )
+from tractor_jax.jax.rendering import rebin_downsample_int_flux
 from tractor_jax.jax.tiling import tile_image, project_catalog, filter_sources_by_box
 
 
@@ -1691,7 +1692,160 @@ def compute_fisher_diagonal(image_data, batches, n_flux):
     return fisher_diag
 
 
-def _render_source_templates(image_data, batches, n_flux, sampling_factor=None):
+_RENDER_MODES = ("auto", "full", "stamp")
+_PSF_TYPES = (None, "fft", "mog")
+
+
+def _integer_hr_factor(H, W, H_hr, W_hr, s, sampling_factor):
+    """The integer high-res -> native factor the compact (stamp) renderer
+    needs, or ``None`` when the geometry does not map at one integer factor.
+
+    The stamp path block-integrates high-res pixels into native ones, so it
+    requires ``valid = native * k`` on both axes with integer ``k`` (the
+    production geometry: ``target = padded_native * sampling``). Any other
+    geometry (non-integer factors, ``sampling_factor=None`` legacy paths)
+    falls back to the full-grid renderer.
+    """
+    # ``s`` may be a traced per-image value (psf_data['sampling']) when no
+    # explicit sampling_factor is passed; only Python numbers are used here.
+    if sampling_factor is not None:
+        sf = float(sampling_factor)
+        if not (sf > 1.001):
+            return None
+        k = int(round(sf))
+        if abs(sf - k) > 1e-9:
+            return None
+    else:
+        # The full-grid path then maps the WHOLE high-res grid onto the
+        # native image (downsampling by H_hr / H), so the factor is the
+        # grid ratio itself and must be the same integer on both axes.
+        if H_hr % H or W_hr % W:
+            return None
+        k = H_hr // H
+        if k < 1 or k != W_hr // W:
+            return None
+    valid_H, valid_W = _valid_hr_extent(H, W, H_hr, W_hr, s, sampling_factor)
+    if valid_H != H * k or valid_W != W * k:
+        return None
+    return k
+
+
+def _valid_hr_extent(H, W, H_hr, W_hr, s, sampling_factor):
+    """The part of the high-res grid the full-grid path maps onto the native
+    image: ``round(native * sampling_factor)`` (clipped) when an explicit
+    factor is passed, the whole grid otherwise — the same rule the full-grid
+    renderers apply, so the stamp path scales positions exactly as they do.
+    (``s`` is accepted for signature symmetry; it may be a traced value and is
+    not used.)"""
+    if sampling_factor is not None and float(sampling_factor) > 1.001:
+        sf = float(sampling_factor)
+        return (min(int(round(H * sf)), H_hr), min(int(round(W * sf)), W_hr))
+    return H_hr, W_hr
+
+
+def _place_native_stamp(stamp, n0y, n0x, H, W):
+    """Place an ``(Sn, Sn)`` native-resolution stamp whose lower-left pixel
+    is native ``(n0y, n0x)`` into a zero ``(H, W)`` image, clipping at the
+    image edges (a canvas with an ``Sn`` margin on every side makes the
+    dynamic slice always in range, so nothing is silently clamped)."""
+    Sn = stamp.shape[0]
+    canvas = jnp.zeros((H + 2 * Sn, W + 2 * Sn), stamp.dtype)
+    canvas = jax.lax.dynamic_update_slice(canvas, stamp, (n0y + Sn, n0x + Sn))
+    return canvas[Sn:Sn + H, Sn:Sn + W]
+
+
+def _compact_hr_to_native(hr, h0y, h0x, k, H, W):
+    """Block-integrate an ``(S, S)`` high-res stamp into native pixels and
+    place it into an ``(H, W)`` image.
+
+    ``(h0y, h0x)`` is the stamp's lower-left pixel on the FULL high-res grid
+    (whose origin is aligned with native pixel 0, i.e. high-res pixels
+    ``[k*n, k*n + k)`` integrate into native pixel ``n``). The stamp is
+    embedded into an ``(S + k, S + k)`` canvas at its alignment offset within
+    the native block, block-summed by ``k`` and placed at the native origin.
+    ``S`` must be a multiple of ``k`` (the builder enforces it).
+    """
+    S = hr.shape[0]
+    n0y = jnp.floor_divide(h0y, k)
+    n0x = jnp.floor_divide(h0x, k)
+    ay = h0y - k * n0y
+    ax = h0x - k * n0x
+    canvas = jnp.zeros((S + k, S + k), hr.dtype)
+    canvas = jax.lax.dynamic_update_slice(canvas, hr, (ay, ax))
+    native = rebin_downsample_int_flux(canvas, k, k)        # (S/k + 1, S/k + 1)
+    return _place_native_stamp(native, n0y, n0x, H, W)
+
+
+def _compact_ps_templates(pos_hr, unit, fft_stamp, k, H, W):
+    """Point-source templates on a compact ``S x S`` high-res stamp.
+
+    Same algebra as the full-grid path — the PSF transform times a phase
+    ramp, inverse-transformed, then integrated into native pixels — but the
+    ramp carries only the sub-pixel part of the position (the PSF lands at
+    the stamp centre ``S/2 + frac``) and the integer part becomes the
+    stamp's placement on the native grid. Per source this is an ``S^2``
+    transform instead of the padded-tile grid's, and no full-grid image is
+    materialized.
+    """
+    S = fft_stamp.shape[0]
+    half = S // 2
+
+    def one(p, u):
+        c = jnp.round(p)
+        frac = p - c
+        hr = render_point_source_fft(u, (half + frac[0], half + frac[1]),
+                                     fft_stamp, (S, S))
+        ci = c.astype(jnp.int32)
+        return _compact_hr_to_native(hr, ci[1] - half, ci[0] - half, k, H, W)
+
+    return vmap(one)(pos_hr, unit)
+
+
+def _compact_gal_templates(gal_mix, fft_stamp, shapes, wcs_scaled, pos_hr,
+                           k, H, W):
+    """Galaxy templates on a compact ``S x S`` high-res stamp (see
+    :func:`_compact_ps_templates`); the analytic mixture transform is
+    evaluated on the stamp's frequency grid at the sub-pixel position."""
+    S = fft_stamp.shape[0]
+    half = S // 2
+
+    def one(mix, shp, cd, p):
+        c = jnp.round(p)
+        frac = p - c
+        hr = render_galaxy_fft(mix, fft_stamp, shp, cd,
+                               (half + frac[0], half + frac[1]), (S, S))
+        ci = c.astype(jnp.int32)
+        return _compact_hr_to_native(hr, ci[1] - half, ci[0] - half, k, H, W)
+
+    return vmap(one, in_axes=((0, 0, 0), 0, 0, 0))(gal_mix, shapes, wcs_scaled,
+                                                   pos_hr)
+
+
+def _fullgrid_gal_templates(gal_mix, psf_fft, shapes, wcs_scaled, pos_scaled,
+                            H, W, H_hr_grid, W_hr_grid, s, sampling_factor):
+    """Full padded-grid galaxy templates for an arbitrary sub-batch (used for
+    the galaxies too extended for the compact stamp). Mirrors the default
+    ``_gal_stamps_fft`` path exactly."""
+    render_shape = (H_hr_grid, W_hr_grid)
+    if sampling_factor is not None and s > 1.001:
+        valid_H = min(int(round(H * s)), H_hr_grid)
+        valid_W = min(int(round(W * s)), W_hr_grid)
+    else:
+        valid_H, valid_W = H_hr_grid, W_hr_grid
+    render_fn = vmap(partial(render_galaxy_fft, image_shape=render_shape),
+                     in_axes=((0, 0, 0), None, 0, 0, 0))
+    stamps = render_fn(gal_mix, psf_fft, shapes, wcs_scaled, pos_scaled)
+    if sampling_factor is not None and s > 1.001:
+        stamps = stamps[:, :valid_H, :valid_W]
+        stamps = vmap(partial(downsample_image, target_shape=(H, W)))(stamps)
+    elif sampling_factor is None:
+        if H_hr_grid > H + 1:
+            stamps = vmap(partial(downsample_image, target_shape=(H, W)))(stamps)
+    return stamps
+
+
+def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
+                             psf_type=None, render_mode="auto"):
     """
     Render unit-flux template images for every source (and background).
 
@@ -1706,6 +1860,30 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None):
     sampling_factor : float, optional
         High-resolution oversampling factor; if None, taken from
         ``psf_data['sampling']``.
+    psf_type : {None, "fft", "mog"}, optional
+        Static PSF-type dispatch. ``None`` (default) keeps the historical
+        behavior: both the pixelized/FFT and the mixture-of-Gaussians branch
+        are evaluated and selected per image with ``jnp.where`` (the
+        documented XLA:GPU ``cond`` workaround). ``"fft"`` / ``"mog"`` trace
+        only that branch, which is exact whenever every image in the batch is
+        of that type (the padded-batch builder always emits type 0, FFT).
+    render_mode : {"auto", "full", "stamp"}, optional
+        ``"full"`` renders every source on the padded high-res tile grid (the
+        historical path). ``"stamp"`` renders each point source and each
+        compact galaxy on a small ``S x S`` high-res stamp
+        (``psf_data["fft_stamp"]``, built by
+        :func:`tractor_jax.jax.batching.build_padded_batches` with
+        ``render_stamp=S``) and only the galaxies flagged as too extended
+        (``batches["Galaxy"]["large_idx"]``) on the full grid; it raises if
+        the stamp transform is absent. ``"auto"`` (default) uses the stamp
+        path exactly when the builder supplied it and the full path
+        otherwise, so existing callers are unaffected. Inside the weighted
+        image the stamp path is numerically equivalent to the full grid to
+        the level of the periodic sinc tails of the shifted kernel (measured
+        ~1e-6 of the peak on a Gaussian kernel), not bit-exact; in the
+        zero-weight padding region it differs by construction, because the
+        full grid's periodic wrap parks the light of a source near the low
+        edge at the far end of the padded grid while the stamp path clips it.
 
     Returns
     -------
@@ -1713,8 +1891,19 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None):
         Design matrix A of shape (N_flux, H, W): one unit-flux template
         per flux parameter.
     """
+    if render_mode not in _RENDER_MODES:
+        raise ValueError(f"render_mode must be one of {_RENDER_MODES}, "
+                         f"got {render_mode!r}")
+    if psf_type not in _PSF_TYPES:
+        raise ValueError(f"psf_type must be one of {_PSF_TYPES}, "
+                         f"got {psf_type!r}")
     H, W = image_data['data'].shape
     psf_data = image_data["psf"]
+    has_stamp = "fft_stamp" in psf_data
+    if render_mode == "stamp" and not has_stamp:
+        raise ValueError("render_mode='stamp' needs psf_data['fft_stamp']; "
+                         "build the batch with render_stamp=S")
+    compact = has_stamp and render_mode != "full"
     templates = jnp.zeros((n_flux, H, W))
 
     if "PointSource" in batches:
@@ -1767,9 +1956,29 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None):
                              in_axes=(0, 0, None))
             return render_fn(unit, pos_pix, psf_mix)
 
-        # See render_batch_point_sources: batched-pred lax.cond miscompiles on GPU.
-        ps_stamps = jnp.where(psf_data['type_code'] == 0,
-                              _ps_stamps_fft(None), _ps_stamps_mog(None))
+        k_int = _integer_hr_factor(H, W, H_hr_grid, W_hr_grid, s, sampling_factor)
+        if compact and k_int is None and render_mode == "stamp":
+            raise ValueError("render_mode='stamp' requires an integer high-res "
+                             "factor (valid = native * k on both axes)")
+        if compact and k_int is not None:
+            valid_H, valid_W = _valid_hr_extent(H, W, H_hr_grid, W_hr_grid, s,
+                                                sampling_factor)
+            f_xy = jnp.array([valid_W / W, valid_H / H])
+            pos_scaled = pos_pix * f_xy + (f_xy - 1.0) / 2.0
+            unit = jnp.ones(pos_pix.shape[0])
+            if mask is not None:
+                unit = unit * mask
+            ps_stamps = _compact_ps_templates(pos_scaled, unit,
+                                              psf_data["fft_stamp"], k_int, H, W)
+        elif psf_type == "fft":
+            ps_stamps = _ps_stamps_fft(None)
+        elif psf_type == "mog":
+            ps_stamps = _ps_stamps_mog(None)
+        else:
+            # See render_batch_point_sources: batched-pred lax.cond miscompiles
+            # on GPU.
+            ps_stamps = jnp.where(psf_data['type_code'] == 0,
+                                  _ps_stamps_fft(None), _ps_stamps_mog(None))
         templates = templates.at[f_idx].add(ps_stamps)
 
     if "Galaxy" in batches:
@@ -1822,12 +2031,53 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None):
                              in_axes=((0, 0, 0), None, 0, 0, 0))
             return render_fn(gal_mix, psf_mix, shapes, wcs_cd_inv, pos_pix)
 
-        # See render_batch_point_sources: batched-pred lax.cond miscompiles on GPU.
-        gal_stamps = jnp.where(psf_data['type_code'] == 0,
-                               _gal_stamps_fft(None), _gal_stamps_mog(None))
-        if mask is not None:
-            gal_stamps = gal_stamps * mask[:, jnp.newaxis, jnp.newaxis]
-        templates = templates.at[f_idx].add(gal_stamps)
+        k_int = _integer_hr_factor(H, W, H_hr_grid, W_hr_grid, s, sampling_factor)
+        if compact and k_int is None and render_mode == "stamp":
+            raise ValueError("render_mode='stamp' requires an integer high-res "
+                             "factor (valid = native * k on both axes)")
+        if compact and k_int is not None:
+            valid_H, valid_W = _valid_hr_extent(H, W, H_hr_grid, W_hr_grid, s,
+                                                sampling_factor)
+            f_xy = jnp.array([valid_W / W, valid_H / H])
+            pos_scaled = pos_pix * f_xy + (f_xy - 1.0) / 2.0
+            wcs_scaled = wcs_cd_inv * f_xy[:, jnp.newaxis]
+            gal_mix = (profiles["amp"], profiles["mean"], profiles["var"])
+            # Compact galaxies on the stamp; the builder masks out the ones
+            # too extended for it (stamp_mask), which go through the full
+            # grid below from the gathered large_idx sub-batch.
+            unit = jnp.ones(pos_pix.shape[0]) if mask is None else mask
+            stamp_mask = batch.get("stamp_mask")
+            if stamp_mask is not None:
+                unit = unit * stamp_mask
+            gal_stamps = _compact_gal_templates(
+                gal_mix, psf_data["fft_stamp"], shapes, wcs_scaled, pos_scaled,
+                k_int, H, W)
+            gal_stamps = gal_stamps * unit[:, jnp.newaxis, jnp.newaxis]
+            templates = templates.at[f_idx].add(gal_stamps)
+            large_idx = batch.get("large_idx")
+            if large_idx is not None:
+                lmask = batch["large_mask"]
+                gal_mix_l = (profiles["amp"][large_idx], profiles["mean"][large_idx],
+                             profiles["var"][large_idx])
+                large_stamps = _fullgrid_gal_templates(
+                    gal_mix_l, psf_data['fft'], shapes[large_idx],
+                    wcs_scaled[large_idx], pos_scaled[large_idx],
+                    H, W, H_hr_grid, W_hr_grid, s, sampling_factor)
+                large_stamps = large_stamps * lmask[:, jnp.newaxis, jnp.newaxis]
+                templates = templates.at[f_idx[large_idx]].add(large_stamps)
+        else:
+            if psf_type == "fft":
+                gal_stamps = _gal_stamps_fft(None)
+            elif psf_type == "mog":
+                gal_stamps = _gal_stamps_mog(None)
+            else:
+                # See render_batch_point_sources: batched-pred lax.cond
+                # miscompiles on GPU.
+                gal_stamps = jnp.where(psf_data['type_code'] == 0,
+                                       _gal_stamps_fft(None), _gal_stamps_mog(None))
+            if mask is not None:
+                gal_stamps = gal_stamps * mask[:, jnp.newaxis, jnp.newaxis]
+            templates = templates.at[f_idx].add(gal_stamps)
 
     if "Background" in batches:
         bg_idx = batches["Background"]["flux_idx"][0]
@@ -1837,7 +2087,8 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None):
 
 
 def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=False,
-                        sampling_factor=None, rcond=1e-12):
+                        sampling_factor=None, rcond=1e-12, psf_type=None,
+                        render_mode="auto"):
     """
     Direct linear solve for forced photometry on a SINGLE image.
 
@@ -1882,7 +2133,9 @@ def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=Fa
     H, W = image_data['data'].shape
 
     templates = _render_source_templates(image_data, batches, n_flux,
-                                         sampling_factor=sampling_factor)
+                                         sampling_factor=sampling_factor,
+                                         psf_type=psf_type,
+                                         render_mode=render_mode)
 
     data_flat = image_data["data"].ravel()
     w_flat = image_data["invvar"].ravel()
@@ -1908,7 +2161,7 @@ def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=Fa
 
 def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
                           return_variances=False, sampling_factor=None,
-                          floor=1e-4):
+                          floor=1e-4, psf_type=None, render_mode="auto"):
     """
     Direct linear solve with an eigenvalue floor on the Jacobi-normalized AtWA.
 
@@ -1974,7 +2227,9 @@ def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
     n_flux = initial_fluxes.shape[0]
 
     templates = _render_source_templates(image_data, batches, n_flux,
-                                         sampling_factor=sampling_factor)
+                                         sampling_factor=sampling_factor,
+                                         psf_type=psf_type,
+                                         render_mode=render_mode)
 
     data_flat = image_data["data"].ravel()
     w_flat = image_data["invvar"].ravel()
@@ -2108,7 +2363,7 @@ def _eigfloor_prior_core(AtWA, AtWd, lambda_diag, f_prior, floor=1e-4,
 def solve_fluxes_eigfloor_prior(initial_fluxes, image_data, batches,
                                 lambda_diag=None, f_prior=None,
                                 return_variances=False, sampling_factor=None,
-                                floor=1e-4):
+                                floor=1e-4, psf_type=None, render_mode="auto"):
     """
     Eigfloor solve with per-source Gaussian flux priors (ridge-toward-prior).
 
@@ -2184,7 +2439,9 @@ def solve_fluxes_eigfloor_prior(initial_fluxes, image_data, batches,
         f_prior = jnp.zeros(n_flux, dtype=initial_fluxes.dtype)
 
     templates = _render_source_templates(image_data, batches, n_flux,
-                                         sampling_factor=sampling_factor)
+                                         sampling_factor=sampling_factor,
+                                         psf_type=psf_type,
+                                         render_mode=render_mode)
 
     data_flat = image_data["data"].ravel()
     w_flat = image_data["invvar"].ravel()
@@ -2358,6 +2615,7 @@ def _ln_binom(p, k):
 
 def solve_fluxes_lasso(initial_fluxes, image_data, batches,
                        return_variances=False, sampling_factor=None,
+                       psf_type=None, render_mode="auto",
                        alpha=None, penalty_mode="snr", penalty_weights=None,
                        nonneg=True, selection_mode="fixed", criterion="ebic",
                        grid=None, ebic_gamma=0.5, return_path=False,
@@ -2495,7 +2753,9 @@ def solve_fluxes_lasso(initial_fluxes, image_data, batches,
     n_flux = initial_fluxes.shape[0]
 
     templates = _render_source_templates(image_data, batches, n_flux,
-                                         sampling_factor=sampling_factor)
+                                         sampling_factor=sampling_factor,
+                                         psf_type=psf_type,
+                                         render_mode=render_mode)
     data_flat = image_data["data"].ravel()
     w_flat = image_data["invvar"].ravel()
     A = templates.reshape(n_flux, -1).T
@@ -2520,6 +2780,7 @@ def solve_fluxes_lasso(initial_fluxes, image_data, batches,
 
 def solve_fluxes_lasso_batched(initial_fluxes, image_data, batches, data_stack,
                                return_variances=False, sampling_factor=None,
+                               psf_type=None, render_mode="auto",
                                alpha=None, penalty_mode="snr",
                                penalty_weights=None, nonneg=True,
                                selection_mode="fixed", criterion="ebic",
@@ -2569,7 +2830,9 @@ def solve_fluxes_lasso_batched(initial_fluxes, image_data, batches, data_stack,
     n_flux = initial_fluxes.shape[0]
 
     templates = _render_source_templates(image_data, batches, n_flux,
-                                         sampling_factor=sampling_factor)
+                                         sampling_factor=sampling_factor,
+                                         psf_type=psf_type,
+                                         render_mode=render_mode)
     w_flat = image_data["invvar"].ravel()
     A = templates.reshape(n_flux, -1).T
 

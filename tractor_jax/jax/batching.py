@@ -85,15 +85,31 @@ _IN_AXES_TEMPLATES = {
                "profile": {"amp": 0, "mean": 0, "var": 0}},
     "Background": {"flux_idx": None},
 }
+# Optional per-view Galaxy keys emitted only by ``build_padded_batches(...,
+# render_stamp=S)``: which galaxies the compact stamp renderer handles and the
+# gathered sub-batch of the ones too extended for it (full-grid fallback).
+_OPTIONAL_GALAXY_KEYS = ("stamp_mask", "large_idx", "large_mask")
 
 
 def batches_in_axes(batches):
     """vmap ``in_axes`` pytree matching a ``batches`` dict.
 
     Only the source types present in ``batches`` get an entry, so the result
-    is a valid ``in_axes`` for ``jax.vmap`` over exactly that structure.
+    is a valid ``in_axes`` for ``jax.vmap`` over exactly that structure. The
+    optional compact-rendering keys of the Galaxy batch (``stamp_mask``,
+    ``large_idx``, ``large_mask``) are included when present; they are all
+    per-view arrays (axis 0).
     """
-    return {k: _IN_AXES_TEMPLATES[k] for k in batches}
+    out = {}
+    for k in batches:
+        tmpl = _IN_AXES_TEMPLATES[k]
+        if k == "Galaxy":
+            tmpl = dict(tmpl)
+            for opt in _OPTIONAL_GALAXY_KEYS:
+                if opt in batches[k]:
+                    tmpl[opt] = 0
+        out[k] = tmpl
+    return out
 
 
 def penalty_weights_from_slots(src_slot_per_image, n_images, n_flux,
@@ -557,6 +573,52 @@ def _even_parity_message(ph, pw, target_sampling):
     )
 
 
+def _mog_enclosed_radius(amp, var, frac, r_max=200.0, n_iter=60):
+    """Radius (in the mixture's own length unit) enclosing ``frac`` of the
+    flux of a circular mixture of Gaussians ``sum_k amp_k N(0, var_k I)``.
+
+    The components of the Sersic mixtures are isotropic, so the enclosed
+    flux is ``sum_k a_k (1 - exp(-r^2 / (2 v_k)))`` with ``v_k`` the common
+    diagonal variance; solved by bisection on ``[0, r_max]``.
+    """
+    a = np.asarray(amp, dtype=np.float64)
+    v = np.asarray(var, dtype=np.float64)
+    if v.ndim == 3:
+        v = 0.5 * (v[:, 0, 0] + v[:, 1, 1])
+    a = a / a.sum()
+    target = float(frac)
+
+    def enclosed(r):
+        return float(np.sum(a * (1.0 - np.exp(-0.5 * r * r / np.maximum(v, 1e-30)))))
+
+    lo, hi = 0.0, float(r_max)
+    if enclosed(hi) < target:
+        return hi
+    for _ in range(n_iter):
+        mid = 0.5 * (lo + hi)
+        if enclosed(mid) >= target:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+def _kernel_enclosed_radius(psf_img, frac):
+    """Radius (in the kernel's own pixels, from its brightest pixel) that
+    encloses ``frac`` of the kernel's total absolute flux."""
+    k = np.abs(np.asarray(psf_img, dtype=np.float64))
+    cy, cx = np.unravel_index(int(np.argmax(k)), k.shape)
+    yy, xx = np.indices(k.shape)
+    r = np.hypot(yy - cy, xx - cx).ravel()
+    order = np.argsort(r)
+    cum = np.cumsum(k.ravel()[order])
+    tot = cum[-1] if cum.size else 0.0
+    if tot <= 0:
+        return 0.0
+    i = int(np.searchsorted(cum, float(frac) * tot))
+    return float(r[order][min(i, r.size - 1)])
+
+
 def psf_to_fft(psf_img, *, psf_sampling, target_shape, target_sampling,
                shift_hr=None, even_parity="raise"):
     """rfft2 of a PSF resampled to ``target_sampling``, center-padded to
@@ -674,6 +736,9 @@ def build_padded_batches(
     pad_bucket=None,
     psf_fft_cache=None,
     even_parity="raise",
+    render_stamp=None,
+    stamp_large_bucket=8,
+    stamp_flux_frac=0.9999,
     dtype=np.float32,
 ):
     """Pad + stack per-view source problems into one vmap-ready batch.
@@ -761,6 +826,26 @@ def build_padded_batches(
         kernels, which the center-pad mis-places by exactly -0.5 high-res px
         per even axis. Default ``"raise"``. Odd kernels are unaffected in every
         mode.
+    render_stamp : int, optional
+        Opt in to the compact-stamp renderer: also emit the PSF transform on
+        an ``S x S`` high-res stamp (``images_data["psf"]["fft_stamp"]``,
+        ``S = render_stamp``, even, a multiple of ``target_sampling`` and at
+        least the resized kernel size + 2), and classify each galaxy as
+        compact (rendered on the stamp) or large (rendered on the full padded
+        grid) from a conservative bound on its sheared extent,
+        ``3 * sigma_max + psf_half_width`` in high-res pixels against
+        ``S/2 - 1``. The Galaxy batch then carries ``stamp_mask`` (1 for
+        compact), and the gathered ``large_idx`` / ``large_mask`` sub-batch,
+        padded per view to a multiple of ``stamp_large_bucket``. ``None``
+        (default) emits exactly the historical bundle, and the solvers'
+        default ``render_mode="auto"`` then takes the full-grid path.
+    stamp_large_bucket : int
+        Padding granularity of the per-view large-galaxy sub-batch (limits
+        the number of distinct traced shapes across a field).
+    stamp_flux_frac : float
+        Enclosed-flux fraction defining the extent of a galaxy profile and of
+        the kernel in the compact/large split (``0.9999`` by default, i.e. a
+        compact galaxy's wrapped light is below 1e-4 of its flux).
 
     Returns
     -------
@@ -1013,16 +1098,16 @@ def build_padded_batches(
     # object identity holds within this call — and broadcast when every view
     # shares one PSF; the optional caller-owned psf_fft_cache extends the reuse
     # across calls.
-    def _fft_for(psf_arr, shift_hr=None):
+    def _fft_for(psf_arr, shift_hr=None, th=target_h, tw=target_w):
         if psf_fft_cache is not None:
-            key = (id(psf_arr), psf_arr.shape, target_h, target_w,
+            key = (id(psf_arr), psf_arr.shape, th, tw,
                    round(target_sampling, 9), round(psf_sampling, 9),
                    _shift_key(shift_hr), even_parity)
             hit = psf_fft_cache.get(key)
             if hit is not None:
                 return hit
         fft = psf_to_fft(psf_arr, psf_sampling=psf_sampling,
-                         target_shape=(target_h, target_w),
+                         target_shape=(th, tw),
                          target_sampling=target_sampling,
                          shift_hr=shift_hr, even_parity=even_parity)
         if psf_fft_cache is not None:
@@ -1054,12 +1139,12 @@ def build_padded_batches(
     basis_fft_cache = {}
     ramp_cache = {}
 
-    def _ramp(shift_hr, dtype):
-        key = (_shift_key(shift_hr), np.dtype(dtype).str)
+    def _ramp(shift_hr, dtype, th=target_h, tw=target_w):
+        key = (_shift_key(shift_hr), np.dtype(dtype).str, th, tw)
         hit = ramp_cache.get(key)
         if hit is None:
             hit = jnp.asarray(
-                psf_fft_phase_ramp((target_h, target_w // 2 + 1), shift_hr),
+                psf_fft_phase_ramp((th, tw // 2 + 1), shift_hr),
                 dtype=dtype)
             ramp_cache[key] = hit
         return hit
@@ -1085,75 +1170,80 @@ def build_padded_batches(
             shift_keys_cache[cid] = hit
         return hit
 
-    def _basis_fft(basis, shift_keys=None):
+    def _basis_fft(basis, shift_keys=None, th=target_h, tw=target_w):
         """(K, H, W//2+1) transforms of one basis, optionally phase-ramped.
 
         ``shift_keys`` is ``None`` (no ramp), a 1-tuple (one shift shared by
         every element) or a K-tuple (one per element), each entry a high-res
-        ``(dy, dx)``.
+        ``(dy, dx)``. ``(th, tw)`` selects the transform grid (the padded
+        tile grid by default, the compact stamp grid for ``render_stamp``).
         """
-        key = (id(basis), shift_keys)
+        key = (id(basis), shift_keys, th, tw)
         hit = basis_fft_cache.get(key)
         if hit is not None:
             return hit
-        base = basis_fft_cache.get((id(basis), None))
+        base = basis_fft_cache.get((id(basis), None, th, tw))
         if base is None:
-            base = jnp.stack([_fft_for(k) for k in basis])
-            basis_fft_cache[(id(basis), None)] = base
+            base = jnp.stack([_fft_for(k, th=th, tw=tw) for k in basis])
+            basis_fft_cache[(id(basis), None, th, tw)] = base
         if shift_keys is None:
             hit = base
         elif len(shift_keys) == 1:
-            hit = base * _ramp(shift_keys[0], base.dtype)
+            hit = base * _ramp(shift_keys[0], base.dtype, th, tw)
         else:
-            hit = base * jnp.stack([_ramp(s, base.dtype) for s in shift_keys])
+            hit = base * jnp.stack([_ramp(s, base.dtype, th, tw)
+                                    for s in shift_keys])
         basis_fft_cache[key] = hit
         return hit
 
-    if use_basis:
-        if not all(v.get("psf_basis") is not None for v in views):
-            raise ValueError("build_padded_batches: psf_basis must be given "
-                             "for every view or for none")
-        # Blend per GROUP of views sharing (basis, shifts), not per view. In
-        # the driver every tile of a cutout hands over the SAME basis object
-        # and the SAME shift table, so this is one group and the whole blend
-        # is a single (T, K) x (K, H, Wf) tensordot — one dispatch instead of
-        # one per tile (~50/cutout), which put the eager per-tile launches on
-        # the CPU-bound build stage's critical path (measured +21.6 ms/cutout
-        # at K=9-12; see proj research note 2026-07-28-node-comparison, §PSF).
-        groups = {}                       # gkey -> [bf, [view idx], [weights]]
-        gorder = []
-        for i, v in enumerate(views):
-            basis = v["psf_basis"]
-            n_basis = len(basis)
-            w = np.asarray(v["psf_weights"], dtype=np.float64)
-            if w.shape[0] != n_basis:
-                raise ValueError("psf_weights length must match psf_basis")
-            bshifts = v.get("psf_basis_shifts")
-            if bshifts is not None:
-                shift_keys = _basis_shift_keys(bshifts, n_basis)
-            elif v.get("psf_shift") is not None:
-                shift_keys = (_shift_key(_shift_hr(v["psf_shift"])),)
-            else:
-                shift_keys = None
-            gkey = (id(basis), shift_keys)
-            g = groups.get(gkey)
-            if g is None:
-                bf = (_basis_fft(basis) if shift_keys is None
-                      else _basis_fft(basis, shift_keys))
-                g = groups[gkey] = [bf, [], []]
-                gorder.append(gkey)
-            g[1].append(i)
-            g[2].append(w)
-        # precision="highest": the grouped blend is a real GEMM, which XLA
-        # would otherwise run in TF32 on Ampere+ (10-bit mantissa, ~5e-4
-        # relative on the kernel -- most of the fp32 parity budget). The
-        # per-view path was a matvec and never hit TF32, so pin full fp32.
-        if len(groups) == 1:
-            bf, _, ws = groups[gorder[0]]
-            wmat = jnp.asarray(np.stack(ws), dtype=bf.real.dtype)   # (T, K)
-            psf_fft_stack = jnp.tensordot(wmat, bf, axes=(1, 0),
-                                          precision="highest")
-        else:
+    if use_basis and not all(v.get("psf_basis") is not None for v in views):
+        raise ValueError("build_padded_batches: psf_basis must be given "
+                         "for every view or for none")
+
+    def _psf_stack(th, tw):
+        """(n_views, th, tw//2+1) per-view PSF transforms on a (th, tw) grid."""
+        if use_basis:
+            # Blend per GROUP of views sharing (basis, shifts), not per view.
+            # In the driver every tile of a cutout hands over the SAME basis
+            # object and the SAME shift table, so this is one group and the
+            # whole blend is a single (T, K) x (K, H, Wf) tensordot — one
+            # dispatch instead of one per tile (~50/cutout), which put the
+            # eager per-tile launches on the CPU-bound build stage's critical
+            # path (measured +21.6 ms/cutout at K=9-12; see proj research note
+            # 2026-07-28-node-comparison, §PSF).
+            groups = {}                   # gkey -> [bf, [view idx], [weights]]
+            gorder = []
+            for i, v in enumerate(views):
+                basis = v["psf_basis"]
+                n_basis = len(basis)
+                w = np.asarray(v["psf_weights"], dtype=np.float64)
+                if w.shape[0] != n_basis:
+                    raise ValueError("psf_weights length must match psf_basis")
+                bshifts = v.get("psf_basis_shifts")
+                if bshifts is not None:
+                    shift_keys = _basis_shift_keys(bshifts, n_basis)
+                elif v.get("psf_shift") is not None:
+                    shift_keys = (_shift_key(_shift_hr(v["psf_shift"])),)
+                else:
+                    shift_keys = None
+                gkey = (id(basis), shift_keys)
+                g = groups.get(gkey)
+                if g is None:
+                    bf = (_basis_fft(basis, th=th, tw=tw) if shift_keys is None
+                          else _basis_fft(basis, shift_keys, th=th, tw=tw))
+                    g = groups[gkey] = [bf, [], []]
+                    gorder.append(gkey)
+                g[1].append(i)
+                g[2].append(w)
+            # precision="highest": the grouped blend is a real GEMM, which XLA
+            # would otherwise run in TF32 on Ampere+ (10-bit mantissa, ~5e-4
+            # relative on the kernel -- most of the fp32 parity budget). The
+            # per-view path was a matvec and never hit TF32, so pin full fp32.
+            if len(groups) == 1:
+                bf, _, ws = groups[gorder[0]]
+                wmat = jnp.asarray(np.stack(ws), dtype=bf.real.dtype)   # (T, K)
+                return jnp.tensordot(wmat, bf, axes=(1, 0),
+                                     precision="highest")
             blended, idx = [], []
             for gkey in gorder:
                 bf, idxs, ws = groups[gkey]
@@ -1163,34 +1253,72 @@ def build_padded_batches(
                 idx.extend(idxs)
             # invert the group-major ordering back to view order
             perm = np.argsort(np.asarray(idx))
-            psf_fft_stack = jnp.concatenate(blended, axis=0)[perm]
-    else:
+            return jnp.concatenate(blended, axis=0)[perm]
         unique_fft = {}
         for v in views:
             key = (id(v["psf"]), _shift_key(_shift_hr(v.get("psf_shift"))))
             if key not in unique_fft:
                 unique_fft[key] = _fft_for(v["psf"],
-                                           _shift_hr(v.get("psf_shift")))
+                                           _shift_hr(v.get("psf_shift")),
+                                           th=th, tw=tw)
         if len(unique_fft) == 1:
             one = next(iter(unique_fft.values()))
-            psf_fft_stack = jnp.broadcast_to(one[None], (n_views,) + one.shape)
-        else:
-            psf_fft_stack = jnp.stack([
-                unique_fft[(id(v["psf"]),
-                            _shift_key(_shift_hr(v.get("psf_shift"))))]
-                for v in views])
+            return jnp.broadcast_to(one[None], (n_views,) + one.shape)
+        return jnp.stack([
+            unique_fft[(id(v["psf"]),
+                        _shift_key(_shift_hr(v.get("psf_shift"))))]
+            for v in views])
 
+    psf_fft_stack = _psf_stack(target_h, target_w)
+
+    # Compact-stamp renderer (opt-in): the same transforms on an S x S grid.
+    stamp_stack = None
+    stamp_meta = None
+    if render_stamp is not None:
+        S = int(render_stamp)
+        k_hr = int(round(target_sampling))
+        if abs(target_sampling - k_hr) > 1e-9:
+            raise ValueError("render_stamp requires an integer target "
+                             f"sampling factor, got {target_sampling}")
+        if S % 2 or S % k_hr:
+            raise ValueError(f"render_stamp={S} must be even and a multiple "
+                             f"of the sampling factor {k_hr}")
+        local_factor = 1.0 / psf_sampling if psf_sampling < 1.0 else 1.0
+        ratio = target_sampling / local_factor
+        ph_hr = int(round(max_psf_h * ratio))
+        pw_hr = int(round(max_psf_w * ratio))
+        if max(ph_hr, pw_hr) + 2 > S:
+            raise ValueError(f"render_stamp={S} is too small for a "
+                             f"{ph_hr}x{pw_hr} high-res kernel (+2)")
+        stamp_stack = _psf_stack(S, S)
+        # Kernel extent for the galaxy compact/large split: the enclosed-flux
+        # radius of every distinct kernel in the batch, in high-res pixels of
+        # the target grid (the kernels are at 1/psf_sampling; scale by ratio).
+        kern_ids, psf_r_hr = set(), 0.0
+        for v in views:
+            for kern in (v["psf_basis"] if v.get("psf_basis") is not None
+                         else [v["psf"]]):
+                if id(kern) in kern_ids:
+                    continue
+                kern_ids.add(id(kern))
+                psf_r_hr = max(psf_r_hr, ratio * _kernel_enclosed_radius(
+                    kern, stamp_flux_frac))
+        stamp_meta = {"S": S, "k": k_hr, "psf_r_hr": float(psf_r_hr)}
+
+    psf_dict = {
+        "type_code": jnp.zeros(n_views, dtype=jnp.int32),
+        "sampling": jnp.full(n_views, target_sampling, dtype=jnp.float32),
+        "fft": psf_fft_stack,
+        "amp": jnp.zeros((n_views, 1)),
+        "mean": jnp.zeros((n_views, 1, 2)),
+        "var": jnp.tile(jnp.eye(2), (n_views, 1, 1, 1)),
+    }
+    if stamp_stack is not None:
+        psf_dict["fft_stamp"] = stamp_stack
     images_data = {
         "data": jnp.asarray(d_pad),
         "invvar": jnp.asarray(iv_pad),
-        "psf": {
-            "type_code": jnp.zeros(n_views, dtype=jnp.int32),
-            "sampling": jnp.full(n_views, target_sampling, dtype=jnp.float32),
-            "fft": psf_fft_stack,
-            "amp": jnp.zeros((n_views, 1)),
-            "mean": jnp.zeros((n_views, 1, 2)),
-            "var": jnp.tile(jnp.eye(2), (n_views, 1, 1, 1)),
-        },
+        "psf": psf_dict,
     }
 
     batches = {}
@@ -1200,6 +1328,7 @@ def build_padded_batches(
             "pos_pix": jnp.asarray(ps_pos),
             "mask": jnp.asarray(ps_mask),
         }
+    n_large_max = 0
     if max_gal > 0:
         batches["Galaxy"] = {
             "flux_idx": jnp.asarray(gal_fidx),
@@ -1213,6 +1342,43 @@ def build_padded_batches(
                 "var": jnp.asarray(gal_var),
             },
         }
+        if stamp_meta is not None:
+            # Compact / large split. The compact stamp renders a galaxy
+            # correctly only if the PSF-convolved profile fits inside the
+            # stamp (anything beyond wraps periodically). Bound its extent by
+            # the profile's enclosed-flux radius at ``stamp_flux_frac`` along
+            # the major axis (|Tinv|_2 <= |cd_inv|_2 * re_deg since ab <= 1)
+            # plus the kernel's own enclosed-flux radius, in high-res pixels,
+            # against the stamp's half-size.
+            S = stamp_meta["S"]
+            k_hr = stamp_meta["k"]
+            stamp_mask = gal_mask.copy()
+            large_rows = [[] for _ in range(n_views)]
+            if gal_ci.size:
+                cd_norm = float(np.linalg.norm(
+                    np.asarray(cd_inv, dtype=np.float64), 2))
+                r_prof = np.asarray([
+                    _mog_enclosed_radius(p.amp, p.var, stamp_flux_frac)
+                    for p in uniq_profs], dtype=np.float64)     # units of r_e
+                re_deg = np.maximum(1.0 / 30.0, shape_r_arr[gal_ci]) / 3600.0
+                r_gal_native = r_prof[gal_prof_inv] * re_deg * cd_norm
+                radius_hr = (r_gal_native * k_hr + stamp_meta["psf_r_hr"] + 1.0)
+                is_large = radius_hr > (0.5 * S - 1.0)
+                stamp_mask[gal_v[is_large], gal_k[is_large]] = 0.0
+                for vi, kk in zip(gal_v[is_large], gal_k[is_large]):
+                    large_rows[int(vi)].append(int(kk))
+            n_large_nat = max((len(r) for r in large_rows), default=0)
+            bucket = max(int(stamp_large_bucket), 1)
+            n_large_max = max(bucket, int(math.ceil(n_large_nat / bucket) * bucket))
+            large_idx = np.zeros((n_views, n_large_max), dtype=np.int32)
+            large_mask = np.zeros((n_views, n_large_max), dtype=dtype)
+            for vi, rows in enumerate(large_rows):
+                if rows:
+                    large_idx[vi, :len(rows)] = rows
+                    large_mask[vi, :len(rows)] = 1.0
+            batches["Galaxy"]["stamp_mask"] = jnp.asarray(stamp_mask)
+            batches["Galaxy"]["large_idx"] = jnp.asarray(large_idx)
+            batches["Galaxy"]["large_mask"] = jnp.asarray(large_mask)
     if fit_background:
         batches["Background"] = {"flux_idx": jnp.asarray([bg_idx],
                                                          dtype=jnp.int32)}
@@ -1221,6 +1387,8 @@ def build_padded_batches(
 
     meta = {"max_ps": max_ps, "max_gal": max_gal, "max_mog_k": max_mog_k,
             "n_flux": n_flux, "bg_idx": bg_idx,
-            "src_slot": src_slot_per_view, "counts": counts}
+            "src_slot": src_slot_per_view, "counts": counts,
+            "render_stamp": (None if stamp_meta is None else stamp_meta["S"]),
+            "n_large_max": n_large_max}
     return BatchBundle(images_data, batches, initial_fluxes,
                        batches_in_axes(batches), meta)

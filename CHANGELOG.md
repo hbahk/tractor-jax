@@ -6,6 +6,29 @@ public API may still change between minor releases.
 
 ## [Unreleased]
 
+### Added
+
+- **Compact-stamp template rendering (opt-in).** `build_padded_batches(...,
+  render_stamp=S)` additionally emits the PSF transform on an `S x S` high-res
+  stamp (`images_data["psf"]["fft_stamp"]`) and classifies every galaxy as
+  compact or large from its enclosed-flux radius (`stamp_flux_frac`, default
+  0.9999) plus the kernel's; the Galaxy batch then carries `stamp_mask` and a
+  padded `large_idx` / `large_mask` sub-batch (`stamp_large_bucket`).
+  `_render_source_templates` (and therefore every `solve_fluxes_*`) draws
+  point sources and compact galaxies on the stamp — one `S^2` transform per
+  source instead of the padded tile grid's, with no full-grid image
+  materialized — and only the large galaxies on the full grid. New solver
+  kwargs `render_mode` (`"auto"` default: stamp iff the bundle carries it;
+  `"full"`; `"stamp"`) and `psf_type` (`None` keeps the historical
+  both-branches `jnp.where` dispatch; `"fft"` / `"mog"` trace one branch).
+  Inside the weighted image the stamp path agrees with the full grid to
+  ~1e-6 of the template peak; it differs by construction only in the
+  zero-weight padding, where the full grid's periodic wrap parks light from
+  sources near the low edge. Bundles built without `render_stamp` and
+  solvers with the default kwargs are unchanged (`tests/test_render_stamp.py`
+  pins both the agreement and the bit-identity of the default path).
+  `batches_in_axes` includes the optional Galaxy keys when present.
+
 ### Changed
 
 - **Relicensed to GPL-2.0-only.** The Tractor is licensed under the GPLv2
