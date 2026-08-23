@@ -152,8 +152,13 @@ CUDA libraries, stamp 80): eigfloor GPU solve per cutout 49.9 → 5.5 ms at
 48.7/125.9 cutouts/s and 6.4/7.9 → 23.1/32.6. The one regression is the
 stamp render itself, 25–37% slower under the newer XLA (3.3 → 4.2 ms at
 `m_z<21`, 12.4 → 17.0 at full depth; no XLA flag recovers it), which costs
-the render-bound `linear` family 15–26% — bisect across jax 0.6–0.10 is the
-open item.
+the render-bound `linear` family 15–26%. Bisected on an H100 with the same
+captured inputs (2026-08-23): render 1.52 / 4.13 ms (`m_z<21` / full) under
+jax 0.5.3, 1.43–1.45 / 3.85–3.87 under 0.7–0.9, **1.82 / 5.05 under 0.10.0**
+(+27% / +31%, the same effect as 0.11) — the step is at jax 0.10.0, while
+the batched eigh is fast from 0.8.0 on. **jax 0.9.0 has both**, and is the
+version to prefer until the XLA:GPU change is understood; 0.10+ works but
+renders 25–30% slower (eigh unaffected).
 
 ## Service rates on the improved stack (2026-08-23)
 

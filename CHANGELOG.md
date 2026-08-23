@@ -67,7 +67,10 @@ public API may still change between minor releases.
   instead of 0.96 ms per 49 × 102² matrices; `docs/performance.md`). The
   engine still runs on older jax — the pin is a performance contract, not
   an API break — so relax it locally if you must, and expect eigfloor to be
-  eigh-bound there.
+  eigh-bound there. Prefer **jax 0.9.0**: from 0.10.0 on XLA:GPU renders the
+  compact-stamp templates 25–30% slower (bisected on the same inputs across
+  0.5.3–0.10.0; `docs/performance.md`), with the eigh unaffected; no upper
+  bound is pinned so a future fix is not blocked.
 - **Relicensed to GPL-2.0-only.** The Tractor is licensed under the GPLv2
   *without* an "or later" clause (its `COPYING` grants "version 2" only), so
   the 0.1.0 relicense to GPL-3.0-or-later was not permitted for this
