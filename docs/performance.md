@@ -158,12 +158,18 @@ jax 0.5.3, 1.43–1.45 / 3.85–3.87 under 0.7–0.9, **1.82 / 5.05 under 0.10.0
 (+27% / +31%, the same effect as 0.11) — the step is at jax 0.10.0, while
 the batched eigh is fast from 0.8.0 on. **jax 0.9.0 has both**, and is the
 version to prefer until the XLA:GPU change is understood; 0.10+ works but
-renders 25–30% slower (eigh unaffected). The cause, from the optimized HLO:
-up to jax 0.9 a 2-D inverse real FFT is one HLO `fft` op (`IRFFT,
-fft_length={80,80}`, a multi-dimensional cuFFT plan); from 0.10 XLA:GPU
-lowers it as a 1-D IFFT, a transpose and a 1-D IRFFT — twice the FFT
-launches plus transposes — and `jax.lax.fft` with 2-D lengths lowers the
-same way, so there is no engine-side workaround, only the jax version.
+renders 25–30% slower (eigh unaffected). The cause, from the optimized HLO
+and the jax source: up to jax 0.9 a 2-D inverse real FFT is one HLO `fft` op
+(`IRFFT, fft_length={80,80}`, a multi-dimensional cuFFT C2R plan); jax
+0.10.0 added a GPU lowering rule (`_fft_lowering_gpu` in
+`jax/_src/lax/fft.py`) that decomposes every multi-dimensional IRFFT into a
+complex IFFT over the outer axes plus a 1-D IRFFT, with two transposes, so
+that GPU results match NumPy for inputs that are Hermitian only along the
+last axis (cuFFT's C2R assumes symmetry on all axes). Our inputs satisfy
+the full symmetry, so the two lowerings agree bit for bit and the
+decomposition is pure cost; `jax.lax.fft` goes through the same rule, so
+there is no engine-side workaround, only the jax version (or an upstream
+opt-out for Hermitian-symmetric inputs).
 
 ## Service rates on the improved stack (2026-08-23)
 

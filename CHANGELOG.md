@@ -70,10 +70,13 @@ public API may still change between minor releases.
   eigh-bound there. Prefer **jax 0.9.0**: from 0.10.0 on XLA:GPU renders the
   compact-stamp templates 25–30% slower (bisected on the same inputs across
   0.5.3–0.10.0; `docs/performance.md`), with the eigh unaffected; no upper
-  bound is pinned so a future fix is not blocked. Cause: from jax 0.10
-  XLA:GPU lowers a 2-D inverse real FFT as two 1-D passes with transposes
-  instead of one multi-dimensional cuFFT op (`jax.lax.fft` included), so
-  the renderer cannot work around it.
+  bound is pinned so a future fix is not blocked. Cause: jax 0.10.0's GPU
+  lowering rule for `fft` (`_fft_lowering_gpu`) decomposes every
+  multi-dimensional IRFFT into an outer-axes complex IFFT plus a 1-D IRFFT
+  with two transposes, so that GPU results match NumPy for inputs that are
+  Hermitian only along the last axis; our spectra are fully symmetric, so
+  it is pure cost here (`jax.lax.fft` included) and the renderer cannot
+  work around it.
 - **Relicensed to GPL-2.0-only.** The Tractor is licensed under the GPLv2
   *without* an "or later" clause (its `COPYING` grants "version 2" only), so
   the 0.1.0 relicense to GPL-3.0-or-later was not permitted for this
