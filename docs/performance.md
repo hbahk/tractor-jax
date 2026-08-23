@@ -181,17 +181,23 @@ of the same node, K=1.
 
 | card, depth | `linear` | `eigfloor` | `eigfloor_prior` | `lasso` | CPU one core |
 |---|---:|---:|---:|---:|---:|
-| H100, full depth | 121 @M=8 (8.3 ms) | 71.5 @M=8 (14.0 ms) | 58.0 @M=8 (17.2) | 54.9 @M=8 (18.2) | 4.25 s |
-| H100, `m_z<21` | 387 @M=12 (2.6 ms) | 314 @M=14 (3.2 ms) | 310 @M=12 (3.2) | 113 @M=6 (8.8) | 0.70 s |
+| H100, full depth (jax 0.9.0) | 111 @M=8 (9.0 ms) | 81.2 @M=6 (12.3 ms) | 67.7 @M=6 (14.8) | 43.1 @M=4 (23.2) | 4.27 s |
+| H100, `m_z<21` (jax 0.9.0) | 488 @M=16 (2.0 ms) | 396 @M=16 (2.5 ms) | 382 @M=12 (2.6) | 134 @M=6 (7.5) | 0.70 s |
+| H100, full depth (jax 0.11.0, 08-22) | 121 @M=8 (8.3 ms) | 71.5 @M=8 (14.0 ms) | 58.0 @M=8 (17.2) | 54.9 @M=8 (18.2) | 4.25 s |
+| H100, `m_z<21` (jax 0.11.0, 08-22) | 387 @M=12 (2.6 ms) | 314 @M=14 (3.2 ms) | 310 @M=12 (3.2) | 113 @M=6 (8.8) | 0.70 s |
 | L40S, full depth | 68.8 @M=8 (14.5 ms) | 43.7 @M=8 (22.9 ms) | 33.3 @M=6 (30.0) | 33.1 @M=6 (30.2) | 4.83 s |
 | L40S, `m_z<21` | 319 @M=16 (3.1 ms) | 331 @M=16 (3.0 ms) | 158 @M=8 (6.3) | 119 @M=8 (8.4) | 0.78 s |
 
 One-core equivalents (card rate over the same node's one-core rate): H100
-full depth `linear` 507, `eigfloor` 304, `m_z<21` 271 / 210; L40S 332 / 211
-and 250 / 260. At `m_z<21` the H100 plateaus near 300–390 cutouts/s for
-M = 10–16 (16 workers on the partition's 16-CPU-per-job cap; rows noisy
-above M=10) and the L40S is still host-stream-bound at M=16 (efficiency 0.4),
-so the L40S row is a lower bound on that card. The H100 rows are the paper's
+jax 0.9.0 set: full depth `linear` 473 (the paper's "about 470"), `eigfloor`
+347, `m_z<21` 344 / 279; the 0.11.0 set gave 513 / 304 and 271 / 220; L40S
+(0.11.1, 08-23 quiet card) 332 / 211 and 250 / 260. At `m_z<21` the H100
+reaches 400–490 cutouts/s at M = 12–16 (16 workers on the partition's
+16-CPU-per-job cap; rows noisy above M=10) and the L40S is still
+host-stream-bound at M=16 (efficiency 0.4), so the L40S row is a lower bound
+on that card. Differences between the two H100 sets at full depth (linear
+8.3 vs 9.0 ms, lasso 18.2 vs 23.2) are session noise of host-/GPU-bound rows
+on a shared node, not the jax version; the eigfloor family's 12–22% gain is. The H100 rows are the paper's
 (`manuscript/macros.tex`, provenance there); the earlier table at the top of
 this file is the paper's previous protocol (full grid, legacy host, M=3).
 
