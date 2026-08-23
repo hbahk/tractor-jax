@@ -158,7 +158,12 @@ jax 0.5.3, 1.43–1.45 / 3.85–3.87 under 0.7–0.9, **1.82 / 5.05 under 0.10.0
 (+27% / +31%, the same effect as 0.11) — the step is at jax 0.10.0, while
 the batched eigh is fast from 0.8.0 on. **jax 0.9.0 has both**, and is the
 version to prefer until the XLA:GPU change is understood; 0.10+ works but
-renders 25–30% slower (eigh unaffected).
+renders 25–30% slower (eigh unaffected). The cause, from the optimized HLO:
+up to jax 0.9 a 2-D inverse real FFT is one HLO `fft` op (`IRFFT,
+fft_length={80,80}`, a multi-dimensional cuFFT plan); from 0.10 XLA:GPU
+lowers it as a 1-D IFFT, a transpose and a 1-D IRFFT — twice the FFT
+launches plus transposes — and `jax.lax.fft` with 2-D lengths lowers the
+same way, so there is no engine-side workaround, only the jax version.
 
 ## Service rates on the improved stack (2026-08-23)
 
