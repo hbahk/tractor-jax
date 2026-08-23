@@ -181,7 +181,8 @@ of the same node, K=1.
 
 | card, depth | `linear` | `eigfloor` | `eigfloor_prior` | `lasso` | CPU one core |
 |---|---:|---:|---:|---:|---:|
-| H100, full depth (jax 0.9.0) | 111 @M=8 (9.0 ms) | 81.2 @M=6 (12.3 ms) | 67.7 @M=6 (14.8) | 43.1 @M=4 (23.2) | 4.27 s |
+| H100, full depth (jax 0.9.0, best same-day row) | 181 @M=8 (5.5 ms) | 84.1 @M=6 (11.9 ms) | 70.4 @M=8 (14.2) | 69.6 @M=6 (14.4) | 4.27 s |
+| H100, full depth (jax 0.9.0, single sweep) | 111 @M=8 (9.0 ms) | 81.2 @M=6 (12.3 ms) | 67.7 @M=6 (14.8) | 43.1 @M=4 (23.2) | 4.27 s |
 | H100, `m_z<21` (jax 0.9.0) | 488 @M=16 (2.0 ms) | 396 @M=16 (2.5 ms) | 382 @M=12 (2.6) | 134 @M=6 (7.5) | 0.70 s |
 | H100, full depth (jax 0.11.0, 08-22) | 121 @M=8 (8.3 ms) | 71.5 @M=8 (14.0 ms) | 58.0 @M=8 (17.2) | 54.9 @M=8 (18.2) | 4.25 s |
 | H100, `m_z<21` (jax 0.11.0, 08-22) | 387 @M=12 (2.6 ms) | 314 @M=14 (3.2 ms) | 310 @M=12 (3.2) | 113 @M=6 (8.8) | 0.70 s |
@@ -191,8 +192,12 @@ of the same node, K=1.
 | L40S, `m_z<21` (jax 0.11.1, quiet card) | 319 @M=16 (3.1 ms) | 331 @M=16 (3.0 ms) | 158 @M=8 (6.3) | 119 @M=8 (8.4) | 0.78 s |
 
 One-core equivalents (card rate over the same node's one-core rate): H100
-jax 0.9.0 set: full depth `linear` 473 (the paper's "about 470"), `eigfloor`
-347, `m_z<21` 344 / 279; the 0.11.0 set gave 513 / 304 and 271 / 220; L40S
+jax 0.9.0, best same-day row (the paper's convention): full depth `linear`
+774 (the paper's "about 770"), `eigfloor` 359, `m_z<21` 344 / 279; the single
+sweep gave 473 / 347, the 0.11.0 set 513 / 304 and 271 / 220 — the host-bound
+full-depth rows move by up to ±25% between sessions with the shared node's
+load (linear M=8: 111 / 121 / 162 / 171 / 181 cutouts/s across five same-day
+sessions) while a single stream stays at 40–43; L40S
 (0.11.1, 08-23 quiet card) 332 / 211 and 250 / 260. At `m_z<21` the H100
 reaches 400–490 cutouts/s at M = 12–16 (16 workers on the partition's
 16-CPU-per-job cap; rows noisy above M=10) and the L40S is still
