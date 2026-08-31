@@ -11,26 +11,34 @@ imply for sizing hardware. Two protocols appear below; do not mix them:
 * **GPU solve** — the jitted vmapped solve alone (template rendering +
   normal equations + factorization) on prebuilt inputs, warm, per cutout.
 
-## Service rates (2026-08, production configuration)
+## Service rates (2026-08-23, engine as released: compact stamps, host fast paths, jax 0.9.0)
 
-| card | estimator | single worker | `M=3` on one card | 
+Best rate found over an `M` sweep (1–16 co-scheduled streams), host work
+included; shared node, so the host-bound full-depth rows move by up to ±25%
+between sessions — best same-day row quoted.
+
+| card | estimator | full depth | `m_z<21` |
 |---|---|---:|---:|
-| NVIDIA H100 80 GB | `linear` | 13.6 cutouts/s (74 ms) | 31.5 cutouts/s (31.7 ms) |
-| NVIDIA H100 80 GB | `eigfloor` | 14.0 (72 ms) | 29.1 (34.4 ms) |
-| NVIDIA H100 80 GB | `eigfloor_prior` | 11.8 (85 ms) | 22.7 (44.1 ms) |
-| NVIDIA H100 80 GB | `lasso` | 13.3 (75 ms) | 23.1 (43.3 ms) |
-| NVIDIA L40S | `linear` | 12.3 (81 ms) | 19.9 (50.3 ms) |
-| NVIDIA L40S | `eigfloor` | 6.2 (162 ms) | 6.8 (146 ms) |
+| NVIDIA H100 80 GB | `linear` | 181 cutouts/s (5.5 ms, `M=8`) | 488 (2.0 ms, `M=16`) |
+| NVIDIA H100 80 GB | `eigfloor` | 84.1 (11.9 ms, `M=6`) | 396 (2.5 ms, `M=16`) |
+| NVIDIA H100 80 GB | `eigfloor_prior` | 70.4 (14.2 ms, `M=8`) | 382 (2.6 ms, `M=12`) |
+| NVIDIA H100 80 GB | `lasso` | 69.6 (14.4 ms, `M=6`) | 134 (7.5 ms, `M=6`) |
+| NVIDIA L40S (quiet) | `linear` | 76.0 (13.2 ms, `M=4`) | 325 (3.1 ms, `M=16`) |
+| NVIDIA L40S (quiet) | `eigfloor` | 54.5 (18.4 ms, `M=8`) | 303 (3.3 ms, `M=16`) |
 
-A single worker is **host-bound** on either card (the host stage is ~55 ms of
-the 74 ms: FITS read, background, catalog projection, batch construction,
-record extraction); `M=3` is the operated point, not the card's limit (the
-H100 sweep reaches 31.3 cutouts/s at `M=5`). Against the tiled legacy Tractor
-on one CPU core (4.2–4.8 s per cutout at the same configuration) one H100
-keeps pace with about 130 cores at full depth — a throughput equivalence,
-not a latency speedup, and a full-depth statement: at the `m_z<21` science
-depth the CPU path falls 6.1× while the card falls only 2.0–2.4×, so the
-card/core ratio is about three times smaller there.
+A single stream is **host-bound** at either depth (H100: ~43 cutouts/s full,
+~55 at `m_z<21`); six to sixteen streams fill the card. Against the tiled
+legacy Tractor on one CPU core of the same node (4.27 s per full-depth
+cutout, 0.70 s at `m_z<21`, same day) one H100 keeps pace with roughly 770
+cores for the linear-to-linear pair and ~360 for `eigfloor` at full depth —
+a throughput equivalence, not a latency speedup, and a full-depth statement:
+at the `m_z<21` depth the CPU path falls ~6× while the card falls ~2–5×, so
+the card/core ratio is smaller there (~340 linear, ~280 `eigfloor`).
+
+The pre-improvement rates (legacy rendering, jax 0.5.3, `M=3` protocol:
+H100 `eigfloor` 29.1 cutouts/s / 34.4 ms, ≈130-core equivalence) are the
+numbers earlier notes and drafts quote; the paper's Figure 1(b) uses the
+table above.
 
 ## Where the GPU time goes, and the rendering options
 
@@ -205,8 +213,8 @@ host-stream-bound at M=16 (efficiency 0.4), so the L40S row is a lower bound
 on that card. Differences between the two H100 sets at full depth (linear
 8.3 vs 9.0 ms, lasso 18.2 vs 23.2) are session noise of host-/GPU-bound rows
 on a shared node, not the jax version; the eigfloor family's 12–22% gain is. The H100 rows are the paper's
-(`manuscript/macros.tex`, provenance there); the earlier table at the top of
-this file is the paper's previous protocol (full grid, legacy host, M=3).
+(`manuscript/macros.tex`, provenance there); the headline table at the top of
+this file quotes the jax 0.9.0 rows of this table.
 
 ## Choosing hardware
 
