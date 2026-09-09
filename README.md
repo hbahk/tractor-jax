@@ -128,7 +128,7 @@ flux, and the lasso path matches an independent KKT oracle and scikit-learn.
 
 ## Downstream
 
-[spherex-photometry](https://github.com/hbahk/spherex-photometry) wraps this
+[tractorjax-spherex](https://github.com/hbahk/tractorjax-spherex) wraps this
 engine into an end-to-end SPHEREx L2 forced-photometry pipeline.
 
 ## History and provenance
