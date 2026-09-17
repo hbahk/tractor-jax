@@ -6,6 +6,10 @@ public API may still change between minor releases.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0] — 2026-09-17
+
 ### Added
 
 - **Compact-stamp template rendering (opt-in).** `build_padded_batches(...,
