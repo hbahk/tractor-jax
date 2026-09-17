@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Tractor-JAX. This project follows
+All notable changes to TractorJAX. This project follows
 [Semantic Versioning](https://semver.org/); while the major version is 0 the
 public API may still change between minor releases.
 

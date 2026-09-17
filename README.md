@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/_static/tractorjax-logo.svg" alt="Tractor-JAX" width="520">
+  <img src="docs/_static/tractorjax-logo.svg" alt="TractorJAX" width="520">
 </p>
 
 <p align="center">
@@ -14,7 +14,7 @@
 
 **GPU-accelerated astronomical image modeling and forced photometry.**
 
-Tractor-JAX reimplements [The Tractor](https://github.com/dstndstn/tractor)
+TractorJAX reimplements [The Tractor](https://github.com/dstndstn/tractor)
 (Lang & Hogg) on JAX. It keeps the model classes you already know — `Image`,
 `Catalog`, `PointSource`, `SersicGalaxy`, `PixelizedPSF` — and replaces the
 fitting engine with batched, `jit`-compiled kernels that solve thousands of
@@ -139,6 +139,6 @@ the original lives at [`dstndstn/tractor`](https://github.com/dstndstn/tractor).
 
 ## License
 
-GPL-2.0-only. Tractor-JAX is a derivative work of The Tractor, which is
+GPL-2.0-only. TractorJAX is a derivative work of The Tractor, which is
 licensed under the GPLv2 (version 2 only), so this package is distributed
 under the same terms. See `LICENSE` and `COPYING`.

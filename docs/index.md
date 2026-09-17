@@ -1,20 +1,20 @@
-# Tractor-JAX
+# TractorJAX
 
 ```{image} _static/tractorjax-logo.svg
-:alt: Tractor-JAX
+:alt: TractorJAX
 :width: 460px
 :class: only-light
 ```
 
 ```{image} _static/tractorjax-logo-dark.svg
-:alt: Tractor-JAX
+:alt: TractorJAX
 :width: 460px
 :class: only-dark
 ```
 
 **GPU-accelerated astronomical image modeling and forced photometry.**
 
-Tractor-JAX reimplements [The Tractor](https://github.com/dstndstn/tractor)'s
+TractorJAX reimplements [The Tractor](https://github.com/dstndstn/tractor)'s
 probabilistic image model on JAX. It keeps the model classes you already know —
 `Image`, `Catalog`, `PointSource`, `SersicGalaxy`, `PixelizedPSF` — and replaces
 the fitting engine with batched, `jit`-compiled kernels that solve thousands of

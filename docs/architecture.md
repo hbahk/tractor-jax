@@ -6,7 +6,7 @@ a surprising number, or extend the engine.
 
 ## The two layers
 
-Tractor-JAX has an **object layer** that mirrors The Tractor's API — `Image`,
+TractorJAX has an **object layer** that mirrors The Tractor's API — `Image`,
 `Catalog`, `PointSource`, `SersicGalaxy`, `PixelizedPSF`, `WCS` — and a
 **functional JAX layer** (`tractor_jax.jax`) that does the numerical work on
 flat arrays. The object layer is Python and runs once per problem; the JAX layer

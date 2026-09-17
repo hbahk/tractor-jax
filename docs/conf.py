@@ -1,8 +1,8 @@
-# Sphinx configuration for Tractor-JAX documentation.
+# Sphinx configuration for TractorJAX documentation.
 
 from tractor_jax import __version__
 
-project = "Tractor-JAX"
+project = "TractorJAX"
 author = "Hyeonguk Bahk"
 copyright = "2026, Hyeonguk Bahk"
 version = __version__
@@ -51,7 +51,7 @@ myst_enable_extensions = ["colon_fence", "dollarmath"]
 
 # -- HTML output ---------------------------------------------------------------
 html_theme = "pydata_sphinx_theme"
-html_title = f"Tractor-JAX v{release}"
+html_title = f"TractorJAX v{release}"
 html_theme_options = {
     "github_url": "https://github.com/hbahk/tractor-jax",
     "show_toc_level": 2,
@@ -60,7 +60,7 @@ html_theme_options = {
     "logo": {
         "image_light": "_static/tractorjax-logo.svg",
         "image_dark": "_static/tractorjax-logo-dark.svg",
-        "alt_text": "Tractor-JAX",
+        "alt_text": "TractorJAX",
     },
 }
 html_favicon = "_static/favicon.svg"

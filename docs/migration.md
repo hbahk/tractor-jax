@@ -1,6 +1,6 @@
 # Coming from The Tractor
 
-Tractor-JAX mirrors [The Tractor](https://github.com/dstndstn/tractor)'s model
+TractorJAX mirrors [The Tractor](https://github.com/dstndstn/tractor)'s model
 API deliberately: `Image`, `Catalog`, `PointSource`, `PixPos`, `Flux`,
 `GalaxyShape`, `PixelizedPSF` and friends keep their names and constructor
 signatures, so scene-building code usually ports with an import change. What
@@ -10,7 +10,7 @@ compare numbers.
 ## What ports unchanged
 
 ```python
-# The Tractor                              # Tractor-JAX
+# The Tractor                              # TractorJAX
 from tractor import (Image, Tractor,       from tractor_jax import (Image, Tractor,
     PointSource, PixPos, Flux,                 PointSource, PixPos, Flux,
     ConstantSky, NullWCS)                      ConstantSky, NullWCS)
@@ -62,7 +62,7 @@ failure. Check this first when ported results disagree.
 For a PSF stamp with `sampling != 1`, the model must carry the $1/\text{sampling}^2$
 pixel-area factor. The legacy `PixelizedPSF` omits it on the oversampled path, so
 a unit-flux source renders to $\sim\text{sampling}^2$ of its flux (1/25 at
-`sampling=0.2`) and forced fluxes come out ~25× **too high**. Tractor-JAX applies
+`sampling=0.2`) and forced fluxes come out ~25× **too high**. TractorJAX applies
 the factor on both the point-source and the Fourier (galaxy) paths.
 
 If you are comparing against a legacy run that used an oversampled stamp, that
@@ -86,7 +86,7 @@ validated production default in this engine, with calibrated errors
 ### Rendering happens on a grid, in batch
 
 Legacy Tractor renders each source into a `Patch` sized by a `ModelMask` or a
-radius cut. Tractor-JAX renders every source in a batch into a common padded
+radius cut. TractorJAX renders every source in a batch into a common padded
 grid so the work `vmap`s — there is no per-source patch clipping, and no
 `minval`/`modelMask` plumbing. The practical consequence is that very extended
 sources cost the same as compact ones, and that the batch shape (not the source
