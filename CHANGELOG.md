@@ -6,6 +6,10 @@ public API may still change between minor releases.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.0] — 2026-09-18
+
 ### Added
 
 - **Effective-PSF rendering (`pixel_integration="point"`).** The solvers,
