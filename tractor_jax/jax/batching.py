@@ -236,8 +236,12 @@ def make_batched_solver(solver="linear", *, in_axes, return_variances=True,
     **solver_kwargs
         Static solver options (``rcond``, ``floor``, ``alpha``,
         ``penalty_mode``, ``nonneg``, ``debias``, ``debias_signfree``,
-        ``n_iter``, ...). They are baked into the trace; vary them via a new
-        factory call, not per solve.
+        ``n_iter``, ``psf_type``, ``render_mode``, ``pixel_integration``,
+        ...). They are baked into the trace; vary them via a new factory
+        call, not per solve. ``pixel_integration="point"`` renders through an
+        effective PSF (see :func:`build_padded_batches`); a run that mixes
+        optical and effective views must be split into two batches, one per
+        value, each with its own compiled executable.
 
     Returns
     -------
@@ -821,7 +825,15 @@ def build_padded_batches(
     sx, sy : array
         Source pixel positions in the parent frame, indexed by catalog row.
     psf_sampling : float
-        PSF pixel size in image pixels (e.g. 0.2 for 5x oversampling).
+        PSF pixel size in image pixels (e.g. 0.2 for 5x oversampling). The
+        kernel is expected normalized to unit sum on its own (oversampled)
+        grid whatever kind it is: an *optical* PSF, which the solvers
+        integrate over each native pixel (``pixel_integration="window"``,
+        the default), or an *effective* PSF that already contains the pixel
+        response and is sampled at the pixel centres instead
+        (``pixel_integration="point"`` on the solver; the SPHEREx R7 ePSF
+        product is delivered in exactly this normalization). The bundle
+        itself is the same for both; the kind is a static solver option.
     fixed_max_factor : float, optional
         Oversampled-rendering factor; default ``1/psf_sampling`` (or 1).
     profile_lookup_fn : callable, optional

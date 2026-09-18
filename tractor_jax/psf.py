@@ -116,7 +116,7 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
     FIXME -- currently this class claims to have no params.
     '''
 
-    def __init__(self, img, sampling=1., Lorder=3):
+    def __init__(self, img, sampling=1., Lorder=3, pixel_integrated=False):
         '''Create a new PixelizedPSF object from the given PSF image.
 
         Parameters
@@ -129,6 +129,15 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
         Lorder : int, optional
             Order of the Lanczos interpolant used for shifting the image
             to subpixel positions.
+        pixel_integrated : bool, optional
+            ``False`` (default): ``img`` is an *optical* PSF and an
+            oversampled model is block-integrated over each native pixel
+            (the detector pixel response is applied here). ``True``: ``img``
+            is an *effective* PSF that already contains the pixel response
+            (e.g. the SPHEREx R7 ePSF, unit sum on the oversampled grid);
+            it is then point-sampled at the native pixel centres and scaled
+            by ``1/sampling**2`` instead, never integrated again. Ignored
+            when ``sampling == 1``.
         '''
         # ensure float32 and align
         if isinstance(img, np.ndarray):
@@ -155,6 +164,7 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
         self.Lorder = Lorder
         self.fftcache = {}
         self.sampling = sampling
+        self.pixel_integrated = bool(pixel_integrated)
         if sampling != 1.:
             # The size of PSF image we will return.
             self.nativeW = int(np.ceil(self.W * self.sampling))
@@ -451,7 +461,7 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
                                   native_img, img)
         return xlo, ylo, native_img
 
-    def _integrateImage(self, img, dx, dy, k):
+    def _integrateImage(self, img, dx, dy, k, point=False):
         '''Block-integrate an oversampled PSF stamp down to native pixels.
 
         Shifts ``img`` so that its centre lands ``(dx, dy)`` NATIVE pixels off
@@ -461,6 +471,12 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
         ``img`` -- unlike :meth:`_sampleImage`, which point-samples the
         oversampled model and therefore returns a PSF that is too narrow by
         the pixel response.
+
+        With ``point=True`` (an effective PSF, ``pixel_integrated``) the
+        block is not summed: its centre sample is taken (the mean of the two
+        middle samples for an even ``k``) and scaled by ``k**2``, so a model
+        of unit sum on the oversampled grid again carries unit flux, and the
+        pixel response it already contains is not applied a second time.
 
         Returns ``(xl, yl, native_img)`` with the same centring convention as
         :meth:`_sampleImage`.
@@ -513,9 +529,16 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
         # Crop to target size
         crop = shifted[crop_y0 : crop_y0 + target_h, crop_x0 : crop_x0 + target_w]
 
-        # Binning
+        # Binning (optical PSF) or block-centre sampling (effective PSF)
         crop = crop.reshape(self.nativeH, k, self.nativeW, k)
-        downsampled = crop.sum(axis=(1, 3))
+        if point:
+            wts = np.zeros(k, dtype=crop.dtype)
+            lo, hi = (k - 1) // 2, k // 2
+            wts[lo] += 0.5 if lo != hi else 1.0
+            wts[hi] += 0.5 if lo != hi else 0.0
+            downsampled = np.einsum("ajbk,j,k->ab", crop, wts, wts) * (k * k)
+        else:
+            downsampled = crop.sum(axis=(1, 3))
 
         xl = -(self.nativeW // 2)
         yl = -(self.nativeH // 2)
@@ -554,7 +577,8 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
         if is_integer_factor and radius is None:
             k = int(round(factor))
 
-            xl, yl, downsampled = self._integrateImage(img, dx, dy, k)
+            xl, yl, downsampled = self._integrateImage(img, dx, dy, k,
+                                                       point=self.pixel_integrated)
 
             # Adjust scaling.
             # We want to return something that, when multiplied by 'scale' (k^2), gives the Flux.
@@ -593,15 +617,19 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
         dy = py - int(py)
         factor = 1. / self.sampling
         if abs(factor - round(factor)) < 1e-4:
-            # Integer oversampling: BLOCK-INTEGRATE the oversampled model down
-            # to native pixels, exactly as the point-source patch path does.
-            # Point-sampling it instead (the fallback below) drops the pixel
-            # response, which leaves the effective PSF too narrow: galaxies
-            # convolved with it come out ~5% too peaked relative to the
-            # (correct) template renderer in jax/optimizer.py, even though the
-            # total flux is right.
+            # Integer oversampling: BLOCK-INTEGRATE an OPTICAL model down to
+            # native pixels, exactly as the point-source patch path does, or
+            # take the block-centre samples of an EFFECTIVE one
+            # (pixel_integrated: the model already carries the pixel
+            # response, so it must not be integrated a second time).
+            # Point-sampling an optical model instead (the fallback below)
+            # drops the pixel response, which leaves the effective PSF too
+            # narrow: galaxies convolved with it come out ~5% too peaked
+            # relative to the (correct) template renderer in
+            # jax/optimizer.py, even though the total flux is right.
             _, _, img = self._integrateImage(self.getImage(px, py), dx, dy,
-                                             int(round(factor)))
+                                             int(round(factor)),
+                                             point=self.pixel_integrated)
         else:
             _, _, img = self._sampleImage(None, dx, dy)
             # _sampleImage point-samples the oversampled model onto the native
