@@ -29,7 +29,8 @@ from tractor_jax.jax.rendering import (
     render_point_source_fft,
     downsample_image,
 )
-from tractor_jax.jax.rendering import rebin_downsample_int_flux
+from tractor_jax.jax.rendering import (rebin_downsample_int_flux, decimate_int_point,
+                                       PIXEL_INTEGRATIONS)
 from tractor_jax.jax.tiling import tile_image, project_catalog, filter_sources_by_box
 
 
@@ -1194,7 +1195,8 @@ def extract_model_data_direct(
     return images_data, batches, jnp.array(initial_fluxes_matrix, dtype=jnp.float32)
 
 
-def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape, sampling_factor=None, mask=None):
+def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape, sampling_factor=None, mask=None,
+                               pixel_integration="window"):
     """
     Render a batch of point sources onto a single image grid.
 
@@ -1268,10 +1270,10 @@ def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape, sampling_fa
 
         if sampling_factor is not None and s > 1.001:
             combined = combined[:valid_H, :valid_W]
-            combined = downsample_image(combined, img_shape)
+            combined = downsample_image(combined, img_shape, pixel_integration)
         elif sampling_factor is None:
              if H_hr_grid > H + 1:
-                 combined = downsample_image(combined, img_shape)
+                 combined = downsample_image(combined, img_shape, pixel_integration)
 
         return combined
 
@@ -1291,7 +1293,8 @@ def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape, sampling_fa
 
 
 def render_batch_galaxies(
-    fluxes, pos_pix, wcs_cd_inv, shapes, profiles, psf_data, img_shape, sampling_factor=None, mask=None
+    fluxes, pos_pix, wcs_cd_inv, shapes, profiles, psf_data, img_shape, sampling_factor=None, mask=None,
+    pixel_integration="window",
 ):
     """
     Render a batch of galaxies onto a single image grid.
@@ -1370,10 +1373,10 @@ def render_batch_galaxies(
 
         if sampling_factor is not None and s > 1.001:
             combined = combined[:valid_H, :valid_W]
-            combined = downsample_image(combined, img_shape)
+            combined = downsample_image(combined, img_shape, pixel_integration)
         elif sampling_factor is None:
              if H_hr_grid > H + 1:
-                 combined = downsample_image(combined, img_shape)
+                 combined = downsample_image(combined, img_shape, pixel_integration)
 
         return combined
 
@@ -1480,7 +1483,8 @@ def prepare_sharded_inputs(images_data, batches, initial_fluxes):
     )
 
 
-def render_image(fluxes, image_data, batches, sampling_factor=None):
+def render_image(fluxes, image_data, batches, sampling_factor=None,
+                 pixel_integration="window"):
     """
     Render a single model image from sliced batch data.
 
@@ -1498,6 +1502,10 @@ def render_image(fluxes, image_data, batches, sampling_factor=None):
         ``Galaxy``, ``Background``).
     sampling_factor : float, optional
         High-resolution oversampling factor forwarded to the renderers.
+    pixel_integration : {"window", "point"}, optional
+        Native-pixel integration window (optical PSF, default) or point
+        sampling at the pixel centres (effective PSF); see
+        :func:`tractor_jax.jax.rendering.downsample_image`.
 
     Returns
     -------
@@ -1516,7 +1524,8 @@ def render_image(fluxes, image_data, batches, sampling_factor=None):
         mask = batch.get("mask", None)
 
         ps_model = render_batch_point_sources(
-            batch_fluxes, pos_pix, image_data["psf"], (H, W), sampling_factor=sampling_factor, mask=mask
+            batch_fluxes, pos_pix, image_data["psf"], (H, W), sampling_factor=sampling_factor, mask=mask,
+            pixel_integration=pixel_integration,
         )
         img_model = img_model + ps_model
 
@@ -1541,7 +1550,8 @@ def render_image(fluxes, image_data, batches, sampling_factor=None):
             image_data["psf"],
             (H, W),
             sampling_factor=sampling_factor,
-            mask=mask
+            mask=mask,
+            pixel_integration=pixel_integration,
         )
         img_model = img_model + gal_model
 
@@ -1556,7 +1566,7 @@ def render_image(fluxes, image_data, batches, sampling_factor=None):
     return img_model
 
 
-def compute_fisher_diagonal(image_data, batches, n_flux):
+def compute_fisher_diagonal(image_data, batches, n_flux, pixel_integration="window"):
     """
     Compute the diagonal of the Fisher information matrix for a single image.
 
@@ -1615,7 +1625,8 @@ def compute_fisher_diagonal(image_data, batches, n_flux):
             stamps = render_fn(unit_fluxes, pos_pix_scaled, psf_data['fft'])
 
             if scale > 1.001:
-                ds_fn = vmap(partial(downsample_image, target_shape=(H, W)))
+                ds_fn = vmap(partial(downsample_image, target_shape=(H, W),
+                                     pixel_integration=pixel_integration))
                 stamps = ds_fn(stamps)
             return stamps
 
@@ -1661,7 +1672,8 @@ def compute_fisher_diagonal(image_data, batches, n_flux):
             stamps = render_fn(gal_mix, psf_data['fft'], shapes, wcs_cd_inv_scaled, pos_pix_scaled)
 
             if scale > 1.001:
-                ds_fn = vmap(partial(downsample_image, target_shape=(H, W)))
+                ds_fn = vmap(partial(downsample_image, target_shape=(H, W),
+                                     pixel_integration=pixel_integration))
                 stamps = ds_fn(stamps)
             return stamps
 
@@ -1754,9 +1766,11 @@ def _place_native_stamp(stamp, n0y, n0x, H, W):
     return canvas[Sn:Sn + H, Sn:Sn + W]
 
 
-def _compact_hr_to_native(hr, h0y, h0x, k, H, W):
-    """Block-integrate an ``(S, S)`` high-res stamp into native pixels and
-    place it into an ``(H, W)`` image.
+def _compact_hr_to_native(hr, h0y, h0x, k, H, W, pixel_integration="window"):
+    """Bring an ``(S, S)`` high-res stamp to native pixels (block-integrated
+    for an optical PSF, point-sampled at the pixel centres for an effective
+    one, see :func:`tractor_jax.jax.rendering.downsample_image`) and place
+    it into an ``(H, W)`` image.
 
     ``(h0y, h0x)`` is the stamp's lower-left pixel on the FULL high-res grid
     (whose origin is aligned with native pixel 0, i.e. high-res pixels
@@ -1772,11 +1786,14 @@ def _compact_hr_to_native(hr, h0y, h0x, k, H, W):
     ax = h0x - k * n0x
     canvas = jnp.zeros((S + k, S + k), hr.dtype)
     canvas = jax.lax.dynamic_update_slice(canvas, hr, (ay, ax))
-    native = rebin_downsample_int_flux(canvas, k, k)        # (S/k + 1, S/k + 1)
+    if pixel_integration == "point":
+        native = decimate_int_point(canvas, k, k)           # (S/k + 1, S/k + 1)
+    else:
+        native = rebin_downsample_int_flux(canvas, k, k)    # (S/k + 1, S/k + 1)
     return _place_native_stamp(native, n0y, n0x, H, W)
 
 
-def _compact_ps_templates(pos_hr, unit, fft_stamp, k, H, W):
+def _compact_ps_templates(pos_hr, unit, fft_stamp, k, H, W, pixel_integration="window"):
     """Point-source templates on a compact ``S x S`` high-res stamp.
 
     Same algebra as the full-grid path — the PSF transform times a phase
@@ -1796,13 +1813,14 @@ def _compact_ps_templates(pos_hr, unit, fft_stamp, k, H, W):
         hr = render_point_source_fft(u, (half + frac[0], half + frac[1]),
                                      fft_stamp, (S, S))
         ci = c.astype(jnp.int32)
-        return _compact_hr_to_native(hr, ci[1] - half, ci[0] - half, k, H, W)
+        return _compact_hr_to_native(hr, ci[1] - half, ci[0] - half, k, H, W,
+                                     pixel_integration)
 
     return vmap(one)(pos_hr, unit)
 
 
 def _compact_gal_templates(gal_mix, fft_stamp, shapes, wcs_scaled, pos_hr,
-                           k, H, W):
+                           k, H, W, pixel_integration="window"):
     """Galaxy templates on a compact ``S x S`` high-res stamp (see
     :func:`_compact_ps_templates`); the analytic mixture transform is
     evaluated on the stamp's frequency grid at the sub-pixel position."""
@@ -1815,14 +1833,16 @@ def _compact_gal_templates(gal_mix, fft_stamp, shapes, wcs_scaled, pos_hr,
         hr = render_galaxy_fft(mix, fft_stamp, shp, cd,
                                (half + frac[0], half + frac[1]), (S, S))
         ci = c.astype(jnp.int32)
-        return _compact_hr_to_native(hr, ci[1] - half, ci[0] - half, k, H, W)
+        return _compact_hr_to_native(hr, ci[1] - half, ci[0] - half, k, H, W,
+                                     pixel_integration)
 
     return vmap(one, in_axes=((0, 0, 0), 0, 0, 0))(gal_mix, shapes, wcs_scaled,
                                                    pos_hr)
 
 
 def _fullgrid_gal_templates(gal_mix, psf_fft, shapes, wcs_scaled, pos_scaled,
-                            H, W, H_hr_grid, W_hr_grid, s, sampling_factor):
+                            H, W, H_hr_grid, W_hr_grid, s, sampling_factor,
+                            pixel_integration="window"):
     """Full padded-grid galaxy templates for an arbitrary sub-batch (used for
     the galaxies too extended for the compact stamp). Mirrors the default
     ``_gal_stamps_fft`` path exactly."""
@@ -1835,17 +1855,20 @@ def _fullgrid_gal_templates(gal_mix, psf_fft, shapes, wcs_scaled, pos_scaled,
     render_fn = vmap(partial(render_galaxy_fft, image_shape=render_shape),
                      in_axes=((0, 0, 0), None, 0, 0, 0))
     stamps = render_fn(gal_mix, psf_fft, shapes, wcs_scaled, pos_scaled)
+    ds_fn = vmap(partial(downsample_image, target_shape=(H, W),
+                         pixel_integration=pixel_integration))
     if sampling_factor is not None and s > 1.001:
         stamps = stamps[:, :valid_H, :valid_W]
-        stamps = vmap(partial(downsample_image, target_shape=(H, W)))(stamps)
+        stamps = ds_fn(stamps)
     elif sampling_factor is None:
         if H_hr_grid > H + 1:
-            stamps = vmap(partial(downsample_image, target_shape=(H, W)))(stamps)
+            stamps = ds_fn(stamps)
     return stamps
 
 
 def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
-                             psf_type=None, render_mode="auto"):
+                             psf_type=None, render_mode="auto",
+                             pixel_integration="window"):
     """
     Render unit-flux template images for every source (and background).
 
@@ -1884,6 +1907,18 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
         zero-weight padding region it differs by construction, because the
         full grid's periodic wrap parks the light of a source near the low
         edge at the far end of the padded grid while the stamp path clips it.
+    pixel_integration : {"window", "point"}, optional
+        How the high-res render becomes native pixels. ``"window"``
+        (default) integrates over each native pixel, which is right for an
+        *optical* PSF (the detector pixel response is applied here).
+        ``"point"`` samples at the native pixel centres, which is right for
+        an *effective* PSF that already contains the pixel response (the
+        SPHEREx R7 ePSF); the kernel is then expected normalized to unit sum
+        on the high-res grid, as the ePSF product is, and the sampled
+        template is scaled by ``k^2`` so it has unit flux. Static: a
+        trace-time branch, one executable per value. The MoG PSF path is
+        unaffected (it renders at native resolution, point-sampled by
+        construction).
 
     Returns
     -------
@@ -1894,6 +1929,9 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
     if render_mode not in _RENDER_MODES:
         raise ValueError(f"render_mode must be one of {_RENDER_MODES}, "
                          f"got {render_mode!r}")
+    if pixel_integration not in PIXEL_INTEGRATIONS:
+        raise ValueError(f"pixel_integration must be one of {PIXEL_INTEGRATIONS}, "
+                         f"got {pixel_integration!r}")
     if psf_type not in _PSF_TYPES:
         raise ValueError(f"psf_type must be one of {_PSF_TYPES}, "
                          f"got {psf_type!r}")
@@ -1937,13 +1975,13 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
             render_fn = vmap(partial(render_point_source_fft, image_shape=render_shape),
                              in_axes=(0, 0, None))
             stamps = render_fn(unit, pos_scaled, psf_data['fft'])
+            ds_fn = vmap(partial(downsample_image, target_shape=(H, W),
+                                 pixel_integration=pixel_integration))
             if sampling_factor is not None and s > 1.001:
                 stamps = stamps[:, :valid_H, :valid_W]
-                ds_fn = vmap(partial(downsample_image, target_shape=(H, W)))
                 stamps = ds_fn(stamps)
             elif sampling_factor is None:
                 if H_hr_grid > H + 1:
-                    ds_fn = vmap(partial(downsample_image, target_shape=(H, W)))
                     stamps = ds_fn(stamps)
             return stamps
 
@@ -1969,7 +2007,8 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
             if mask is not None:
                 unit = unit * mask
             ps_stamps = _compact_ps_templates(pos_scaled, unit,
-                                              psf_data["fft_stamp"], k_int, H, W)
+                                              psf_data["fft_stamp"], k_int, H, W,
+                                              pixel_integration)
         elif psf_type == "fft":
             ps_stamps = _ps_stamps_fft(None)
         elif psf_type == "mog":
@@ -2014,13 +2053,13 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
             render_fn = vmap(partial(render_galaxy_fft, image_shape=render_shape),
                              in_axes=((0, 0, 0), None, 0, 0, 0))
             stamps = render_fn(gal_mix, psf_data['fft'], shapes, wcs_scaled, pos_scaled)
+            ds_fn = vmap(partial(downsample_image, target_shape=(H, W),
+                                 pixel_integration=pixel_integration))
             if sampling_factor is not None and s > 1.001:
                 stamps = stamps[:, :valid_H, :valid_W]
-                ds_fn = vmap(partial(downsample_image, target_shape=(H, W)))
                 stamps = ds_fn(stamps)
             elif sampling_factor is None:
                 if H_hr_grid > H + 1:
-                    ds_fn = vmap(partial(downsample_image, target_shape=(H, W)))
                     stamps = ds_fn(stamps)
             return stamps
 
@@ -2051,7 +2090,7 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
                 unit = unit * stamp_mask
             gal_stamps = _compact_gal_templates(
                 gal_mix, psf_data["fft_stamp"], shapes, wcs_scaled, pos_scaled,
-                k_int, H, W)
+                k_int, H, W, pixel_integration)
             gal_stamps = gal_stamps * unit[:, jnp.newaxis, jnp.newaxis]
             templates = templates.at[f_idx].add(gal_stamps)
             large_idx = batch.get("large_idx")
@@ -2062,7 +2101,8 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
                 large_stamps = _fullgrid_gal_templates(
                     gal_mix_l, psf_data['fft'], shapes[large_idx],
                     wcs_scaled[large_idx], pos_scaled[large_idx],
-                    H, W, H_hr_grid, W_hr_grid, s, sampling_factor)
+                    H, W, H_hr_grid, W_hr_grid, s, sampling_factor,
+                    pixel_integration)
                 large_stamps = large_stamps * lmask[:, jnp.newaxis, jnp.newaxis]
                 templates = templates.at[f_idx[large_idx]].add(large_stamps)
         else:
@@ -2088,7 +2128,7 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
 
 def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=False,
                         sampling_factor=None, rcond=1e-12, psf_type=None,
-                        render_mode="auto"):
+                        render_mode="auto", pixel_integration="window"):
     """
     Direct linear solve for forced photometry on a SINGLE image.
 
@@ -2135,7 +2175,8 @@ def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=Fa
     templates = _render_source_templates(image_data, batches, n_flux,
                                          sampling_factor=sampling_factor,
                                          psf_type=psf_type,
-                                         render_mode=render_mode)
+                                         render_mode=render_mode,
+                                         pixel_integration=pixel_integration)
 
     data_flat = image_data["data"].ravel()
     w_flat = image_data["invvar"].ravel()
@@ -2220,6 +2261,7 @@ def _eigh_dispatch(Ghat, eig_method="cusolver", eig_host_threads=4):
 def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
                           return_variances=False, sampling_factor=None,
                           floor=1e-4, psf_type=None, render_mode="auto",
+                          pixel_integration="window",
                           eig_method="cusolver", eig_host_threads=4):
     """
     Direct linear solve with an eigenvalue floor on the Jacobi-normalized AtWA.
@@ -2288,7 +2330,8 @@ def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
     templates = _render_source_templates(image_data, batches, n_flux,
                                          sampling_factor=sampling_factor,
                                          psf_type=psf_type,
-                                         render_mode=render_mode)
+                                         render_mode=render_mode,
+                                         pixel_integration=pixel_integration)
 
     data_flat = image_data["data"].ravel()
     w_flat = image_data["invvar"].ravel()
@@ -2424,6 +2467,7 @@ def solve_fluxes_eigfloor_prior(initial_fluxes, image_data, batches,
                                 lambda_diag=None, f_prior=None,
                                 return_variances=False, sampling_factor=None,
                                 floor=1e-4, psf_type=None, render_mode="auto",
+                                pixel_integration="window",
                                 eig_method="cusolver", eig_host_threads=4):
     """
     Eigfloor solve with per-source Gaussian flux priors (ridge-toward-prior).
@@ -2502,7 +2546,8 @@ def solve_fluxes_eigfloor_prior(initial_fluxes, image_data, batches,
     templates = _render_source_templates(image_data, batches, n_flux,
                                          sampling_factor=sampling_factor,
                                          psf_type=psf_type,
-                                         render_mode=render_mode)
+                                         render_mode=render_mode,
+                                         pixel_integration=pixel_integration)
 
     data_flat = image_data["data"].ravel()
     w_flat = image_data["invvar"].ravel()
@@ -2678,6 +2723,7 @@ def _ln_binom(p, k):
 def solve_fluxes_lasso(initial_fluxes, image_data, batches,
                        return_variances=False, sampling_factor=None,
                        psf_type=None, render_mode="auto",
+                       pixel_integration="window",
                        alpha=None, penalty_mode="snr", penalty_weights=None,
                        nonneg=True, selection_mode="fixed", criterion="ebic",
                        grid=None, ebic_gamma=0.5, return_path=False,
@@ -2817,7 +2863,8 @@ def solve_fluxes_lasso(initial_fluxes, image_data, batches,
     templates = _render_source_templates(image_data, batches, n_flux,
                                          sampling_factor=sampling_factor,
                                          psf_type=psf_type,
-                                         render_mode=render_mode)
+                                         render_mode=render_mode,
+                                         pixel_integration=pixel_integration)
     data_flat = image_data["data"].ravel()
     w_flat = image_data["invvar"].ravel()
     A = templates.reshape(n_flux, -1).T
@@ -2843,6 +2890,7 @@ def solve_fluxes_lasso(initial_fluxes, image_data, batches,
 def solve_fluxes_lasso_batched(initial_fluxes, image_data, batches, data_stack,
                                return_variances=False, sampling_factor=None,
                                psf_type=None, render_mode="auto",
+                               pixel_integration="window",
                                alpha=None, penalty_mode="snr",
                                penalty_weights=None, nonneg=True,
                                selection_mode="fixed", criterion="ebic",
@@ -2894,7 +2942,8 @@ def solve_fluxes_lasso_batched(initial_fluxes, image_data, batches, data_stack,
     templates = _render_source_templates(image_data, batches, n_flux,
                                          sampling_factor=sampling_factor,
                                          psf_type=psf_type,
-                                         render_mode=render_mode)
+                                         render_mode=render_mode,
+                                         pixel_integration=pixel_integration)
     w_flat = image_data["invvar"].ravel()
     A = templates.reshape(n_flux, -1).T
 

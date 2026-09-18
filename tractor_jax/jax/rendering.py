@@ -38,6 +38,60 @@ def rebin_downsample_int_flux(img: jnp.ndarray, k_y: int, k_x: int) -> jnp.ndarr
     return img.sum(axis=(1, 3))
 
 
+PIXEL_INTEGRATIONS = ("window", "point")
+
+
+def _centre_weights(k: int, dtype) -> jnp.ndarray:
+    """Weights that pick the centre of a block of ``k`` high-res samples:
+    the middle sample for odd ``k``, the mean of the two middle samples for
+    even ``k`` (the native pixel centre then falls between samples)."""
+    w = jnp.zeros((k,), dtype)
+    lo = (k - 1) // 2
+    hi = k // 2
+    if lo == hi:
+        return w.at[lo].set(1.0)
+    return w.at[lo].set(0.5).at[hi].set(0.5)
+
+
+def decimate_int_point(img: jnp.ndarray, k_y: int, k_x: int) -> jnp.ndarray:
+    """Point-sample an integer-factor high-res image at the native pixel centres.
+
+    The counterpart of :func:`rebin_downsample_int_flux` for an *effective*
+    PSF (one that already contains the detector pixel response, e.g. the
+    SPHEREx R7 ePSF): the high-res image is not integrated over the native
+    pixel, it is evaluated at the pixel centre, high-res sample
+    ``k*n + (k-1)/2`` of the block ``[k*n, k*n + k)`` that
+    :func:`rebin_downsample_int_flux` would sum, and multiplied by
+    ``k_y * k_x`` so that a kernel normalized to unit sum on the high-res
+    grid gives a unit-flux native template (the ePSF value is the fraction of
+    the flux in a native pixel; sampled every ``1/k`` px it sums to ``k^2``).
+    For an even factor the centre falls between two samples and their mean
+    is taken.
+
+    Parameters
+    ----------
+    img : jnp.ndarray
+        High-res image ``(H, W)``, aligned so that high-res pixels
+        ``[k*n, k*n + k)`` belong to native pixel ``n`` (cropped to the
+        largest divisible extent, like the block-sum).
+    k_y, k_x : int
+        Integer factors along the rows and columns.
+
+    Returns
+    -------
+    jnp.ndarray
+        Native image of shape ``(H // k_y, W // k_x)``.
+    """
+    H, W = img.shape
+    H2 = (H // k_y) * k_y
+    W2 = (W // k_x) * k_x
+    img = img[:H2, :W2].reshape(H2 // k_y, k_y, W2 // k_x, k_x)
+    wy = _centre_weights(k_y, img.dtype)
+    wx = _centre_weights(k_x, img.dtype)
+    out = jnp.einsum("ajbk,j,k->ab", img, wy, wx)
+    return out * (k_y * k_x)
+
+
 def get_galaxy_shape_matrix(re, ab, phi):
     """Compute the galaxy shape transformation matrix.
 
@@ -301,14 +355,22 @@ def _boxcar_downsample_flux(img, out_h, out_w):
     return Cci[:, 1:] - Cci[:, :-1]                                 # (out_h, out_w)
 
 
-def downsample_image(img, target_shape):
-    """Downsample an image flux-conservingly to a target shape.
+def downsample_image(img, target_shape, pixel_integration="window"):
+    """Bring a high-res rendered image to the native pixel grid.
 
-    Applies the native output-pixel integration window (so a rendered PSF
-    is integrated over each detector pixel, not point-sampled). Integer
-    factors use fast block-sum rebinning; non-integer factors use the
-    exact boxcar integral (:func:`_boxcar_downsample_flux`), which agrees
-    with the block-sum at integer factors.
+    ``pixel_integration="window"`` (default) applies the native output-pixel
+    integration window, so a rendered *optical* PSF is integrated over each
+    detector pixel, not point-sampled: integer factors use fast block-sum
+    rebinning, non-integer factors the exact boxcar integral
+    (:func:`_boxcar_downsample_flux`), which agrees with the block-sum at
+    integer factors. ``"point"`` is for an *effective* PSF that already
+    contains the pixel response (the SPHEREx R7 ePSF): the image is
+    evaluated at the native pixel centres instead
+    (:func:`decimate_int_point`), because integrating it again would apply
+    the pixel window twice (an extra ``1/12`` px^2 of variance, ~30 % more
+    Neff on SPHEREx). Point sampling needs integer factors and raises
+    otherwise. The choice is a Python-level (trace-time) branch: pass it as
+    a static option, one compiled executable per value.
 
     Parameters
     ----------
@@ -317,11 +379,14 @@ def downsample_image(img, target_shape):
     target_shape : tuple of int
         Target shape ``(H, W)``. Must be static or concrete at trace time
         so that integer downsampling can be detected.
+    pixel_integration : {"window", "point"}
+        Whether the high-res image is integrated over (optical PSF) or
+        sampled at (effective PSF) the native pixels.
 
     Returns
     -------
     jnp.ndarray
-        Downsampled image of shape ``(H, W)``.
+        Native-resolution image of shape ``(H, W)``.
 
     Notes
     -----
@@ -331,6 +396,9 @@ def downsample_image(img, target_shape):
     (proj-spherex-gpupipe lasso_alpha/11). Integer-factor rendering
     (e.g. production SPHEREx cutouts at OVERSAMP 10/5) is unchanged.
     """
+    if pixel_integration not in PIXEL_INTEGRATIONS:
+        raise ValueError(f"pixel_integration must be one of {PIXEL_INTEGRATIONS}, "
+                         f"got {pixel_integration!r}")
     H_hr, W_hr = img.shape
     H, W = target_shape
 
@@ -341,8 +409,15 @@ def downsample_image(img, target_shape):
     if is_int_y and is_int_x:
         k_y = int(H_hr // H)
         k_x = int(W_hr // W)
+        if pixel_integration == "point":
+            return decimate_int_point(img, k_y, k_x)
         return rebin_downsample_int_flux(img, k_y, k_x)
 
+    if pixel_integration == "point":
+        raise ValueError(
+            "pixel_integration='point' needs integer high-res factors "
+            f"(got {H_hr}x{W_hr} -> {H}x{W}); an effective PSF must be rendered "
+            "on a grid that is an integer multiple of the native one")
     return _boxcar_downsample_flux(img, H, W)
 
 

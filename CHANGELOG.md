@@ -6,7 +6,25 @@ public API may still change between minor releases.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Effective-PSF rendering (`pixel_integration="point"`).** The solvers,
+  `_render_source_templates`, `render_image`, `compute_fisher_diagonal` and
+  the batch renderers take a static `pixel_integration` option:
+  `"window"` (default, unchanged) integrates the high-res render over each
+  native pixel, the right thing for an *optical* PSF; `"point"` samples it at
+  the native pixel centres (`rendering.decimate_int_point`, the block-centre
+  sample times `k^2`), the right thing for an *effective* PSF that already
+  contains the pixel response, such as the SPHEREx R7 ePSF (5x, unit sum on
+  the oversampled grid). Integrating an effective PSF again applies the pixel
+  window twice (`+1/12` px^2 of variance; ~30 % more Neff and a +4–13 %
+  central residual on SPHEREx). Point mode needs an integer high-res factor
+  and raises otherwise; it is a trace-time branch, one executable per value,
+  and works on the full grid and the compact stamp. The CPU
+  `PixelizedPSF(pixel_integrated=True)` does the same on its patch and Fourier
+  paths. Rendering an optical kernel through `"window"` and its box-convolved
+  effective kernel through `"point"` gives the same templates to FFT
+  round-off (`tests/test_pixel_integration.py`).
 
 ## [0.2.0] — 2026-09-17
 
