@@ -28,7 +28,8 @@ authors:
     affiliation: >-
       Astronomy Program, Department of Physics and Astronomy, Seoul National
       University
-version: 0.1.0
+version: 0.3.0
+date-released: 2026-09-18
 repository-code: https://github.com/hbahk/tractor-jax
 url: https://tractor-jax.readthedocs.io/
 license: GPL-2.0-only
