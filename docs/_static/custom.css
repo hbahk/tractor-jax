@@ -1,0 +1,7 @@
+/* Light/dark-only images (the `only-light` / `only-dark` classes of the
+ * pydata and furo themes, used for the wordmark on the index page). Shibuya
+ * has no such rule of its own and flags the colour mode on <html>. */
+html.dark .only-light,
+html.light .only-dark {
+  display: none;
+}

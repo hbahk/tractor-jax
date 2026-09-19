@@ -15,7 +15,6 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
     "myst_parser",
-    "sphinx_copybutton",
 ]
 
 templates_path = ["_templates"]
@@ -54,7 +53,7 @@ html_theme = "shibuya"
 html_title = f"TractorJAX v{release}"
 html_theme_options = {
     "github_url": "https://github.com/hbahk/tractor-jax",
-    "accent_color": "indigo",
+    "accent_color": "lime",
     "globaltoc_expand_depth": 1,
     "toctree_collapse": False,
     # The artwork's cube seams are near-white, which glares on a dark
@@ -69,5 +68,8 @@ html_theme_options = {
 }
 html_favicon = "_static/favicon.svg"
 html_static_path = ["_static"]
+# custom.css: show only the light or the dark wordmark on the index page
+# (Shibuya has no `only-light` / `only-dark` rule of its own).
+html_css_files = ["custom.css"]
 
 html_extra_path = ["googlee20a25095441ea75.html"]

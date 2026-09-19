@@ -41,7 +41,6 @@ docs = [
     "sphinx>=7",
     "shibuya",
     "myst-parser",
-    "sphinx-copybutton",
 ]
 dev = [
     "matplotlib",
