@@ -30,6 +30,14 @@ authors:
       University
 version: 0.3.0
 date-released: 2026-09-18
+doi: 10.5281/zenodo.22845026
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.22845025
+    description: Concept DOI, resolving to the latest archived version on Zenodo
+  - type: doi
+    value: 10.5281/zenodo.22845026
+    description: Version DOI of TractorJAX 0.3.0
 repository-code: https://github.com/hbahk/tractor-jax
 url: https://tractor-jax.readthedocs.io/
 license: GPL-2.0-only

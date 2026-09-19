@@ -7,6 +7,8 @@
     <img src="https://github.com/hbahk/tractor-jax/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://tractor-jax.readthedocs.io/en/latest/">
     <img src="https://readthedocs.org/projects/tractor-jax/badge/?version=latest" alt="Documentation Status"></a>
+  <a href="https://doi.org/10.5281/zenodo.22845025">
+    <img src="https://zenodo.org/badge/DOI/10.5281/zenodo.22845025.svg" alt="DOI"></a>
   <a href="https://www.gnu.org/licenses/old-licenses/gpl-2.0">
     <img src="https://img.shields.io/badge/license-GPL--2.0--only-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+">
