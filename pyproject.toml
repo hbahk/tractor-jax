@@ -39,7 +39,7 @@ Source = "https://github.com/hbahk/tractor-jax"
 [project.optional-dependencies]
 docs = [
     "sphinx>=7",
-    "pydata-sphinx-theme",
+    "shibuya",
     "myst-parser",
     "sphinx-copybutton",
 ]

@@ -50,18 +50,22 @@ intersphinx_mapping = {
 myst_enable_extensions = ["colon_fence", "dollarmath"]
 
 # -- HTML output ---------------------------------------------------------------
-html_theme = "pydata_sphinx_theme"
+html_theme = "shibuya"
 html_title = f"TractorJAX v{release}"
 html_theme_options = {
     "github_url": "https://github.com/hbahk/tractor-jax",
-    "show_toc_level": 2,
-    # The artwork's cube seams are near-white, which glares on a dark navbar;
-    # the dark variant swaps them for a dark seam.
-    "logo": {
-        "image_light": "_static/tractorjax-logo.svg",
-        "image_dark": "_static/tractorjax-logo-dark.svg",
-        "alt_text": "TractorJAX",
-    },
+    "accent_color": "indigo",
+    "globaltoc_expand_depth": 1,
+    "toctree_collapse": False,
+    # The artwork's cube seams are near-white, which glares on a dark
+    # background; the dark variant swaps them for a dark seam.
+    "light_logo": "_static/tractorjax-logo.svg",
+    "dark_logo": "_static/tractorjax-logo-dark.svg",
+    "nav_links": [
+        {"title": "Quickstart", "url": "quickstart"},
+        {"title": "API", "url": "api"},
+        {"title": "SPHEREx layer", "url": "https://tractorjax-spherex.readthedocs.io/", "external": True},
+    ],
 }
 html_favicon = "_static/favicon.svg"
 html_static_path = ["_static"]
