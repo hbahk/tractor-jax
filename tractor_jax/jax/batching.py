@@ -217,7 +217,7 @@ def clear_solver_cache():
 
 
 def make_batched_solver(solver="linear", *, in_axes, return_variances=True,
-                        cache=True, **solver_kwargs):
+                        return_diagnostics=False, cache=True, **solver_kwargs):
     """Return a jitted vmapped flux solver.
 
     Parameters
@@ -229,6 +229,14 @@ def make_batched_solver(solver="linear", *, in_axes, return_variances=True,
         exactly (see :func:`batches_in_axes`).
     return_variances : bool
         Passed through to the solver.
+    return_diagnostics : bool
+        Passed through to the solver ("linear", "eigfloor", "eigfloor_prior"
+        only): the callable then also returns per-source residual diagnostics,
+        a dict of ``(n_images, n_flux)`` stacks ``{"chi2", "mask_frac"}`` (see
+        :func:`tractor_jax.jax.optimizer._fit_diagnostics`), as the last
+        element. The extra outputs change XLA's fusion of the shared graph,
+        so the fluxes agree with a ``return_diagnostics=False`` solve to
+        rounding, not to the bit (float32 toy blend: 1e-4 sigma at most).
     cache : bool
         Memoize the returned callable on ``(solver, return_variances,
         solver_kwargs, in_axes)``. All kwargs must then be hashable; pass
@@ -264,6 +272,10 @@ def make_batched_solver(solver="linear", *, in_axes, return_variances=True,
     if solver not in _SOLVER_FNS:
         raise ValueError(f"unknown solver {solver!r}; "
                          f"expected one of {sorted(_SOLVER_FNS)}")
+    if return_diagnostics and solver == "lasso":
+        raise ValueError("return_diagnostics is not supported for solver='lasso'")
+    if return_diagnostics:
+        solver_kwargs = dict(solver_kwargs, return_diagnostics=True)
     key = None
     if cache:
         key = (solver, bool(return_variances), _freeze(solver_kwargs),
