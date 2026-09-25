@@ -28,9 +28,9 @@ authors:
     affiliation: >-
       Astronomy Program, Department of Physics and Astronomy, Seoul National
       University
-version: 0.3.0
-date-released: 2026-09-18
-doi: 10.5281/zenodo.22845026
+version: 0.3.1
+date-released: 2026-09-25
+doi: 10.5281/zenodo.22845025
 identifiers:
   - type: doi
     value: 10.5281/zenodo.22845025

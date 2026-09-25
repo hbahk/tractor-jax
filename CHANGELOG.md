@@ -8,6 +8,25 @@ public API may still change between minor releases.
 
 Nothing yet.
 
+## [0.3.1] — 2026-09-25
+
+### Added
+
+- **Per-source fit diagnostics (`return_diagnostics=True`).**
+  `solve_fluxes_linear`, `solve_fluxes_eigfloor`, `solve_fluxes_eigfloor_prior`
+  and `make_batched_solver` can also return, per flux slot, `chi2` — the
+  template-weighted normalized squared residual over the source's unmasked
+  pixels, `sum_p A_ps w_p r_p^2 / sum_p A_ps [w_p > 0]`, about 1 for a good fit
+  — and `mask_frac`, the fraction of the source's template on masked pixels.
+  They cost three matrix-vector products of the design matrix the solve
+  already built, and flag what a flux error cannot: an unflagged bad pixel, a
+  cosmic ray or unmodelled structure under the source (a SPHEREx visit with a
+  cold pixel beside the target came out at 200x the source's median `chi2`).
+  Off by default; `lasso` rejects it. Eager calls return identical fluxes;
+  under `jit` the extra outputs change XLA's fusion of the shared graph, so the
+  fluxes agree with a `return_diagnostics=False` solve to rounding, not to the
+  bit (`tests/test_solve_diagnostics.py`).
+
 ## [0.3.0] — 2026-09-18
 
 ### Added
