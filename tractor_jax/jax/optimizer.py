@@ -2126,9 +2126,47 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
     return templates
 
 
+def _fit_diagnostics(A, data_flat, w_flat, fluxes):
+    """Per-source residual diagnostics of a linear flux fit on one image.
+
+    With the model ``m = A f`` and residual ``r = d - m``:
+
+    ``chi2``
+        Template-weighted mean normalized squared residual over each source's
+        unmasked pixels, ``sum_p A_ps w_p r_p^2 / sum_p A_ps [w_p > 0]``.
+        About 1 when the model describes the source's own pixels within their
+        errors; a bad pixel, a cosmic ray or unmodelled structure under the
+        source raises it. Unlike a whole-image chi2 it is local to the source,
+        so a problem elsewhere in the image does not flag every source.
+    ``mask_frac``
+        Fraction of the source's template on masked (``w == 0``) pixels.
+
+    Dead slots (all-zero template) get NaN. The cost is three matrix-vector
+    products of the design matrix the solve already built.
+    """
+    resid = data_flat - A @ fluxes
+    good = (w_flat > 0).astype(A.dtype)
+    t_all = jnp.sum(A, axis=0)
+    t_good = A.T @ good
+    chi2_num = A.T @ (w_flat * resid * resid)
+    has_good = t_good > 0
+    chi2 = jnp.where(has_good, chi2_num / jnp.where(has_good, t_good, 1.0), jnp.nan)
+    has_any = t_all > 0
+    mask_frac = jnp.where(has_any, 1.0 - t_good / jnp.where(has_any, t_all, 1.0), jnp.nan)
+    return {"chi2": chi2, "mask_frac": mask_frac}
+
+
+def _with_diagnostics(result, A, data_flat, w_flat):
+    """Append :func:`_fit_diagnostics` to a solver result (``f`` or ``(f, v)``)."""
+    if isinstance(result, tuple):
+        return result + (_fit_diagnostics(A, data_flat, w_flat, result[0]),)
+    return result, _fit_diagnostics(A, data_flat, w_flat, result)
+
+
 def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=False,
                         sampling_factor=None, rcond=1e-12, psf_type=None,
-                        render_mode="auto", pixel_integration="window"):
+                        render_mode="auto", pixel_integration="window",
+                        return_diagnostics=False):
     """
     Direct linear solve for forced photometry on a SINGLE image.
 
@@ -2152,6 +2190,9 @@ def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=Fa
         renderer.
     rcond : float, optional
         Jacobi-scaled ridge strength (see Notes).
+    return_diagnostics : bool, optional
+        If True, also return per-source residual diagnostics (see
+        :func:`_fit_diagnostics`) as the last element.
 
     Returns
     -------
@@ -2160,6 +2201,9 @@ def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=Fa
     variances : jax.numpy.ndarray
         Flux variances, shape (n_flux,). Only returned if
         ``return_variances`` is True.
+    diagnostics : dict
+        ``{"chi2", "mask_frac"}``, each shape (n_flux,). Only returned if
+        ``return_diagnostics`` is True.
 
     Notes
     -----
@@ -2195,9 +2239,12 @@ def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=Fa
     if return_variances:
         cov = jnp.linalg.inv(AtWA_reg)
         variances = jnp.where(live, jnp.diag(cov), jnp.inf)
-        return optimized_fluxes, variances
-
-    return optimized_fluxes
+        result = (optimized_fluxes, variances)
+    else:
+        result = optimized_fluxes
+    if return_diagnostics:
+        return _with_diagnostics(result, A, data_flat, w_flat)
+    return result
 
 
 _EIG_METHODS = ("cusolver", "host")
@@ -2262,7 +2309,8 @@ def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
                           return_variances=False, sampling_factor=None,
                           floor=1e-4, psf_type=None, render_mode="auto",
                           pixel_integration="window",
-                          eig_method="cusolver", eig_host_threads=4):
+                          eig_method="cusolver", eig_host_threads=4,
+                          return_diagnostics=False):
     """
     Direct linear solve with an eigenvalue floor on the Jacobi-normalized AtWA.
 
@@ -2294,6 +2342,9 @@ def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
     floor : float, optional
         Relative eigenvalue floor, in units of the largest eigenvalue of
         the normalized Gram matrix.
+    return_diagnostics : bool, optional
+        If True, also return per-source residual diagnostics (see
+        :func:`_fit_diagnostics`) as the last element.
 
     Returns
     -------
@@ -2302,6 +2353,9 @@ def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
     variances : jax.numpy.ndarray
         Flux variances, shape (n_flux,). Only returned if
         ``return_variances`` is True.
+    diagnostics : dict
+        ``{"chi2", "mask_frac"}``, each shape (n_flux,). Only returned if
+        ``return_diagnostics`` is True.
 
     Notes
     -----
@@ -2370,9 +2424,12 @@ def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
         # diag of D^{-1} V diag(1/evals_f) V^T D^{-1}
         var_hat = jnp.sum(evecs * evecs / evals_f[jnp.newaxis, :], axis=1)
         variances = jnp.where(live, var_hat / (D * D), jnp.inf)
-        return optimized_fluxes, variances
-
-    return optimized_fluxes
+        result = (optimized_fluxes, variances)
+    else:
+        result = optimized_fluxes
+    if return_diagnostics:
+        return _with_diagnostics(result, A, data_flat, w_flat)
+    return result
 
 
 def _eigfloor_prior_core(AtWA, AtWd, lambda_diag, f_prior, floor=1e-4,
@@ -2468,7 +2525,8 @@ def solve_fluxes_eigfloor_prior(initial_fluxes, image_data, batches,
                                 return_variances=False, sampling_factor=None,
                                 floor=1e-4, psf_type=None, render_mode="auto",
                                 pixel_integration="window",
-                                eig_method="cusolver", eig_host_threads=4):
+                                eig_method="cusolver", eig_host_threads=4,
+                                return_diagnostics=False):
     """
     Eigfloor solve with per-source Gaussian flux priors (ridge-toward-prior).
 
@@ -2515,6 +2573,9 @@ def solve_fluxes_eigfloor_prior(initial_fluxes, image_data, batches,
     floor : float, optional
         Relative eigenvalue floor, in units of the largest eigenvalue of
         the regularized normalized Gram matrix.
+    return_diagnostics : bool, optional
+        If True, also return per-source residual diagnostics (see
+        :func:`_fit_diagnostics`) as the last element.
 
     Returns
     -------
@@ -2523,6 +2584,9 @@ def solve_fluxes_eigfloor_prior(initial_fluxes, image_data, batches,
     variances : jax.numpy.ndarray
         Flux variances, shape (n_flux,). Only returned if
         ``return_variances`` is True.
+    diagnostics : dict
+        ``{"chi2", "mask_frac"}``, each shape (n_flux,). Only returned if
+        ``return_diagnostics`` is True.
 
     Notes
     -----
@@ -2557,10 +2621,13 @@ def solve_fluxes_eigfloor_prior(initial_fluxes, image_data, batches,
     AtWA = Aw.T @ A
     AtWd = Aw.T @ data_flat
 
-    return _eigfloor_prior_core(AtWA, AtWd, lambda_diag, f_prior,
-                                eig_method=eig_method, eig_host_threads=eig_host_threads,
-                                floor=floor,
-                                return_variances=return_variances)
+    result = _eigfloor_prior_core(AtWA, AtWd, lambda_diag, f_prior,
+                                  eig_method=eig_method, eig_host_threads=eig_host_threads,
+                                  floor=floor,
+                                  return_variances=return_variances)
+    if return_diagnostics:
+        return _with_diagnostics(result, A, data_flat, w_flat)
+    return result
 
 
 def _power_iter_lmax(G, n_steps=16):
