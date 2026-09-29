@@ -47,8 +47,8 @@ def get_dev_mixture():
 def _gauss_2d_grid_np(x0, x1, y0, y1, cx, cy, amp, mean, var, derivs=False):
     """Pure-numpy fallback for the legacy ``tractor.mix`` C grid evaluators.
 
-    Evaluates a 2-D Gaussian mixture centred at ``(cx, cy)`` (plus each
-    component's mean) at integer pixel centres of the half-open grid
+    Evaluates a 2-D Gaussian mixture centered at ``(cx, cy)`` (plus each
+    component's mean) at integer pixel centers of the half-open grid
     ``[x0, x1) x [y0, y1)``. With ``derivs``, also returns the derivatives
     of the result with respect to ``cx`` and ``cy``.
     """
@@ -69,7 +69,7 @@ def _gauss_2d_grid_np(x0, x1, y0, y1, cx, cy, amp, mean, var, derivs=False):
         G[I] = norm * np.exp(-0.5 * dsq[I])
         result += G
         if derivs:
-            # d/dcx of exp(-0.5 d^T Vinv d), d = pixel - centre
+            # d/dcx of exp(-0.5 d^T Vinv d), d = pixel - center
             xd += G * (Vinv[0, 0] * dx + Vinv[0, 1] * dy)
             yd += G * (Vinv[1, 0] * dx + Vinv[1, 1] * dy)
     if derivs:

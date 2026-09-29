@@ -569,7 +569,7 @@ _EVEN_PARITY_MODES = ("raise", "warn", "fix", "allow")
 
 
 def _even_parity_message(ph, pw, target_sampling):
-    """Message naming the exact mis-centring an even-sized kernel causes."""
+    """Message naming the exact mis-centering an even-sized kernel causes."""
     axes = []
     if ph % 2 == 0:
         axes.append(f"axis 0 (height {ph})")
@@ -842,7 +842,7 @@ def build_padded_batches(
         grid whatever kind it is: an *optical* PSF, which the solvers
         integrate over each native pixel (``pixel_integration="window"``,
         the default), or an *effective* PSF that already contains the pixel
-        response and is sampled at the pixel centres instead
+        response and is sampled at the pixel centers instead
         (``pixel_integration="point"`` on the solver; the SPHEREx R7 ePSF
         product is delivered in exactly this normalization). The bundle
         itself is the same for both; the kind is a static solver option.
@@ -1030,7 +1030,7 @@ def build_padded_batches(
     iv_pad[:, :base_h, :base_w] = iv_arr
 
     # Source POSITIONS are geometry, not pixel data: they are built in float64
-    # and left there. Storing them at `dtype` (float32 by default) quantised
+    # and left there. Storing them at `dtype` (float32 by default) quantized
     # every requested position to ~1e-7 relative — e.g. x=10.2 became
     # 10.19999980926514 — a 2e-7..1.6e-6 native-px registration error over a
     # 40..100 px stamp, which is pure loss and of the same kind as (though far

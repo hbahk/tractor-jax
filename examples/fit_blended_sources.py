@@ -98,7 +98,7 @@ def oversampled_psf_stamp(n=41):
 def sources(scale=1, fluxes=None):
     """Catalog on a grid `scale` times finer than the native detector.
 
-    Positions are converted (a native pixel centre at x maps to
+    Positions are converted (a native pixel center at x maps to
     ``scale * x + (scale - 1) / 2`` on the fine grid); galaxy shapes are in
     arcsec and are converted by each image's own WCS, so they need no change.
     """

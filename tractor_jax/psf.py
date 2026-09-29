@@ -135,7 +135,7 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
             (the detector pixel response is applied here). ``True``: ``img``
             is an *effective* PSF that already contains the pixel response
             (e.g. the SPHEREx R7 ePSF, unit sum on the oversampled grid);
-            it is then point-sampled at the native pixel centres and scaled
+            it is then point-sampled at the native pixel centers and scaled
             by ``1/sampling**2`` instead, never integrated again. Ignored
             when ``sampling == 1``.
         '''
@@ -464,8 +464,8 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
     def _integrateImage(self, img, dx, dy, k, point=False):
         '''Block-integrate an oversampled PSF stamp down to native pixels.
 
-        Shifts ``img`` so that its centre lands ``(dx, dy)`` NATIVE pixels off
-        the centre of the output array, then sums each ``k x k`` block, where
+        Shifts ``img`` so that its center lands ``(dx, dy)`` NATIVE pixels off
+        the center of the output array, then sums each ``k x k`` block, where
         ``k = 1/sampling`` must be an integer. The result is the native-pixel
         PSF *integrated over* each pixel, and carries the same total flux as
         ``img`` -- unlike :meth:`_sampleImage`, which point-samples the
@@ -473,12 +473,12 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
         the pixel response.
 
         With ``point=True`` (an effective PSF, ``pixel_integrated``) the
-        block is not summed: its centre sample is taken (the mean of the two
+        block is not summed: its center sample is taken (the mean of the two
         middle samples for an even ``k``) and scaled by ``k**2``, so a model
         of unit sum on the oversampled grid again carries unit flux, and the
         pixel response it already contains is not applied a second time.
 
-        Returns ``(xl, yl, native_img)`` with the same centring convention as
+        Returns ``(xl, yl, native_img)`` with the same centering convention as
         :meth:`_sampleImage`.
         '''
         # Target High Res size
@@ -529,7 +529,7 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
         # Crop to target size
         crop = shifted[crop_y0 : crop_y0 + target_h, crop_x0 : crop_x0 + target_w]
 
-        # Binning (optical PSF) or block-centre sampling (effective PSF)
+        # Binning (optical PSF) or block-center sampling (effective PSF)
         crop = crop.reshape(self.nativeH, k, self.nativeW, k)
         if point:
             wts = np.zeros(k, dtype=crop.dtype)
@@ -619,7 +619,7 @@ class PixelizedPSF(BaseParams, ducks.ImageCalibration):
         if abs(factor - round(factor)) < 1e-4:
             # Integer oversampling: BLOCK-INTEGRATE an OPTICAL model down to
             # native pixels, exactly as the point-source patch path does, or
-            # take the block-centre samples of an EFFECTIVE one
+            # take the block-center samples of an EFFECTIVE one
             # (pixel_integrated: the model already carries the pixel
             # response, so it must not be integrated a second time).
             # Point-sampling an optical model instead (the fallback below)

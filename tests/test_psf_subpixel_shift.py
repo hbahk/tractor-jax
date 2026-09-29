@@ -7,18 +7,18 @@ kernel costs one elementwise multiply on an array in memory — no resampling, n
 interpolation kernel, no extra render cost. The motivating measurement is the
 delivered SPHEREx L2 PSF planes, whose CORE sits ~-0.05 native px from the
 declared fiducial (CRPIX1=CRPIX2=51.0 of a 101x101, 10x-oversampled plane)
-while the pipeline pins the array centre on the catalog position.
+while the pipeline pins the array center on the catalog position.
 
 Oracles used here, in decreasing order of independence:
 
 * the renderer's OWN position convention — a kernel ramped by ``(dy, dx)`` must
   render identically to the unramped kernel with the source moved by
   ``(+dx, +dy)``. This is what pins the SIGN;
-* an analytic Gaussian re-evaluated at the shifted centre (a Gaussian is
+* an analytic Gaussian re-evaluated at the shifted center (a Gaussian is
   exactly shiftable, so this is an exact oracle for a kernel that decays to
   ~1e-16 inside its support);
 * ``scipy.ndimage.shift`` order-5 splines, a genuinely different resampler;
-* the -0.5 high-res px mis-centring that an EVEN kernel provably suffers under
+* the -0.5 high-res px mis-centering that an EVEN kernel provably suffers under
   ``y0 = cy - ph // 2``.
 
 Run in the `spherex` conda env:
@@ -53,11 +53,11 @@ GRID = (255, 260)           # H odd, W even (as _even_hr_width_pad guarantees)
 # helpers
 # --------------------------------------------------------------------------- #
 def gauss(n=51, sigma=3.0, dy=0.0, dx=0.0):
-    """Gaussian centred on the array fiducial ``(n - 1) / 2`` plus (dy, dx).
+    """Gaussian centered on the array fiducial ``(n - 1) / 2`` plus (dy, dx).
 
     ``(n - 1) / 2`` is the 0-based FITS fiducial (CRPIX - 1) and is also the
-    centre ``jax.image.resize`` preserves, so it is the convention the
-    center-pad in :func:`psf_to_fft` has to honour.
+    center ``jax.image.resize`` preserves, so it is the convention the
+    center-pad in :func:`psf_to_fft` has to honor.
 
     Default 51x51 / sigma=3 decays to 8e-16 of the peak at the array edge, so
     truncation contributes nothing at the tolerances asserted below.
@@ -269,8 +269,8 @@ def test_spherex_core_offset_correction_sign():
     """The applied shift is MINUS the measured core offset.
 
     Mirrors the delivered-plane geometry: the kernel's core sits at
-    ``-0.053`` native px from the array centre, and the pipeline puts the array
-    centre on the source's catalog position. Passing ``psf_shift = -offset``
+    ``-0.053`` native px from the array center, and the pipeline puts the array
+    center on the source's catalog position. Passing ``psf_shift = -offset``
     must land the core ON the source; passing ``+offset`` must DOUBLE the error.
 
     Measured: uncorrected -0.05309 native px, corrected -1.6e-11, sign-flipped
@@ -304,7 +304,7 @@ def test_spherex_core_offset_correction_sign():
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("dy,dx", [(0.5, -0.3), (0.265, 0.265), (-1.2, 0.75)])
 def test_ramp_equals_analytically_resampled_kernel(dy, dx):
-    """Ramping == re-evaluating the (exactly shiftable) Gaussian off-centre.
+    """Ramping == re-evaluating the (exactly shiftable) Gaussian off-center.
 
     Measured max |difference| 6.9e-18 absolute, 4.0e-16 relative to the peak.
     """
@@ -328,8 +328,8 @@ def test_ramp_equals_spline_resampled_kernel(dy, dx):
     psf = gauss()
     base = fft_of(psf)
     got = hr_image(fft_of(psf, shift_hr=(dy, dx)))
-    centred = np.fft.fftshift(hr_image(base))
-    spl = np.fft.ifftshift(ndi.shift(centred, (dy, dx), order=5,
+    centered = np.fft.fftshift(hr_image(base))
+    spl = np.fft.ifftshift(ndi.shift(centered, (dy, dx), order=5,
                                      mode="constant"))
     peak = got.max()
     assert np.max(np.abs(got - spl)) < 1e-5 * peak
@@ -665,7 +665,7 @@ def test_bad_shift_shapes_raise():
 # 8. float64 source positions
 # --------------------------------------------------------------------------- #
 def test_source_positions_are_float64_and_exact():
-    """float32 storage quantised requested positions; float64 does not.
+    """float32 storage quantized requested positions; float64 does not.
 
     Measured for these five positions: float32 max |error| 7.63e-07 native px
     (x=10.2 -> 10.199999809265137, x=33.7 -> 33.70000076293945), against
@@ -683,15 +683,15 @@ def test_source_positions_are_float64_and_exact():
     got = np.asarray(pos[0])
     assert np.max(np.abs(got - want)) == 0.0
 
-    quantised = want.astype(np.float32).astype(np.float64)
-    assert np.max(np.abs(quantised - want)) > 1e-7      # the bug being fixed
+    quantized = want.astype(np.float32).astype(np.float64)
+    assert np.max(np.abs(quantized - want)) > 1e-7      # the bug being fixed
     psf_data = {k: v[0] for k, v in bundle.images_data["psf"].items()}
     padded = tuple(np.asarray(bundle.images_data["data"]).shape[1:])
     r64 = np.asarray(render_batch_point_sources(
         jnp.ones(len(xs)), jnp.asarray(want), psf_data, padded,
         sampling_factor=TARGET_SAMPLING))
     r32 = np.asarray(render_batch_point_sources(
-        jnp.ones(len(xs)), jnp.asarray(quantised), psf_data, padded,
+        jnp.ones(len(xs)), jnp.asarray(quantized), psf_data, padded,
         sampling_factor=TARGET_SAMPLING))
     assert np.max(np.abs(r64 - r32)) > 0.0     # it really did change the image
     assert np.max(np.abs(r64 - r32)) < 1e-5 * r64.max()

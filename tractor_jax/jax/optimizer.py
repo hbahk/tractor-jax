@@ -46,7 +46,7 @@ def psf_kind(psf):
     Raises
     ------
     TypeError
-        If the PSF is neither. This is deliberate: an unrecognised PSF used to
+        If the PSF is neither. This is deliberate: an unrecognized PSF used to
         fall through to an all-zero template, so the solve silently returned
         flux 0 with infinite variance for every source instead of failing.
     """
@@ -89,7 +89,7 @@ def _even_hr_width_pad(padded_w, max_factor, max_extra=8):
     LR padding satisfies both (padding is zero-weight, so it is free).
 
     Returns ``padded_w`` unchanged if no small bump works (non-integer
-    ``max_factor``); the caller then keeps the previous behaviour.
+    ``max_factor``); the caller then keeps the previous behavior.
     """
     for extra in range(max_extra + 1):
         if int(round((padded_w + extra) * max_factor)) % 2 == 0:
@@ -1504,7 +1504,7 @@ def render_image(fluxes, image_data, batches, sampling_factor=None,
         High-resolution oversampling factor forwarded to the renderers.
     pixel_integration : {"window", "point"}, optional
         Native-pixel integration window (optical PSF, default) or point
-        sampling at the pixel centres (effective PSF); see
+        sampling at the pixel centers (effective PSF); see
         :func:`tractor_jax.jax.rendering.downsample_image`.
 
     Returns
@@ -1768,7 +1768,7 @@ def _place_native_stamp(stamp, n0y, n0x, H, W):
 
 def _compact_hr_to_native(hr, h0y, h0x, k, H, W, pixel_integration="window"):
     """Bring an ``(S, S)`` high-res stamp to native pixels (block-integrated
-    for an optical PSF, point-sampled at the pixel centres for an effective
+    for an optical PSF, point-sampled at the pixel centers for an effective
     one, see :func:`tractor_jax.jax.rendering.downsample_image`) and place
     it into an ``(H, W)`` image.
 
@@ -1799,7 +1799,7 @@ def _compact_ps_templates(pos_hr, unit, fft_stamp, k, H, W, pixel_integration="w
     Same algebra as the full-grid path — the PSF transform times a phase
     ramp, inverse-transformed, then integrated into native pixels — but the
     ramp carries only the sub-pixel part of the position (the PSF lands at
-    the stamp centre ``S/2 + frac``) and the integer part becomes the
+    the stamp center ``S/2 + frac``) and the integer part becomes the
     stamp's placement on the native grid. Per source this is an ``S^2``
     transform instead of the padded-tile grid's, and no full-grid image is
     materialized.
@@ -1911,7 +1911,7 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
         How the high-res render becomes native pixels. ``"window"``
         (default) integrates over each native pixel, which is right for an
         *optical* PSF (the detector pixel response is applied here).
-        ``"point"`` samples at the native pixel centres, which is right for
+        ``"point"`` samples at the native pixel centers, which is right for
         an *effective* PSF that already contains the pixel response (the
         SPHEREx R7 ePSF); the kernel is then expected normalized to unit sum
         on the high-res grid, as the ePSF product is, and the sampled
@@ -2135,7 +2135,7 @@ def _fit_diagnostics(A, data_flat, w_flat, fluxes):
         Template-weighted mean normalized squared residual over each source's
         unmasked pixels, ``sum_p A_ps w_p r_p^2 / sum_p A_ps [w_p > 0]``.
         About 1 when the model describes the source's own pixels within their
-        errors; a bad pixel, a cosmic ray or unmodelled structure under the
+        errors; a bad pixel, a cosmic ray or unmodeled structure under the
         source raises it. Unlike a whole-image chi2 it is local to the source,
         so a problem elsewhere in the image does not flag every source.
     ``mask_frac``
@@ -3589,7 +3589,7 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
         # vector per image. Each source is read from the tile whose CORE box
         # contains its position, so halo overlaps never double-count a
         # source; sources projecting outside every core fall back to the
-        # nearest core centre.
+        # nearest core center.
         catalog = tractor_obj.catalog
         global_offsets = {}
         g_off = 0

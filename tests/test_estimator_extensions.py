@@ -8,7 +8,7 @@ Two additions motivated by the SED-shape / photo-z bias analysis
      configurable ("none" | "protected" | "all") while the SELECTION prox
      keeps `nonneg`. Rationale: clipping a faint protected target at zero is
      a band-dependent positive (rectification) bias that the error bar does
-     not absorb and that distorts colours / photo-z.
+     not absorb and that distorts colors / photo-z.
 
   B. solve_fluxes_eigfloor - direct linear solve with an eigenvalue floor on
      AtWA: sign-free L2 damping of only the degenerate directions; candidate

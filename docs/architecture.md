@@ -35,7 +35,7 @@ repeat**.
 
 ## Rendering: oversample, then bin
 
-A source's template is not evaluated at pixel centres. For an undersampled
+A source's template is not evaluated at pixel centers. For an undersampled
 instrument that biases the flux — the PSF varies substantially across one pixel.
 Instead the engine renders on a finer grid and integrates each native pixel:
 

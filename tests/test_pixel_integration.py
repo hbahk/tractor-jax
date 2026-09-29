@@ -3,7 +3,7 @@
 An *optical* PSF is integrated over each native pixel after the high-res render
 (``"window"``, the historical path). An *effective* PSF (the SPHEREx R7 ePSF)
 already contains the pixel response, so the high-res render is sampled at the
-native pixel centres instead (``"point"``). The physics these tests pin down:
+native pixel centers instead (``"point"``). The physics these tests pin down:
 
 * the two are the same model. Box-convolving an optical kernel with the native
   pixel window on the high-res grid gives its effective kernel; rendering the
@@ -12,7 +12,7 @@ native pixel centres instead (``"point"``). The physics these tests pin down:
   galaxies, on the full padded grid and on the compact stamp (the box
   convolution commutes with the phase-ramp shift and with the galaxy
   convolution, so agreement is at FFT round-off);
-* normalisation: a kernel of unit sum on the high-res grid gives unit-flux
+* normalization: a kernel of unit sum on the high-res grid gives unit-flux
   templates in both modes;
 * the decimation is aligned with the block that the window path sums (odd
   factors take its middle sample, even factors the mean of the two middle ones)
@@ -62,9 +62,9 @@ def _optical_psf(n=61, sigma_hr=4.0):
 
 def _effective_psf(optical, k=K):
     """The ePSF of an optical kernel: the fraction of the flux in a native pixel
-    centred on each high-res sample (the k x k box sum), stored with unit sum on
+    centered on each high-res sample (the k x k box sum), stored with unit sum on
     the high-res grid, as the SPHEREx product is. ``uniform_filter`` is that box
-    sum divided by k^2, which is exactly the stored normalisation."""
+    sum divided by k^2, which is exactly the stored normalization."""
     return uniform_filter(optical, size=k, mode="constant")
 
 
@@ -119,13 +119,13 @@ def _templates(bundle, i, **kw):
 # --------------------------------------------------------------------------- #
 # the decimation primitive
 # --------------------------------------------------------------------------- #
-def test_decimate_takes_the_block_centre_and_scales_by_k2():
+def test_decimate_takes_the_block_center_and_scales_by_k2():
     rng = np.random.default_rng(1)
     # constant within blocks: point == window
     blocks = rng.normal(size=(4, 6))
     img = jnp.asarray(np.kron(blocks, np.ones((5, 5))))
     assert np.allclose(decimate_int_point(img, 5, 5), rebin_downsample_int_flux(img, 5, 5))
-    # linear ramp: the centre sample equals the block mean, so point == window
+    # linear ramp: the center sample equals the block mean, so point == window
     yy, xx = np.indices((20, 30))
     ramp = jnp.asarray(0.3 * xx - 0.7 * yy + 2.0)
     assert np.allclose(decimate_int_point(ramp, 5, 5), rebin_downsample_int_flux(ramp, 5, 5),
