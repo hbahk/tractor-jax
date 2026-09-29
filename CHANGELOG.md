@@ -6,7 +6,13 @@ public API may still change between minor releases.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- American spelling throughout (center, neighbor, normalize, ...) in
+  comments, docstrings, docs and messages; only private and test names
+  changed, no public ones.
+- The code is formatted with black (`[tool.black]` in `pyproject.toml`);
+  `.git-blame-ignore-revs` lists the formatting commit.
 
 ## [0.3.1] — 2026-09-25
 
