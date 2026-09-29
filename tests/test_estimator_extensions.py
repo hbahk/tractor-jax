@@ -16,10 +16,12 @@ Two additions motivated by the SED-shape / photo-z bias analysis
 
 Run in the `spherex` conda env:  pytest tests/test_estimator_extensions.py -q
 """
+
 import numpy as np
 import pytest
 
 import jax
+
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
@@ -76,14 +78,20 @@ def scene_with_negative_target(k_sigma=4.0):
 # --------------------------------------------------------------------------- #
 def test_signfree_protected_target_keeps_negative_flux():
     single, sb, f0, sigma3 = scene_with_negative_target(k_sigma=4.0)
-    w = jnp.array([1.0, 1.0, 1.0, 0.0])          # source 3 protected
-    kw = dict(alpha=2.0, penalty_mode="snr", penalty_weights=w,
-              nonneg=True, debias=True, n_iter=4000)
+    w = jnp.array([1.0, 1.0, 1.0, 0.0])  # source 3 protected
+    kw = dict(
+        alpha=2.0,
+        penalty_mode="snr",
+        penalty_weights=w,
+        nonneg=True,
+        debias=True,
+        n_iter=4000,
+    )
 
-    f_none = np.array(solve_fluxes_lasso(f0, single, sb,
-                                         debias_signfree="none", **kw))
-    f_prot = np.array(solve_fluxes_lasso(f0, single, sb,
-                                         debias_signfree="protected", **kw))
+    f_none = np.array(solve_fluxes_lasso(f0, single, sb, debias_signfree="none", **kw))
+    f_prot = np.array(
+        solve_fluxes_lasso(f0, single, sb, debias_signfree="protected", **kw)
+    )
 
     # original behavior: the protected target is rectified to exactly zero
     assert f_none[3] == 0.0
@@ -97,8 +105,7 @@ def test_signfree_invalid_value_raises():
     tr, _ = toy_scene()
     single, sb, f0 = single_image_inputs(tr)
     with pytest.raises(ValueError):
-        solve_fluxes_lasso(f0, single, sb, alpha=2.0,
-                           debias_signfree="everything")
+        solve_fluxes_lasso(f0, single, sb, alpha=2.0, debias_signfree="everything")
 
 
 # --------------------------------------------------------------------------- #
@@ -109,12 +116,25 @@ def test_signfree_all_matches_numpy_pinned_refit():
     n = f0.shape[0]
     w = jnp.array([1.0, 1.0, 1.0, 0.0])
     rcond = 1e-12
-    kw = dict(alpha=2.0, penalty_mode="snr", penalty_weights=w,
-              nonneg=True, debias=True, n_iter=4000, rcond=rcond)
+    kw = dict(
+        alpha=2.0,
+        penalty_mode="snr",
+        penalty_weights=w,
+        nonneg=True,
+        debias=True,
+        n_iter=4000,
+        rcond=rcond,
+    )
 
     f_all, var_all, aux = solve_fluxes_lasso(
-        f0, single, sb, debias_signfree="all", return_variances=True,
-        return_aux=True, **kw)
+        f0,
+        single,
+        sb,
+        debias_signfree="all",
+        return_variances=True,
+        return_aux=True,
+        **kw,
+    )
     s = np.array(aux["support"])
 
     G, b = normal_equations(single, sb, n)
@@ -138,8 +158,9 @@ def test_signfree_removes_clip_bias_statistically():
     truth = jnp.array([50.0, 8.0, 30.0, 0.0])
     model = render_image(truth, single, sb)
     invvar = np.array(single["invvar"])
-    sigma_pix = np.where(invvar > 0, 1.0 / np.sqrt(np.where(invvar > 0,
-                                                            invvar, 1.0)), 0.0)
+    sigma_pix = np.where(
+        invvar > 0, 1.0 / np.sqrt(np.where(invvar > 0, invvar, 1.0)), 0.0
+    )
 
     B = 400
     rng = np.random.default_rng(42)
@@ -147,16 +168,28 @@ def test_signfree_removes_clip_bias_statistically():
     data_stack = jnp.asarray(np.array(model)[None] + noise)
 
     w = jnp.array([1.0, 1.0, 1.0, 0.0])
-    kw = dict(alpha=2.0, penalty_mode="snr", penalty_weights=w,
-              nonneg=True, debias=True, n_iter=2000)
+    kw = dict(
+        alpha=2.0,
+        penalty_mode="snr",
+        penalty_weights=w,
+        nonneg=True,
+        debias=True,
+        n_iter=2000,
+    )
 
-    f_none = np.array(solve_fluxes_lasso_batched(
-        f0, single, sb, data_stack, debias_signfree="none", **kw))
-    f_prot = np.array(solve_fluxes_lasso_batched(
-        f0, single, sb, data_stack, debias_signfree="protected", **kw))
+    f_none = np.array(
+        solve_fluxes_lasso_batched(
+            f0, single, sb, data_stack, debias_signfree="none", **kw
+        )
+    )
+    f_prot = np.array(
+        solve_fluxes_lasso_batched(
+            f0, single, sb, data_stack, debias_signfree="protected", **kw
+        )
+    )
 
     t_none, t_prot = f_none[:, 3], f_prot[:, 3]
-    sig_emp = t_prot.std()                       # empirical refit sigma
+    sig_emp = t_prot.std()  # empirical refit sigma
     se = sig_emp / np.sqrt(B)
 
     # sign-free: symmetric about the truth (0); roughly half go negative
@@ -177,8 +210,9 @@ def test_eigfloor_matches_numpy_reference():
     n = f0.shape[0]
     floor = 1e-3
 
-    f_eng, v_eng = solve_fluxes_eigfloor(f0, single, sb,
-                                         return_variances=True, floor=floor)
+    f_eng, v_eng = solve_fluxes_eigfloor(
+        f0, single, sb, return_variances=True, floor=floor
+    )
 
     # Jacobi-normalized (unit-diagonal) eigen-floor oracle
     G, b = normal_equations(single, sb, n)
@@ -216,20 +250,25 @@ def blended_pair_scene(sep=0.2, noise_sigma=0.2, seed=11):
     1e-2 floor used in the test, so the floor genuinely bites."""
     rng = np.random.default_rng(seed)
     H = W = 24
-    psf = GaussianMixturePSF(np.array([1.0]), np.zeros((1, 2)),
-                             np.array([[[2.5, 0.0], [0.0, 2.5]]]))
+    psf = GaussianMixturePSF(
+        np.array([1.0]), np.zeros((1, 2)), np.array([[[2.5, 0.0], [0.0, 2.5]]])
+    )
     positions = [(11.8, 12.1), (11.8 + sep, 12.1 + sep)]
     truth = np.array([20.0, 10.0])
     srcs = [PointSource(PixPos(x, y), Flux(1.0)) for (x, y) in positions]
-    img = Image(data=np.zeros((H, W)), inverr=np.ones((H, W)) / noise_sigma,
-                psf=psf, wcs=NullWCS(pixscale=1.0), sky=ConstantSky(0.0))
+    img = Image(
+        data=np.zeros((H, W)),
+        inverr=np.ones((H, W)) / noise_sigma,
+        psf=psf,
+        wcs=NullWCS(pixscale=1.0),
+        sky=ConstantSky(0.0),
+    )
     img.name = "pair"
     tr = Tractor([img], Catalog(*srcs))
     single, sb, f0 = single_image_inputs(tr)
     model = render_image(jnp.array(truth), single, sb)
     single = dict(single)
-    single["data"] = (single["data"] + model
-                      + rng.normal(size=model.shape) * noise_sigma)
+    single["data"] = single["data"] + model + rng.normal(size=model.shape) * noise_sigma
     return single, sb, f0, truth
 
 
@@ -245,10 +284,8 @@ def test_eigfloor_damps_degenerate_split_keeps_sum():
     assert abs(f_ef[0] - f_ef[1]) < 0.8 * abs(f_dir[0] - f_dir[1])
 
     # variance of the damped mode shrinks too
-    _, v_dir = solve_fluxes_linear(f0, single, sb, return_variances=True,
-                                   rcond=1e-12)
-    _, v_ef = solve_fluxes_eigfloor(f0, single, sb, return_variances=True,
-                                    floor=1e-2)
+    _, v_dir = solve_fluxes_linear(f0, single, sb, return_variances=True, rcond=1e-12)
+    _, v_ef = solve_fluxes_eigfloor(f0, single, sb, return_variances=True, floor=1e-2)
     assert np.all(np.array(v_ef) <= np.array(v_dir) * (1 + 1e-9))
 
 
@@ -276,7 +313,8 @@ def test_eigfloor_many_dead_slots_preserve_live_solution():
     tr, _ = toy_scene()
     single, sb, f0 = single_image_inputs(tr)
     f_live, v_live = solve_fluxes_eigfloor(
-        f0, single, sb, return_variances=True, floor=1e-2)
+        f0, single, sb, return_variances=True, floor=1e-2
+    )
 
     n_dead = 512
     f0_pad = jnp.pad(f0, (0, n_dead))
@@ -284,16 +322,19 @@ def test_eigfloor_many_dead_slots_preserve_live_solution():
     # Source render indices still address the original live coordinates; the
     # appended flux slots therefore have exactly zero templates.
     f_pad, v_pad = solve_fluxes_eigfloor(
-        f0_pad, single, sb_pad, return_variances=True, floor=1e-2)
+        f0_pad, single, sb_pad, return_variances=True, floor=1e-2
+    )
 
     assert np.all(np.isfinite(np.asarray(f_pad)))
-    assert np.all(np.isfinite(np.asarray(v_pad)[:len(f0)]))
-    assert np.all(np.asarray(f_pad)[len(f0):] == 0.0)
-    assert np.all(np.isposinf(np.asarray(v_pad)[len(f0):]))
-    np.testing.assert_allclose(np.asarray(f_pad)[:len(f0)],
-                               np.asarray(f_live), rtol=1e-12, atol=1e-12)
-    np.testing.assert_allclose(np.asarray(v_pad)[:len(f0)],
-                               np.asarray(v_live), rtol=1e-12, atol=1e-12)
+    assert np.all(np.isfinite(np.asarray(v_pad)[: len(f0)]))
+    assert np.all(np.asarray(f_pad)[len(f0) :] == 0.0)
+    assert np.all(np.isposinf(np.asarray(v_pad)[len(f0) :]))
+    np.testing.assert_allclose(
+        np.asarray(f_pad)[: len(f0)], np.asarray(f_live), rtol=1e-12, atol=1e-12
+    )
+    np.testing.assert_allclose(
+        np.asarray(v_pad)[: len(f0)], np.asarray(v_live), rtol=1e-12, atol=1e-12
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -302,10 +343,12 @@ def test_eigfloor_many_dead_slots_preserve_live_solution():
 # --------------------------------------------------------------------------- #
 def test_optimize_fluxes_eigfloor_smoke():
     tr, truth = toy_scene()
-    res_lin = optimize_fluxes(tr, return_variances=True, solver="linear",
-                              use_sharding=False)
-    res_ef = optimize_fluxes(tr, return_variances=True, solver="eigfloor",
-                             eig_floor=1e-6, use_sharding=False)
+    res_lin = optimize_fluxes(
+        tr, return_variances=True, solver="linear", use_sharding=False
+    )
+    res_ef = optimize_fluxes(
+        tr, return_variances=True, solver="eigfloor", eig_floor=1e-6, use_sharding=False
+    )
     f_lin, v_lin = np.array(res_lin[0][0]), np.array(res_lin[0][1])
     f_ef, v_ef = np.array(res_ef[0][0]), np.array(res_ef[0][1])
     assert np.allclose(f_ef, f_lin, rtol=1e-5, atol=1e-8)
@@ -322,11 +365,21 @@ def test_optimize_fluxes_eigfloor_smoke():
 # --------------------------------------------------------------------------- #
 def test_eigfloor_immune_to_background_column_domination():
     tr, truth = toy_scene()
-    res_lin = optimize_fluxes(tr, return_variances=True, solver="linear",
-                              fit_background=True, use_sharding=False)
-    res_ef = optimize_fluxes(tr, return_variances=True, solver="eigfloor",
-                             eig_floor=1e-4, fit_background=True,
-                             use_sharding=False)
+    res_lin = optimize_fluxes(
+        tr,
+        return_variances=True,
+        solver="linear",
+        fit_background=True,
+        use_sharding=False,
+    )
+    res_ef = optimize_fluxes(
+        tr,
+        return_variances=True,
+        solver="eigfloor",
+        eig_floor=1e-4,
+        fit_background=True,
+        use_sharding=False,
+    )
     f_lin = np.array(res_lin[0][0])
     f_ef = np.array(res_ef[0][0])
     # sources are well separated: with the background column present, the
@@ -343,15 +396,15 @@ def test_alpha_auto_equals_manual_rule():
     tr, _ = toy_scene()
     single, sb, f0 = single_image_inputs(tr)
     n = f0.shape[0]
-    w = jnp.array([1.0, 1.0, 1.0, 0.0])          # source 3 protected
-    kw = dict(penalty_mode="snr", penalty_weights=w, nonneg=True,
-              debias=True, n_iter=3000)
+    w = jnp.array([1.0, 1.0, 1.0, 0.0])  # source 3 protected
+    kw = dict(
+        penalty_mode="snr", penalty_weights=w, nonneg=True, debias=True, n_iter=3000
+    )
 
     f_auto = np.array(solve_fluxes_lasso(f0, single, sb, alpha="auto", **kw))
     # p = penalized live candidates = 3 (sources 0-2; src 3 protected)
     a_manual = float(np.sqrt(2.0 * np.log(3.0)))
-    f_manual = np.array(solve_fluxes_lasso(f0, single, sb, alpha=a_manual,
-                                           **kw))
+    f_manual = np.array(solve_fluxes_lasso(f0, single, sb, alpha=a_manual, **kw))
     assert np.allclose(f_auto, f_manual, rtol=1e-12, atol=1e-14)
 
     with pytest.raises(ValueError):

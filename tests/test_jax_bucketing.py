@@ -11,6 +11,7 @@ from tractor_jax.psf import PixelizedPSF
 from tractor_jax.jax.optimizer import optimize_fluxes, JaxOptimizer
 import tractor_jax.jax.optimizer as jax_opt
 
+
 class TestJaxBucketing(unittest.TestCase):
     def setUp(self):
         # Create a set of images with different sizes
@@ -28,11 +29,16 @@ class TestJaxBucketing(unittest.TestCase):
         for i, (h, w) in enumerate(sizes):
             img_data = np.zeros((h, w))
             invvar = np.ones((h, w))
-            wcs = NullWCS(pixscale=1.0) # Simple WCS
+            wcs = NullWCS(pixscale=1.0)  # Simple WCS
 
             # Create Image object
-            img = Image(data=img_data, inverr=np.sqrt(invvar),
-                       psf=self.psf, wcs=wcs, sky=ConstantSky(0.0))
+            img = Image(
+                data=img_data,
+                inverr=np.sqrt(invvar),
+                psf=self.psf,
+                wcs=wcs,
+                sky=ConstantSky(0.0),
+            )
             self.images.append(img)
 
         # Add a source that overlaps all (roughly)
@@ -49,6 +55,7 @@ class TestJaxBucketing(unittest.TestCase):
         # So I should use PixPos, not RaDecPos for NullWCS.
 
         from tractor_jax.basics import PixPos
+
         src = PointSource(PixPos(32.0, 32.0), Flux(100.0))
 
         self.catalog.append(src)
@@ -72,28 +79,25 @@ class TestJaxBucketing(unittest.TestCase):
             self.tractor,
             bucket_shape_mode="independent",
             bucket_mode="auto",
-            bucket_base=32
+            bucket_base=32,
         )
         self.assertEqual(len(results), 3)
 
         # Test fixed buckets
         # Force everything into 256x256
         results_fixed = optimize_fluxes(
-            self.tractor,
-            bucket_mode="fixed",
-            bucket_sizes=[256]
+            self.tractor, bucket_mode="fixed", bucket_sizes=[256]
         )
         self.assertEqual(len(results_fixed), 3)
 
         # Test JaxOptimizer interface pass-through
         opt = JaxOptimizer()
         dlnp, X, alpha = opt.optimize(
-            self.tractor,
-            bucket_mode="fixed",
-            bucket_sizes=[256]
+            self.tractor, bucket_mode="fixed", bucket_sizes=[256]
         )
         # Just check it ran
         self.assertTrue(len(X) > 0)
+
 
 if __name__ == "__main__":
     unittest.main()

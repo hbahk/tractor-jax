@@ -2,9 +2,10 @@ import numpy as np
 from tractor_jax.wcs import RaDecPos
 
 
-def interpret_roi(wcs, imgshape, roi=None, roiradecsize=None, roiradecbox=None,
-                  **kwargs):
-    '''Interpret the different ways of specifying a region of interest.
+def interpret_roi(
+    wcs, imgshape, roi=None, roiradecsize=None, roiradecbox=None, **kwargs
+):
+    """Interpret the different ways of specifying a region of interest.
 
     Parameters
     ----------
@@ -35,17 +36,19 @@ def interpret_roi(wcs, imgshape, roi=None, roiradecsize=None, roiradecbox=None,
     issubimage : bool
         Whether the ROI is a proper sub-image (smaller than the full
         image).
-    '''
-    (H, W) = imgshape
+    """
+    H, W = imgshape
     if roiradecsize is not None:
         ra, dec, S = roiradecsize
         fxc, fyc = wcs.positionToPixel(RaDecPos(ra, dec))
         xc, yc = [int(np.round(p)) for p in (fxc, fyc)]
 
-        roi = [np.clip(xc - S, 0, W),
-               np.clip(xc + S + 1, 0, W),
-               np.clip(yc - S, 0, H),
-               np.clip(yc + S + 1, 0, H)]
+        roi = [
+            np.clip(xc - S, 0, W),
+            np.clip(xc + S + 1, 0, W),
+            np.clip(yc - S, 0, H),
+            np.clip(yc + S + 1, 0, H),
+        ]
         roi = [int(x) for x in roi]
         if roi[0] == roi[1] or roi[2] == roi[3]:
             return None
@@ -61,10 +64,12 @@ def interpret_roi(wcs, imgshape, roi=None, roiradecsize=None, roiradecbox=None,
         x1 = xy[:, 0].max()
         y0 = xy[:, 1].min()
         y1 = xy[:, 1].max()
-        roi = [np.clip(x0,   0, W),
-               np.clip(x1 + 1, 0, W),
-               np.clip(y0,   0, H),
-               np.clip(y1 + 1, 0, H)]
+        roi = [
+            np.clip(x0, 0, W),
+            np.clip(x1 + 1, 0, W),
+            np.clip(y0, 0, H),
+            np.clip(y1 + 1, 0, H),
+        ]
         if roi[0] == roi[1] or roi[2] == roi[3]:
             return None
 

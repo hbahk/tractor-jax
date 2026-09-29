@@ -7,6 +7,7 @@ corrupting every subsequent user of that sersic index.
 
 Run in the `spherex` conda env:  pytest tests/test_sersic_cache.py -q
 """
+
 import numpy as np
 import pytest
 
@@ -20,9 +21,33 @@ def fresh_profile(sindex):
 
 # Index grid covering: below-lowest clamp, table knots, ramp overlaps between
 # component-count ranges, the sindex > 1 core branch, above-highest clamp.
-INDEX_GRID = [0.25, 0.29, 0.3, 0.35, 0.4, 0.41, 0.5, 0.55, 0.6, 0.7, 0.75,
-              0.9, 1.0, 1.1, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 6.19,
-              6.3, 8.0]
+INDEX_GRID = [
+    0.25,
+    0.29,
+    0.3,
+    0.35,
+    0.4,
+    0.41,
+    0.5,
+    0.55,
+    0.6,
+    0.7,
+    0.75,
+    0.9,
+    1.0,
+    1.1,
+    1.25,
+    1.5,
+    2.0,
+    2.5,
+    3.0,
+    4.0,
+    5.0,
+    6.0,
+    6.19,
+    6.3,
+    8.0,
+]
 
 
 @pytest.mark.parametrize("sindex", INDEX_GRID)
@@ -65,7 +90,7 @@ def test_downstream_transforms_unaffected():
     T = np.array([[1.2, 0.1], [-0.1, 0.9]])
     sheared = prof.apply_shear(T)
     assert sheared is not prof
-    assert sheared.var.flags.writeable          # fresh output array
+    assert sheared.var.flags.writeable  # fresh output array
     # rebinding-style amplitude scaling (the engine idiom) leaves the cached
     # object untouched
     scaled_amp = sheared.amp * 0.5

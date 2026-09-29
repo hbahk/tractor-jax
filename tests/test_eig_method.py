@@ -11,6 +11,7 @@
   callback receives the whole batch, ``vmap_method="expand_dims"``);
 * an unknown method raises.
 """
+
 import os
 import sys
 
@@ -37,7 +38,7 @@ def test_methods_and_default():
     assert _EIG_METHODS == ("cusolver", "host")
     G = _sym_batch()
     w0, v0 = jnp.linalg.eigh(G)
-    w1, v1 = _eigh_dispatch(G)                       # default == cusolver path
+    w1, v1 = _eigh_dispatch(G)  # default == cusolver path
     assert np.array_equal(np.asarray(w0), np.asarray(w1))
     assert np.array_equal(np.asarray(v0), np.asarray(v1))
     with pytest.raises(ValueError):
@@ -53,7 +54,9 @@ def test_host_eigh_matches_and_reconstructs_under_jit_vmap():
     assert w_h.shape == G.shape[:-1] and v_h.shape == G.shape
     assert w_h.dtype == G.dtype and v_h.dtype == G.dtype
     assert np.allclose(np.asarray(w_h), np.asarray(w_ref), rtol=1e-4, atol=1e-5)
-    rec = np.einsum("bij,bj,bkj->bik", np.asarray(v_h), np.asarray(w_h), np.asarray(v_h))
+    rec = np.einsum(
+        "bij,bj,bkj->bik", np.asarray(v_h), np.asarray(w_h), np.asarray(v_h)
+    )
     assert np.allclose(rec, np.asarray(G), rtol=1e-4, atol=1e-4)
     # ascending order, like jnp.linalg.eigh
     assert np.all(np.diff(np.asarray(w_h), axis=-1) >= -1e-6)
@@ -62,7 +65,9 @@ def test_host_eigh_matches_and_reconstructs_under_jit_vmap():
     fn = jax.jit(jax.vmap(lambda g: _eigh_dispatch(g, "host", 2)))
     w_v, v_v = fn(G)
     assert np.allclose(np.asarray(w_v), np.asarray(w_ref), rtol=1e-4, atol=1e-5)
-    rec = np.einsum("bij,bj,bkj->bik", np.asarray(v_v), np.asarray(w_v), np.asarray(v_v))
+    rec = np.einsum(
+        "bij,bj,bkj->bik", np.asarray(v_v), np.asarray(w_v), np.asarray(v_v)
+    )
     assert np.allclose(rec, np.asarray(G), rtol=1e-4, atol=1e-4)
 
 
@@ -70,8 +75,8 @@ def _noiseless_problem():
     b = _build()
     n_flux = b.initial_fluxes.shape[1]
     truth = np.zeros(n_flux, np.float32)
-    truth[:b.meta["max_ps"]] = [3.0, 5.0, 2.0]
-    truth[b.meta["max_ps"]:b.meta["max_ps"] + 4] = [4.0, 6.0, 1.5, 8.0]
+    truth[: b.meta["max_ps"]] = [3.0, 5.0, 2.0]
+    truth[b.meta["max_ps"] : b.meta["max_ps"] + 4] = [4.0, 6.0, 1.5, 8.0]
     truth[b.meta["bg_idx"]] = 0.2
     imgs = [np.tensordot(truth, _templates(b, i), axes=(0, 0)) for i in range(2)]
     data_pad = np.stack(imgs).astype(np.float32)
@@ -86,9 +91,14 @@ def test_batched_eigfloor_family_host_matches_cusolver(kind):
     n_views, n_flux = b.initial_fluxes.shape
 
     def solve(method):
-        fn = tjb.make_batched_solver(kind, in_axes=b.in_axes, floor=1e-2,
-                                     eig_method=method, eig_host_threads=2,
-                                     cache=False)
+        fn = tjb.make_batched_solver(
+            kind,
+            in_axes=b.in_axes,
+            floor=1e-2,
+            eig_method=method,
+            eig_host_threads=2,
+            cache=False,
+        )
         if kind == "eigfloor_prior":
             lam = jnp.zeros((n_views, n_flux), jnp.float32)
             fp = jnp.zeros((n_views, n_flux), jnp.float32)

@@ -339,20 +339,22 @@ def _boxcar_downsample_flux(img, out_h, out_w):
     dt = img.dtype
     # integrate over rows (axis 0): H -> out_h
     z = jnp.zeros((1, W), dt)
-    Cr = jnp.concatenate([z, jnp.cumsum(img, axis=0)], axis=0)      # (H+1, W)
+    Cr = jnp.concatenate([z, jnp.cumsum(img, axis=0)], axis=0)  # (H+1, W)
     er = (H / out_h) * jnp.arange(out_h + 1, dtype=dt)
     xr = jnp.arange(H + 1, dtype=dt)
-    Cri = jax.vmap(lambda c: jnp.interp(er, xr, c), in_axes=1,
-                   out_axes=1)(Cr)                                  # (out_h+1, W)
-    rows = Cri[1:] - Cri[:-1]                                       # (out_h, W)
+    Cri = jax.vmap(lambda c: jnp.interp(er, xr, c), in_axes=1, out_axes=1)(
+        Cr
+    )  # (out_h+1, W)
+    rows = Cri[1:] - Cri[:-1]  # (out_h, W)
     # integrate over cols (axis 1): W -> out_w
     z2 = jnp.zeros((out_h, 1), dt)
-    Cc = jnp.concatenate([z2, jnp.cumsum(rows, axis=1)], axis=1)    # (out_h, W+1)
+    Cc = jnp.concatenate([z2, jnp.cumsum(rows, axis=1)], axis=1)  # (out_h, W+1)
     ec = (W / out_w) * jnp.arange(out_w + 1, dtype=dt)
     xc = jnp.arange(W + 1, dtype=dt)
-    Cci = jax.vmap(lambda r: jnp.interp(ec, xc, r), in_axes=0,
-                   out_axes=0)(Cc)                                  # (out_h, out_w+1)
-    return Cci[:, 1:] - Cci[:, :-1]                                 # (out_h, out_w)
+    Cci = jax.vmap(lambda r: jnp.interp(ec, xc, r), in_axes=0, out_axes=0)(
+        Cc
+    )  # (out_h, out_w+1)
+    return Cci[:, 1:] - Cci[:, :-1]  # (out_h, out_w)
 
 
 def downsample_image(img, target_shape, pixel_integration="window"):
@@ -397,14 +399,16 @@ def downsample_image(img, target_shape, pixel_integration="window"):
     (e.g. production SPHEREx cutouts at OVERSAMP 10/5) is unchanged.
     """
     if pixel_integration not in PIXEL_INTEGRATIONS:
-        raise ValueError(f"pixel_integration must be one of {PIXEL_INTEGRATIONS}, "
-                         f"got {pixel_integration!r}")
+        raise ValueError(
+            f"pixel_integration must be one of {PIXEL_INTEGRATIONS}, "
+            f"got {pixel_integration!r}"
+        )
     H_hr, W_hr = img.shape
     H, W = target_shape
 
     # Integer-factor detection requires shapes static/concrete at trace time
-    is_int_y = (H_hr % H == 0)
-    is_int_x = (W_hr % W == 0)
+    is_int_y = H_hr % H == 0
+    is_int_x = W_hr % W == 0
 
     if is_int_y and is_int_x:
         k_y = int(H_hr // H)
@@ -417,7 +421,8 @@ def downsample_image(img, target_shape, pixel_integration="window"):
         raise ValueError(
             "pixel_integration='point' needs integer high-res factors "
             f"(got {H_hr}x{W_hr} -> {H}x{W}); an effective PSF must be rendered "
-            "on a grid that is an integer multiple of the native one")
+            "on a grid that is an integer multiple of the native one"
+        )
     return _boxcar_downsample_flux(img, H, W)
 
 
@@ -653,8 +658,8 @@ def evaluate_mog_grid(amp, mean, var, X, Y):
 
     # Mahalanobis distance: diff^T @ inv_cov @ diff
     # (H, W, K, 1, 2) @ (H, W, K, 2, 2) @ (H, W, K, 2, 1)
-    diff_col = diff[..., jnp.newaxis]      # (..., 2, 1)
-    diff_row = diff[..., jnp.newaxis, :]   # (..., 1, 2)
+    diff_col = diff[..., jnp.newaxis]  # (..., 2, 1)
+    diff_row = diff[..., jnp.newaxis, :]  # (..., 1, 2)
 
     temp = jnp.matmul(inv_cov, diff_col)
     exponent = -0.5 * jnp.matmul(diff_row, temp).squeeze((-1, -2))

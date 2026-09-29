@@ -1,5 +1,6 @@
 try:
     from . import tree
+
     tree.register_pytree_nodes()
 except ImportError:
     pass
@@ -8,39 +9,71 @@ except Exception as e:
 
 from .optimizer import (
     optimize_fluxes,
-    extract_model_data, extract_model_data_direct,
-    solve_fluxes_linear, solve_fluxes_eigfloor,
+    extract_model_data,
+    extract_model_data_direct,
+    solve_fluxes_linear,
+    solve_fluxes_eigfloor,
     solve_fluxes_eigfloor_prior,
-    solve_fluxes_lasso, solve_fluxes_lasso_batched,
-    lasso_fista, lasso_fista_jit,
+    solve_fluxes_lasso,
+    solve_fluxes_lasso_batched,
+    lasso_fista,
+    lasso_fista_jit,
 )
 from .batching import (
-    BatchBundle, build_padded_batches, psf_to_fft, slice_fluxes,
-    psf_fft_phase_ramp, shift_psf_fft,
-    batches_in_axes, make_batched_solver, clear_solver_cache,
-    penalty_weights_from_slots, prior_arrays_from_slots, pad_normal_eq,
-    autotune_batch_size, estimate_solve_bytes_per_view,
+    BatchBundle,
+    build_padded_batches,
+    psf_to_fft,
+    slice_fluxes,
+    psf_fft_phase_ramp,
+    shift_psf_fft,
+    batches_in_axes,
+    make_batched_solver,
+    clear_solver_cache,
+    penalty_weights_from_slots,
+    prior_arrays_from_slots,
+    pad_normal_eq,
+    autotune_batch_size,
+    estimate_solve_bytes_per_view,
 )
 from .pipeline import prefetch_pipeline, lagged_collect
 from .rendering import (
-    render_pixelized_psf, render_galaxy_fft, render_point_source_pixelized,
-    render_galaxy_mog, render_point_source_mog
+    render_pixelized_psf,
+    render_galaxy_fft,
+    render_point_source_pixelized,
+    render_galaxy_mog,
+    render_point_source_mog,
 )
 
 __all__ = [
     "optimize_fluxes",
-    "extract_model_data", "extract_model_data_direct",
-    "solve_fluxes_linear", "solve_fluxes_eigfloor",
+    "extract_model_data",
+    "extract_model_data_direct",
+    "solve_fluxes_linear",
+    "solve_fluxes_eigfloor",
     "solve_fluxes_eigfloor_prior",
-    "solve_fluxes_lasso", "solve_fluxes_lasso_batched",
-    "lasso_fista", "lasso_fista_jit",
-    "BatchBundle", "build_padded_batches", "psf_to_fft", "slice_fluxes",
-    "psf_fft_phase_ramp", "shift_psf_fft",
-    "batches_in_axes", "make_batched_solver", "clear_solver_cache",
-    "penalty_weights_from_slots", "prior_arrays_from_slots", "pad_normal_eq",
-    "autotune_batch_size", "estimate_solve_bytes_per_view",
-    "prefetch_pipeline", "lagged_collect",
-    "render_pixelized_psf", "render_galaxy_fft",
-    "render_point_source_pixelized", "render_galaxy_mog",
+    "solve_fluxes_lasso",
+    "solve_fluxes_lasso_batched",
+    "lasso_fista",
+    "lasso_fista_jit",
+    "BatchBundle",
+    "build_padded_batches",
+    "psf_to_fft",
+    "slice_fluxes",
+    "psf_fft_phase_ramp",
+    "shift_psf_fft",
+    "batches_in_axes",
+    "make_batched_solver",
+    "clear_solver_cache",
+    "penalty_weights_from_slots",
+    "prior_arrays_from_slots",
+    "pad_normal_eq",
+    "autotune_batch_size",
+    "estimate_solve_bytes_per_view",
+    "prefetch_pipeline",
+    "lagged_collect",
+    "render_pixelized_psf",
+    "render_galaxy_fft",
+    "render_point_source_pixelized",
+    "render_galaxy_mog",
     "render_point_source_mog",
 ]

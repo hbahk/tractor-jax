@@ -1,4 +1,3 @@
-
 import unittest
 import jax
 import jax.numpy as jnp
@@ -8,6 +7,7 @@ from tractor_jax.brightness import Flux
 from tractor_jax.wcs import PixPos
 from tractor_jax.psf import PixelizedPSF
 from tractor_jax.jax.optimizer import extract_model_data, render_image
+
 
 class TestJaxShift(unittest.TestCase):
     def test_shift_precision(self):
@@ -21,8 +21,8 @@ class TestJaxShift(unittest.TestCase):
         # Use a wide sigma to minimize aliasing/undersampling errors in centroid measurement
         # Sigma = 5.0 high-res pixels -> 0.5 low-res pixels.
         sigma = 5.0
-        psf_img = np.exp(-((x - 10)**2 + (y - 10)**2) / (2 * sigma**2))
-        psf_img /= psf_img.sum() # Normalize
+        psf_img = np.exp(-((x - 10) ** 2 + (y - 10) ** 2) / (2 * sigma**2))
+        psf_img /= psf_img.sum()  # Normalize
 
         psf = PixelizedPSF(psf_img, sampling=0.1)
 
@@ -65,7 +65,7 @@ class TestJaxShift(unittest.TestCase):
                     "amp": images_data["psf"]["amp"][0],
                     "mean": images_data["psf"]["mean"][0],
                     "var": images_data["psf"]["var"][0],
-                }
+                },
             }
             s_batches = {}
             if "PointSource" in batches:
@@ -86,16 +86,22 @@ class TestJaxShift(unittest.TestCase):
             print(f"Pos: {p:.2f}, Centroid X: {cx:.4f}, Error: {error:.4f}")
 
             # With sigma=0.5, error should be small (< 0.01)
-            self.assertTrue(abs(error) < 0.01, f"Centroid error too large: {error} at pos {p}")
+            self.assertTrue(
+                abs(error) < 0.01, f"Centroid error too large: {error} at pos {p}"
+            )
             max_error = max(max_error, abs(error))
 
             # Verify Flux Conservation
-            self.assertTrue(np.isclose(sum_m, 100.0, rtol=1e-3), f"Flux not conserved: {sum_m}")
+            self.assertTrue(
+                np.isclose(sum_m, 100.0, rtol=1e-3), f"Flux not conserved: {sum_m}"
+            )
 
             # Verify Residuals (Self-consistency)
             # If we were to optimize, we'd expect residuals to be small.
             # Here we just verify the model is well-formed (no NaNs, etc)
-            self.assertTrue(np.all(np.isfinite(model)), "Model contains non-finite values")
+            self.assertTrue(
+                np.all(np.isfinite(model)), "Model contains non-finite values"
+            )
 
         print(f"Max centroid error: {max_error:.5f}")
 
@@ -126,7 +132,7 @@ class TestJaxShift(unittest.TestCase):
 
         psf = PixelizedPSF(psf_img, sampling=0.1)
 
-        src_pos = PixPos(5.5, 5.5) # Subpixel position
+        src_pos = PixPos(5.5, 5.5)  # Subpixel position
         src_flux = Flux(100.0)
         src = PointSource(src_pos, src_flux)
 
@@ -154,7 +160,7 @@ class TestJaxShift(unittest.TestCase):
                 "amp": images_data["psf"]["amp"][0],
                 "mean": images_data["psf"]["mean"][0],
                 "var": images_data["psf"]["var"][0],
-            }
+            },
         }
         s_batches = {}
         if "PointSource" in batches:
@@ -188,6 +194,7 @@ class TestJaxShift(unittest.TestCase):
 
         # Just ensure finiteness.
         self.assertTrue(np.all(np.isfinite(model)))
+
 
 if __name__ == "__main__":
     unittest.main()

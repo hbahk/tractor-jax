@@ -29,8 +29,11 @@ from tractor_jax.jax.rendering import (
     render_point_source_fft,
     downsample_image,
 )
-from tractor_jax.jax.rendering import (rebin_downsample_int_flux, decimate_int_point,
-                                       PIXEL_INTEGRATIONS)
+from tractor_jax.jax.rendering import (
+    rebin_downsample_int_flux,
+    decimate_int_point,
+    PIXEL_INTEGRATIONS,
+)
 from tractor_jax.jax.tiling import tile_image, project_catalog, filter_sources_by_box
 
 
@@ -50,8 +53,9 @@ def psf_kind(psf):
         fall through to an all-zero template, so the solve silently returned
         flux 0 with infinite variance for every source instead of failing.
     """
-    if isinstance(psf, PixelizedPSF) or isinstance(getattr(psf, "pix", None),
-                                                   PixelizedPSF):
+    if isinstance(psf, PixelizedPSF) or isinstance(
+        getattr(psf, "pix", None), PixelizedPSF
+    ):
         return "pixelized", psf
     mog = getattr(psf, "mog", None)
     if mog is None:
@@ -62,7 +66,8 @@ def psf_kind(psf):
     raise TypeError(
         f"unsupported PSF for the batched JAX path: {type(psf).__name__}. "
         "Use a PixelizedPSF, a GaussianMixturePSF, or any PSF exposing "
-        "getMixtureOfGaussians().")
+        "getMixtureOfGaussians()."
+    )
 
 
 def _even_hr_width_shrink(padded_w, max_factor, max_drop=8):
@@ -138,7 +143,7 @@ def assign_buckets(
     bucket_mode="auto",
     bucket_shape_mode="square",
     bucket_base=32,
-    max_buckets=5
+    max_buckets=5,
 ):
     """
     Assign images to shape buckets based on their required grid shapes.
@@ -180,7 +185,11 @@ def assign_buckets(
 
         # In fixed mode, we assume bucket_sizes defines the allowed grid.
         # It can be a list of ints (squares) or tuples.
-        allowed_list = sorted(bucket_sizes) if hasattr(bucket_sizes, '__iter__') else [bucket_sizes]
+        allowed_list = (
+            sorted(bucket_sizes)
+            if hasattr(bucket_sizes, "__iter__")
+            else [bucket_sizes]
+        )
 
         # Normalize to tuples
         norm_shapes = []
@@ -192,7 +201,7 @@ def assign_buckets(
 
         allowed_shapes = norm_shapes
 
-    else: # auto
+    else:  # auto
         # Quantize required shapes up to multiples of bucket_base
         quantized_shapes = []
         for h, w in required_shapes:
@@ -217,7 +226,7 @@ def assign_buckets(
             for s in sorted(list(candidates)):
                 allowed_shapes.append((s, s))
 
-        else: # independent
+        else:  # independent
             counts = Counter(quantized_shapes)
 
             all_h = [s[0] for s in quantized_shapes]
@@ -240,7 +249,7 @@ def assign_buckets(
         valid = [s for s in allowed_shapes if s[0] >= req_h and s[1] >= req_w]
 
         if valid:
-            best = min(valid, key=lambda x: x[0]*x[1])
+            best = min(valid, key=lambda x: x[0] * x[1])
         else:
             # Fallback if no bucket fits (e.g. fixed mode with too small buckets)
             # We create a new bucket on the fly fitting this image
@@ -298,7 +307,7 @@ def compute_target_stats(images, oversample_rendering=False):
         psf = img.getPsf()
 
         # Use r_eff for padding if available
-        if hasattr(psf, 'get_r_eff'):
+        if hasattr(psf, "get_r_eff"):
             if isinstance(psf, PixelizedPSF):
                 # Pad to the FULL finite kernel support (half-diagonal). The
                 # kernel is at PSF-pixel resolution, which IS the target(HR)-grid
@@ -341,8 +350,8 @@ def compute_target_stats(images, oversample_rendering=False):
             max_psf_h = max(max_psf_h, ph_target)
             max_psf_w = max(max_psf_w, pw_target)
         else:
-             max_psf_h = max(max_psf_h, 32 * max_factor)
-             max_psf_w = max(max_psf_w, 32 * max_factor)
+            max_psf_h = max(max_psf_h, 32 * max_factor)
+            max_psf_w = max(max_psf_w, 32 * max_factor)
 
     fft_pad_h_lr = int(math.ceil(max_psf_h / max_factor))
     fft_pad_w_lr = int(math.ceil(max_psf_w / max_factor))
@@ -416,12 +425,15 @@ def extract_model_data(
         flux row.
     """
     from tractor_jax.sky import ConstantSky
+
     images = tractor_obj.images
     catalog = tractor_obj.catalog
 
     if fixed_target_shape is not None:
         if fixed_max_factor is None:
-            raise ValueError("fixed_max_factor is required when fixed_target_shape is used.")
+            raise ValueError(
+                "fixed_max_factor is required when fixed_target_shape is used."
+            )
 
         target_H, target_W = fixed_target_shape
         max_factor = fixed_max_factor
@@ -540,7 +552,7 @@ def extract_model_data(
             p_type = 0
 
             s = getattr(psf, "sampling", 1.0)
-            local_factor = 1.0/s if s < 1.0 else 1.0
+            local_factor = 1.0 / s if s < 1.0 else 1.0
 
             # The padded oversampled rfft2 depends only on the PSF stamp and
             # the (target shape, sampling) geometry, so staple it on the PSF
@@ -549,8 +561,11 @@ def extract_model_data(
             # PixelizedPSF.fftcache convention (same stamp-immutability
             # assumption).
             fft_key = (target_H, target_W, round(float(p_sampling), 9))
-            cached_fft = (getattr(psf, "_jax_fft_cache", {}).get(fft_key)
-                          if use_psf_fft_cache else None)
+            cached_fft = (
+                getattr(psf, "_jax_fft_cache", {}).get(fft_key)
+                if use_psf_fft_cache
+                else None
+            )
             if cached_fft is not None:
                 p_fft = cached_fft
             else:
@@ -561,7 +576,9 @@ def extract_model_data(
                     ratio = p_sampling / local_factor
                     new_shape = (int(round(ph * ratio)), int(round(pw * ratio)))
 
-                    resized_img = jax.image.resize(raw_img, new_shape, method='lanczos3')
+                    resized_img = jax.image.resize(
+                        raw_img, new_shape, method="lanczos3"
+                    )
 
                     # Normalize flux to preserve sum
                     orig_sum = jnp.sum(raw_img)
@@ -581,7 +598,8 @@ def extract_model_data(
                         "is half a pixel off its true center (n-1)/2, so the "
                         "kernel lands 0.5 high-res px from the ifftshift "
                         "origin. Use an odd-sized kernel. See "
-                        "batching.psf_to_fft's even_parity handling.")
+                        "batching.psf_to_fft's even_parity handling."
+                    )
 
                 # Pad to (target_H, target_W), centered
                 pad_img = jnp.zeros((target_H, target_W))
@@ -634,8 +652,8 @@ def extract_model_data(
 
     # Stack Images Data
     images_data = {
-        "data": jnp.stack(data_list),       # (N_img, max_H, max_W)
-        "invvar": jnp.stack(invvar_list),   # (N_img, max_H, max_W)
+        "data": jnp.stack(data_list),  # (N_img, max_H, max_W)
+        "invvar": jnp.stack(invvar_list),  # (N_img, max_H, max_W)
         "psf": {
             "type_code": jnp.array(psf_type_code_list, dtype=jnp.int32),
             "sampling": jnp.array(psf_sampling_list, dtype=jnp.float32),
@@ -643,7 +661,7 @@ def extract_model_data(
             "amp": jnp.stack(psf_amp_list),
             "mean": jnp.stack(psf_mean_list),
             "var": jnp.stack(psf_var_list),
-        }
+        },
     }
 
     # 3. Extract & Stack Source Data
@@ -664,8 +682,8 @@ def extract_model_data(
             flux_offset += len(br)
 
     # Prepare batches per image
-    ps_batch_list = [] # (N_img) list of (flux_idx, pos_pix, mask)
-    gal_batch_list = [] # (N_img) list of (...)
+    ps_batch_list = []  # (N_img) list of (flux_idx, pos_pix, mask)
+    gal_batch_list = []  # (N_img) list of (...)
 
     max_gal_mog_K = 0
 
@@ -704,7 +722,7 @@ def extract_model_data(
         gal_pos = []
         gal_cd = []
         gal_shape = []
-        gal_prof = [] # (amp, mean, var)
+        gal_prof = []  # (amp, mean, var)
 
         for cat_idx in indices:
             cat_idx = int(cat_idx)
@@ -720,9 +738,12 @@ def extract_model_data(
             if hasattr(src, "getSourceType"):
                 src_type = src.getSourceType()
             else:
-                if isinstance(src, PointSource): src_type = "PointSource"
-                elif isinstance(src, Galaxy): src_type = "Galaxy"
-                else: src_type = "Unknown"
+                if isinstance(src, PointSource):
+                    src_type = "PointSource"
+                elif isinstance(src, Galaxy):
+                    src_type = "Galaxy"
+                else:
+                    src_type = "Unknown"
 
             prof = None
             is_galaxy = False
@@ -730,7 +751,8 @@ def extract_model_data(
                 is_galaxy = True
                 if hasattr(src, "getProfile"):
                     prof = src.getProfile()
-                if prof is None: is_galaxy = False
+                if prof is None:
+                    is_galaxy = False
 
             if src_type == "PointSource":
                 x, y = wcs.positionToPixel(src.getPosition(), src)
@@ -766,7 +788,7 @@ def extract_model_data(
         pos_pix_stack = []
         mask_stack = []
 
-        for (fl, pos) in ps_batch_list:
+        for fl, pos in ps_batch_list:
             n = len(fl)
             pad = max_ps - n
 
@@ -805,7 +827,7 @@ def extract_model_data(
         prof_mean_stack = []
         prof_var_stack = []
 
-        for (fl, pos, cd, sh, pr) in gal_batch_list:
+        for fl, pos, cd, sh, pr in gal_batch_list:
             n = len(fl)
             pad = max_gal - n
 
@@ -820,12 +842,14 @@ def extract_model_data(
             else:
                 p_arr = np.zeros((0, 2), dtype=np.float32)
                 cd_arr = np.zeros((0, 2, 2), dtype=np.float32)
-                sh_arr = np.zeros((0, 3), dtype=np.float32) # re, ab, phi
+                sh_arr = np.zeros((0, 3), dtype=np.float32)  # re, ab, phi
 
             p_arr = np.pad(p_arr, ((0, pad), (0, 0)), constant_values=0)
             pos_pix_stack.append(p_arr)
 
-            cd_arr = np.pad(cd_arr, ((0, pad), (0, 0), (0, 0)), constant_values=0) # zeros OK: padded slots are masked
+            cd_arr = np.pad(
+                cd_arr, ((0, pad), (0, 0), (0, 0)), constant_values=0
+            )  # zeros OK: padded slots are masked
             wcs_stack.append(cd_arr)
 
             sh_arr = np.pad(sh_arr, ((0, pad), (0, 0)), constant_values=0)
@@ -877,14 +901,15 @@ def extract_model_data(
     if compact_fluxes:
         # Per-image compact rows padded to the widest image; padded slots
         # never appear in any flux_idx and stay dead in the solver.
-        n_src_max = max((sum(n_p for (_, n_p) in m.values()) for m in slot_maps),
-                        default=0)
+        n_src_max = max(
+            (sum(n_p for (_, n_p) in m.values()) for m in slot_maps), default=0
+        )
         n_src_max = max(n_src_max, 1)
         initial_fluxes_matrix = np.zeros((N_img, n_src_max), dtype=np.float32)
         for i_img, slot_map in enumerate(slot_maps):
             for cat_idx, (off, n_p) in slot_map.items():
                 params = catalog[cat_idx].brightness.getParams()
-                initial_fluxes_matrix[i_img, off:off + n_p] = params
+                initial_fluxes_matrix[i_img, off : off + n_p] = params
     else:
         # Broadcast src_fluxes to (N_img, N_src_params)
         initial_fluxes_matrix = np.tile(src_fluxes, (N_img, 1))
@@ -893,9 +918,12 @@ def extract_model_data(
         bg_vals = []
         for img in images:
             sky = img.getSky()
-            if hasattr(sky, "val"): val = sky.val
-            elif hasattr(sky, "getConstant"): val = sky.getConstant()
-            else: val = 0.0
+            if hasattr(sky, "val"):
+                val = sky.val
+            elif hasattr(sky, "getConstant"):
+                val = sky.getConstant()
+            else:
+                val = 0.0
             bg_vals.append(val)
 
         bg_vals = np.array(bg_vals, dtype=np.float32).reshape(N_img, 1)
@@ -905,9 +933,7 @@ def extract_model_data(
         # Each row carries its own bg param at the end, so the index is a
         # single row-relative scalar shared by all images.
         bg_idx = initial_fluxes_matrix.shape[1] - 1
-        batches["Background"] = {
-            "flux_idx": jnp.array([bg_idx], dtype=jnp.int32)
-        }
+        batches["Background"] = {"flux_idx": jnp.array([bg_idx], dtype=jnp.int32)}
 
     initial_fluxes_matrix = jnp.array(initial_fluxes_matrix, dtype=jnp.float32)
     if compact_fluxes:
@@ -967,7 +993,11 @@ def extract_model_data_direct(
     from astropy.coordinates import SkyCoord
 
     N_img = len(frames)
-    max_factor = fixed_max_factor if fixed_max_factor is not None else (1.0 / psf_sampling if psf_sampling < 1.0 else 1.0)
+    max_factor = (
+        fixed_max_factor
+        if fixed_max_factor is not None
+        else (1.0 / psf_sampling if psf_sampling < 1.0 else 1.0)
+    )
     target_sampling = float(max_factor) if max_factor > 1.0 else 1.0
 
     if fixed_target_shape is not None:
@@ -981,10 +1011,10 @@ def extract_model_data_direct(
         target_H = int(round(padded_H * max_factor))
         target_W = int(round(padded_W * max_factor))
     else:
-        max_H = max(f['data'].shape[0] for f in frames)
-        max_W = max(f['data'].shape[1] for f in frames)
-        max_psf_h = max(f['psf'].shape[0] for f in frames)
-        max_psf_w = max(f['psf'].shape[1] for f in frames)
+        max_H = max(f["data"].shape[0] for f in frames)
+        max_W = max(f["data"].shape[1] for f in frames)
+        max_psf_h = max(f["psf"].shape[0] for f in frames)
+        max_psf_w = max(f["psf"].shape[1] for f in frames)
         fft_pad_h_lr = int(math.ceil(max_psf_h / max_factor))
         fft_pad_w_lr = int(math.ceil(max_psf_w / max_factor))
         padded_H = max_H + fft_pad_h_lr
@@ -998,12 +1028,12 @@ def extract_model_data_direct(
     # Pre-scan catalog for max MoG K
     max_gal_mog_K = 1
     for row in catalog_table:
-        if row['shape_r'] > 0 and profile_lookup_fn is not None:
-            prof = profile_lookup_fn(row['sersic'])
+        if row["shape_r"] > 0 and profile_lookup_fn is not None:
+            prof = profile_lookup_fn(row["sersic"])
             max_gal_mog_K = max(max_gal_mog_K, len(prof.amp))
 
     # Source positions in sky
-    sco = SkyCoord(ra=catalog_table['ra'], dec=catalog_table['dec'], unit='deg')
+    sco = SkyCoord(ra=catalog_table["ra"], dec=catalog_table["dec"], unit="deg")
 
     # ---- Build per-image stacks ----
     data_list, invvar_list = [], []
@@ -1021,10 +1051,10 @@ def extract_model_data_direct(
 
     for i_img in range(N_img):
         fr = frames[i_img]
-        d = fr['data']
-        iv = fr['invvar']
-        psf_img = fr['psf']
-        wcs_obj = fr['wcs']
+        d = fr["data"]
+        iv = fr["invvar"]
+        psf_img = fr["psf"]
+        wcs_obj = fr["wcs"]
         h, w = d.shape
 
         pad_h = padded_H - h
@@ -1041,7 +1071,7 @@ def extract_model_data_direct(
         if abs(local_factor - target_sampling) > 1e-3:
             ratio = target_sampling / local_factor
             new_shape = (int(round(ph * ratio)), int(round(pw * ratio)))
-            resized = jax.image.resize(raw_psf, new_shape, method='lanczos3')
+            resized = jax.image.resize(raw_psf, new_shape, method="lanczos3")
             resized = resized * (jnp.sum(raw_psf) / jnp.sum(resized))
             raw_psf = resized
             ph, pw = raw_psf.shape
@@ -1051,13 +1081,14 @@ def extract_model_data_direct(
                 f"PSF kernel {ph}x{pw} has an even axis: the centered pad "
                 "below anchors it by ph//2, half a pixel off the true center "
                 "(n-1)/2 for an even size, so it lands 0.5 high-res px from "
-                "the ifftshift origin. Use an odd-sized kernel.")
+                "the ifftshift origin. Use an odd-sized kernel."
+            )
 
         pad_psf = jnp.zeros((target_H, target_W))
         cy, cx = target_H // 2, target_W // 2
         y0 = cy - ph // 2
         x0 = cx - pw // 2
-        pad_psf = pad_psf.at[y0:y0 + ph, x0:x0 + pw].set(raw_psf)
+        pad_psf = pad_psf.at[y0 : y0 + ph, x0 : x0 + pw].set(raw_psf)
         pad_psf = jnp.fft.ifftshift(pad_psf)
         psf_fft_list.append(jfft.rfft2(pad_psf))
 
@@ -1078,7 +1109,7 @@ def extract_model_data_direct(
                     raw_val = float(d[iy, ix])
                     src_fluxes[f_idx] = raw_val if np.isfinite(raw_val) else 0.0
 
-            if row['shape_r'] == 0:
+            if row["shape_r"] == 0:
                 ps_flux_img.append(f_idx)
                 ps_pos_img.append([px, py])
             else:
@@ -1086,18 +1117,28 @@ def extract_model_data_direct(
                 gal_pos_img.append([px, py])
                 # Approximate CD inverse from WCS at source position
                 try:
-                    cd_matrix = np.array(wcs_obj.wcs.cd) if hasattr(wcs_obj.wcs, 'cd') else np.array(wcs_obj.pixel_scale_matrix)
+                    cd_matrix = (
+                        np.array(wcs_obj.wcs.cd)
+                        if hasattr(wcs_obj.wcs, "cd")
+                        else np.array(wcs_obj.pixel_scale_matrix)
+                    )
                 except Exception:
                     cd_matrix = np.eye(2) * (6.15 / 3600.0)
                 cd_inv = np.linalg.inv(cd_matrix)
                 gal_cd_img.append(cd_inv)
-                gal_shape_img.append([row['shape_r'], row['shape_ab'], row['shape_phi']])
+                gal_shape_img.append(
+                    [row["shape_r"], row["shape_ab"], row["shape_phi"]]
+                )
 
                 if profile_lookup_fn is not None:
-                    prof = profile_lookup_fn(row['sersic'])
-                    gal_prof_img.append((np.array(prof.amp), np.array(prof.mean), np.array(prof.var)))
+                    prof = profile_lookup_fn(row["sersic"])
+                    gal_prof_img.append(
+                        (np.array(prof.amp), np.array(prof.mean), np.array(prof.var))
+                    )
                 else:
-                    gal_prof_img.append((np.zeros(1), np.zeros((1, 2)), np.eye(2)[np.newaxis]))
+                    gal_prof_img.append(
+                        (np.zeros(1), np.zeros((1, 2)), np.eye(2)[np.newaxis])
+                    )
 
         ps_flux_list.append(ps_flux_img)
         ps_pos_list.append(ps_pos_img)
@@ -1109,16 +1150,16 @@ def extract_model_data_direct(
 
     # Stack images
     images_data = {
-        'data': jnp.stack(data_list),
-        'invvar': jnp.stack(invvar_list),
-        'psf': {
-            'type_code': jnp.zeros(N_img, dtype=jnp.int32),
-            'sampling': jnp.full(N_img, target_sampling, dtype=jnp.float32),
-            'fft': jnp.stack(psf_fft_list),
-            'amp': jnp.zeros((N_img, 1)),
-            'mean': jnp.zeros((N_img, 1, 2)),
-            'var': jnp.tile(jnp.eye(2), (N_img, 1, 1, 1)),
-        }
+        "data": jnp.stack(data_list),
+        "invvar": jnp.stack(invvar_list),
+        "psf": {
+            "type_code": jnp.zeros(N_img, dtype=jnp.int32),
+            "sampling": jnp.full(N_img, target_sampling, dtype=jnp.float32),
+            "fft": jnp.stack(psf_fft_list),
+            "amp": jnp.zeros((N_img, 1)),
+            "mean": jnp.zeros((N_img, 1, 2)),
+            "var": jnp.tile(jnp.eye(2), (N_img, 1, 1, 1)),
+        },
     }
 
     # Build batches
@@ -1131,28 +1172,46 @@ def extract_model_data_direct(
             n = len(fl)
             pad = max_ps - n
             fi_stack.append(np.pad(np.array(fl, dtype=np.int32), (0, pad)))
-            p = np.array(pos, dtype=np.float32) if n > 0 else np.zeros((0, 2), dtype=np.float32)
+            p = (
+                np.array(pos, dtype=np.float32)
+                if n > 0
+                else np.zeros((0, 2), dtype=np.float32)
+            )
             pp_stack.append(np.pad(p, ((0, pad), (0, 0))))
             mk_stack.append(np.pad(np.ones(n, dtype=np.float32), (0, pad)))
-        batches['PointSource'] = {
-            'flux_idx': jnp.array(np.stack(fi_stack)),
-            'pos_pix': jnp.array(np.stack(pp_stack)),
-            'mask': jnp.array(np.stack(mk_stack)),
+        batches["PointSource"] = {
+            "flux_idx": jnp.array(np.stack(fi_stack)),
+            "pos_pix": jnp.array(np.stack(pp_stack)),
+            "mask": jnp.array(np.stack(mk_stack)),
         }
 
     max_gal = max(len(x) for x in gal_flux_list) if gal_flux_list else 0
     if max_gal > 0:
         fi_s, pp_s, cd_s, sh_s, mk_s = [], [], [], [], []
         amp_s, mean_s, var_s = [], [], []
-        for fl, pos, cd, sh, pr in zip(gal_flux_list, gal_pos_list, gal_cd_list, gal_shape_list, gal_prof_list):
+        for fl, pos, cd, sh, pr in zip(
+            gal_flux_list, gal_pos_list, gal_cd_list, gal_shape_list, gal_prof_list
+        ):
             n = len(fl)
             pad = max_gal - n
             fi_s.append(np.pad(np.array(fl, dtype=np.int32), (0, pad)))
-            p = np.array(pos, dtype=np.float32) if n > 0 else np.zeros((0, 2), dtype=np.float32)
+            p = (
+                np.array(pos, dtype=np.float32)
+                if n > 0
+                else np.zeros((0, 2), dtype=np.float32)
+            )
             pp_s.append(np.pad(p, ((0, pad), (0, 0))))
-            c = np.array(cd, dtype=np.float32) if n > 0 else np.zeros((0, 2, 2), dtype=np.float32)
+            c = (
+                np.array(cd, dtype=np.float32)
+                if n > 0
+                else np.zeros((0, 2, 2), dtype=np.float32)
+            )
             cd_s.append(np.pad(c, ((0, pad), (0, 0), (0, 0))))
-            s = np.array(sh, dtype=np.float32) if n > 0 else np.zeros((0, 3), dtype=np.float32)
+            s = (
+                np.array(sh, dtype=np.float32)
+                if n > 0
+                else np.zeros((0, 3), dtype=np.float32)
+            )
             sh_s.append(np.pad(s, ((0, pad), (0, 0))))
             mk_s.append(np.pad(np.ones(n, dtype=np.float32), (0, pad)))
 
@@ -1170,16 +1229,16 @@ def extract_model_data_direct(
             mean_s.append(img_mean)
             var_s.append(img_var)
 
-        batches['Galaxy'] = {
-            'flux_idx': jnp.array(np.stack(fi_s)),
-            'pos_pix': jnp.array(np.stack(pp_s)),
-            'wcs_cd_inv': jnp.array(np.stack(cd_s)),
-            'shapes': jnp.array(np.stack(sh_s)),
-            'mask': jnp.array(np.stack(mk_s)),
-            'profile': {
-                'amp': jnp.array(np.stack(amp_s)),
-                'mean': jnp.array(np.stack(mean_s)),
-                'var': jnp.array(np.stack(var_s)),
+        batches["Galaxy"] = {
+            "flux_idx": jnp.array(np.stack(fi_s)),
+            "pos_pix": jnp.array(np.stack(pp_s)),
+            "wcs_cd_inv": jnp.array(np.stack(cd_s)),
+            "shapes": jnp.array(np.stack(sh_s)),
+            "mask": jnp.array(np.stack(mk_s)),
+            "profile": {
+                "amp": jnp.array(np.stack(amp_s)),
+                "mean": jnp.array(np.stack(mean_s)),
+                "var": jnp.array(np.stack(var_s)),
             },
         }
 
@@ -1190,13 +1249,20 @@ def extract_model_data_direct(
         bg_vals = np.zeros((N_img, 1), dtype=np.float32)
         initial_fluxes_matrix = np.hstack([initial_fluxes_matrix, bg_vals])
         bg_idx = len(src_fluxes_np)
-        batches['Background'] = {'flux_idx': jnp.array([bg_idx], dtype=jnp.int32)}
+        batches["Background"] = {"flux_idx": jnp.array([bg_idx], dtype=jnp.int32)}
 
     return images_data, batches, jnp.array(initial_fluxes_matrix, dtype=jnp.float32)
 
 
-def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape, sampling_factor=None, mask=None,
-                               pixel_integration="window"):
+def render_batch_point_sources(
+    fluxes,
+    pos_pix,
+    psf_data,
+    img_shape,
+    sampling_factor=None,
+    mask=None,
+    pixel_integration="window",
+):
     """
     Render a batch of point sources onto a single image grid.
 
@@ -1236,11 +1302,11 @@ def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape, sampling_fa
     if sampling_factor is not None:
         s = sampling_factor
     else:
-        s = psf_data['sampling']
+        s = psf_data["sampling"]
 
     H, W = img_shape
-    H_hr_grid = psf_data['fft'].shape[0]
-    W_hr_grid = (psf_data['fft'].shape[1] - 1) * 2
+    H_hr_grid = psf_data["fft"].shape[0]
+    W_hr_grid = (psf_data["fft"].shape[1] - 1) * 2
 
     if mask is not None:
         fluxes = fluxes * mask
@@ -1264,22 +1330,28 @@ def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape, sampling_fa
         f_xy = jnp.array([f_x, f_y])
         pos_pix_scaled = pos_pix * f_xy + (f_xy - 1.0) / 2.0
 
-        render_fn = vmap(partial(render_point_source_fft, image_shape=render_shape), in_axes=(0, 0, None))
-        stamps = render_fn(fluxes, pos_pix_scaled, psf_data['fft'])
+        render_fn = vmap(
+            partial(render_point_source_fft, image_shape=render_shape),
+            in_axes=(0, 0, None),
+        )
+        stamps = render_fn(fluxes, pos_pix_scaled, psf_data["fft"])
         combined = jnp.sum(stamps, axis=0)
 
         if sampling_factor is not None and s > 1.001:
             combined = combined[:valid_H, :valid_W]
             combined = downsample_image(combined, img_shape, pixel_integration)
         elif sampling_factor is None:
-             if H_hr_grid > H + 1:
-                 combined = downsample_image(combined, img_shape, pixel_integration)
+            if H_hr_grid > H + 1:
+                combined = downsample_image(combined, img_shape, pixel_integration)
 
         return combined
 
     def render_mog(operand):
         psf_mix = (psf_data["amp"], psf_data["mean"], psf_data["var"])
-        render_fn = vmap(partial(render_point_source_mog, image_shape=img_shape), in_axes=(0, 0, None))
+        render_fn = vmap(
+            partial(render_point_source_mog, image_shape=img_shape),
+            in_axes=(0, 0, None),
+        )
         stamps = render_fn(fluxes, pos_pix, psf_mix)
         return jnp.sum(stamps, axis=0)
 
@@ -1288,12 +1360,19 @@ def render_batch_point_sources(fluxes, pos_pix, psf_data, img_shape, sampling_fa
     # the FFT branch (stamps corrupted at the tens-of-percent level; jax 0.5.3).
     # Computing both branches and selecting with where is what the batched cond
     # executed anyway, and compiles correctly on CPU and GPU.
-    return jnp.where(psf_data['type_code'] == 0,
-                     render_fft(None), render_mog(None))
+    return jnp.where(psf_data["type_code"] == 0, render_fft(None), render_mog(None))
 
 
 def render_batch_galaxies(
-    fluxes, pos_pix, wcs_cd_inv, shapes, profiles, psf_data, img_shape, sampling_factor=None, mask=None,
+    fluxes,
+    pos_pix,
+    wcs_cd_inv,
+    shapes,
+    profiles,
+    psf_data,
+    img_shape,
+    sampling_factor=None,
+    mask=None,
     pixel_integration="window",
 ):
     """
@@ -1336,11 +1415,11 @@ def render_batch_galaxies(
     if sampling_factor is not None:
         s = sampling_factor
     else:
-        s = psf_data['sampling']
+        s = psf_data["sampling"]
 
     H, W = img_shape
-    H_hr_grid = psf_data['fft'].shape[0]
-    W_hr_grid = (psf_data['fft'].shape[1] - 1) * 2
+    H_hr_grid = psf_data["fft"].shape[0]
+    W_hr_grid = (psf_data["fft"].shape[1] - 1) * 2
 
     if mask is not None:
         fluxes = fluxes * mask
@@ -1365,8 +1444,13 @@ def render_batch_galaxies(
 
         gal_mix = (profiles["amp"], profiles["mean"], profiles["var"])
 
-        render_fn = vmap(partial(render_galaxy_fft, image_shape=render_shape), in_axes=((0, 0, 0), None, 0, 0, 0))
-        stamps = render_fn(gal_mix, psf_data['fft'], shapes, wcs_cd_inv_scaled, pos_pix_scaled)
+        render_fn = vmap(
+            partial(render_galaxy_fft, image_shape=render_shape),
+            in_axes=((0, 0, 0), None, 0, 0, 0),
+        )
+        stamps = render_fn(
+            gal_mix, psf_data["fft"], shapes, wcs_cd_inv_scaled, pos_pix_scaled
+        )
 
         weighted_stamps = stamps * fluxes[:, jnp.newaxis, jnp.newaxis]
         combined = jnp.sum(weighted_stamps, axis=0)
@@ -1375,8 +1459,8 @@ def render_batch_galaxies(
             combined = combined[:valid_H, :valid_W]
             combined = downsample_image(combined, img_shape, pixel_integration)
         elif sampling_factor is None:
-             if H_hr_grid > H + 1:
-                 combined = downsample_image(combined, img_shape, pixel_integration)
+            if H_hr_grid > H + 1:
+                combined = downsample_image(combined, img_shape, pixel_integration)
 
         return combined
 
@@ -1384,15 +1468,17 @@ def render_batch_galaxies(
         psf_mix = (psf_data["amp"], psf_data["mean"], psf_data["var"])
         gal_mix = (profiles["amp"], profiles["mean"], profiles["var"])
 
-        render_fn = vmap(partial(render_galaxy_mog, image_shape=img_shape), in_axes=((0, 0, 0), None, 0, 0, 0))
+        render_fn = vmap(
+            partial(render_galaxy_mog, image_shape=img_shape),
+            in_axes=((0, 0, 0), None, 0, 0, 0),
+        )
         stamps = render_fn(gal_mix, psf_mix, shapes, wcs_cd_inv, pos_pix)
 
         weighted_stamps = stamps * fluxes[:, jnp.newaxis, jnp.newaxis]
         return jnp.sum(weighted_stamps, axis=0)
 
     # See render_batch_point_sources: batched-pred lax.cond miscompiles on GPU.
-    return jnp.where(psf_data['type_code'] == 0,
-                     render_fft(None), render_mog(None))
+    return jnp.where(psf_data["type_code"] == 0, render_fft(None), render_mog(None))
 
 
 def prepare_sharded_inputs(images_data, batches, initial_fluxes):
@@ -1434,20 +1520,22 @@ def prepare_sharded_inputs(images_data, batches, initial_fluxes):
     n_img = int(initial_fluxes.shape[0])
     pad = (-n_img) % len(devices)
     if pad:
+
         def _pad(x):
             x = jnp.asarray(x)
             if x.ndim and x.shape[0] == n_img:
                 return jnp.concatenate([x, jnp.repeat(x[-1:], pad, axis=0)], axis=0)
             return x
+
         images_data = jax.tree_util.tree_map(_pad, images_data)
         batches = jax.tree_util.tree_map(_pad, batches)
         initial_fluxes = _pad(initial_fluxes)
 
     # Create a mesh for data parallelism over images
-    mesh = Mesh(devices, axis_names=('img_batch',))
+    mesh = Mesh(devices, axis_names=("img_batch",))
 
     # Shard along the first axis (axis 0) corresponding to 'img_batch'
-    sharding = NamedSharding(mesh, PartitionSpec('img_batch'))
+    sharding = NamedSharding(mesh, PartitionSpec("img_batch"))
 
     # Replicate on all devices (no partitioning axes)
     replicated = NamedSharding(mesh, PartitionSpec())
@@ -1466,25 +1554,26 @@ def prepare_sharded_inputs(images_data, batches, initial_fluxes):
     for key, batch in batches.items():
         spec = {}
         for k, v in batch.items():
-            if k in ['pos_pix', 'wcs_cd_inv']:
-                 spec[k] = sharding
-            elif k == 'profile':
-                 # profile is a dict of arrays, all replicated
-                 spec[k] = jax.tree_util.tree_map(lambda x: replicated, v)
+            if k in ["pos_pix", "wcs_cd_inv"]:
+                spec[k] = sharding
+            elif k == "profile":
+                # profile is a dict of arrays, all replicated
+                spec[k] = jax.tree_util.tree_map(lambda x: replicated, v)
             else:
-                 # flux_idx, shapes, etc.
-                 spec[k] = replicated
+                # flux_idx, shapes, etc.
+                spec[k] = replicated
         batches_spec[key] = spec
 
     return (
         jax.device_put(images_data, images_spec),
         jax.device_put(batches, batches_spec),
-        jax.device_put(initial_fluxes, fluxes_spec)
+        jax.device_put(initial_fluxes, fluxes_spec),
     )
 
 
-def render_image(fluxes, image_data, batches, sampling_factor=None,
-                 pixel_integration="window"):
+def render_image(
+    fluxes, image_data, batches, sampling_factor=None, pixel_integration="window"
+):
     """
     Render a single model image from sliced batch data.
 
@@ -1512,7 +1601,7 @@ def render_image(fluxes, image_data, batches, sampling_factor=None,
     jax.numpy.ndarray
         Model image of shape (H, W).
     """
-    H, W = image_data['data'].shape
+    H, W = image_data["data"].shape
     img_model = jnp.zeros((H, W))
 
     # 1. Render Point Sources
@@ -1524,7 +1613,12 @@ def render_image(fluxes, image_data, batches, sampling_factor=None,
         mask = batch.get("mask", None)
 
         ps_model = render_batch_point_sources(
-            batch_fluxes, pos_pix, image_data["psf"], (H, W), sampling_factor=sampling_factor, mask=mask,
+            batch_fluxes,
+            pos_pix,
+            image_data["psf"],
+            (H, W),
+            sampling_factor=sampling_factor,
+            mask=mask,
             pixel_integration=pixel_integration,
         )
         img_model = img_model + ps_model
@@ -1532,8 +1626,8 @@ def render_image(fluxes, image_data, batches, sampling_factor=None,
     # 2. Render Galaxies
     if "Galaxy" in batches:
         batch = batches["Galaxy"]
-        pos_pix = batch["pos_pix"] # (N_gal, 2)
-        wcs_cd_inv = batch["wcs_cd_inv"] # (N_gal, 2, 2)
+        pos_pix = batch["pos_pix"]  # (N_gal, 2)
+        wcs_cd_inv = batch["wcs_cd_inv"]  # (N_gal, 2, 2)
         shapes = batch["shapes"]
         profiles = batch["profile"]
         mask = batch.get("mask", None)
@@ -1558,7 +1652,7 @@ def render_image(fluxes, image_data, batches, sampling_factor=None,
     # 3. Background
     if "Background" in batches:
         batch = batches["Background"]
-        f_idx = batch["flux_idx"] # (1,)
+        f_idx = batch["flux_idx"]  # (1,)
         # For single image optimization, flux_idx points to the bg parameter.
         bg_val = fluxes[f_idx[0]]
         img_model = img_model + bg_val
@@ -1589,13 +1683,13 @@ def compute_fisher_diagonal(image_data, batches, n_flux, pixel_integration="wind
     """
     fisher_diag = jnp.zeros(n_flux)
 
-    H, W = image_data['data'].shape
-    invvar = image_data["invvar"] # (H, W)
+    H, W = image_data["data"].shape
+    invvar = image_data["invvar"]  # (H, W)
 
     # 1. Point Sources
     if "PointSource" in batches:
         batch = batches["PointSource"]
-        pos_pix = batch["pos_pix"] # (N_ps, 2)
+        pos_pix = batch["pos_pix"]  # (N_ps, 2)
         f_idx = batch["flux_idx"]
 
         # Unit fluxes for derivatives
@@ -1610,35 +1704,49 @@ def compute_fisher_diagonal(image_data, batches, n_flux, pixel_integration="wind
         # render_batch_point_sources sums the stamps internally, but the Fisher
         # diagonal needs each per-source stamp squared, so the stamp rendering
         # is implemented inline here.
-        H_hr = psf_data['fft'].shape[0]
+        H_hr = psf_data["fft"].shape[0]
         scale = float(H_hr) / float(H)
 
         def compute_stamps_fft(op):
             # true grid width from the rfft array (even by construction);
             # per-axis effective factors (registration-drift fix)
-            W_hr = (psf_data['fft'].shape[1] - 1) * 2
+            W_hr = (psf_data["fft"].shape[1] - 1) * 2
             render_shape = (H_hr, W_hr)
             f_xy = jnp.array([W_hr / W, H_hr / H])
             pos_pix_scaled = pos_pix * f_xy + (f_xy - 1.0) / 2.0
 
-            render_fn = vmap(partial(render_point_source_fft, image_shape=render_shape), in_axes=(0, 0, None))
-            stamps = render_fn(unit_fluxes, pos_pix_scaled, psf_data['fft'])
+            render_fn = vmap(
+                partial(render_point_source_fft, image_shape=render_shape),
+                in_axes=(0, 0, None),
+            )
+            stamps = render_fn(unit_fluxes, pos_pix_scaled, psf_data["fft"])
 
             if scale > 1.001:
-                ds_fn = vmap(partial(downsample_image, target_shape=(H, W),
-                                     pixel_integration=pixel_integration))
+                ds_fn = vmap(
+                    partial(
+                        downsample_image,
+                        target_shape=(H, W),
+                        pixel_integration=pixel_integration,
+                    )
+                )
                 stamps = ds_fn(stamps)
             return stamps
 
         def compute_stamps_mog(op):
             psf_mix = (psf_data["amp"], psf_data["mean"], psf_data["var"])
-            render_fn = vmap(partial(render_point_source_mog, image_shape=(H, W)), in_axes=(0, 0, None))
+            render_fn = vmap(
+                partial(render_point_source_mog, image_shape=(H, W)),
+                in_axes=(0, 0, None),
+            )
             stamps = render_fn(unit_fluxes, pos_pix, psf_mix)
             return stamps
 
         # See render_batch_point_sources: batched-pred lax.cond miscompiles on GPU.
-        stamps = jnp.where(psf_data['type_code'] == 0,
-                           compute_stamps_fft(None), compute_stamps_mog(None))
+        stamps = jnp.where(
+            psf_data["type_code"] == 0,
+            compute_stamps_fft(None),
+            compute_stamps_mog(None),
+        )
 
         # Compute contribution: sum(stamp^2 * invvar)
         contrib = jnp.sum(stamps**2 * invvar[jnp.newaxis, :, :], axis=(1, 2))
@@ -1655,38 +1763,54 @@ def compute_fisher_diagonal(image_data, batches, n_flux, pixel_integration="wind
         mask = batch.get("mask", None)
 
         psf_data = image_data["psf"]
-        H_hr = psf_data['fft'].shape[0]
+        H_hr = psf_data["fft"].shape[0]
         scale = float(H_hr) / float(H)
 
         def compute_stamps_fft(op):
             # true grid width from the rfft array (even by construction);
             # per-axis effective factors (registration-drift fix)
-            W_hr = (psf_data['fft'].shape[1] - 1) * 2
+            W_hr = (psf_data["fft"].shape[1] - 1) * 2
             render_shape = (H_hr, W_hr)
             f_xy = jnp.array([W_hr / W, H_hr / H])
             pos_pix_scaled = pos_pix * f_xy + (f_xy - 1.0) / 2.0
             wcs_cd_inv_scaled = wcs_cd_inv * f_xy[:, jnp.newaxis]
 
             gal_mix = (profiles["amp"], profiles["mean"], profiles["var"])
-            render_fn = vmap(partial(render_galaxy_fft, image_shape=render_shape), in_axes=((0, 0, 0), None, 0, 0, 0))
-            stamps = render_fn(gal_mix, psf_data['fft'], shapes, wcs_cd_inv_scaled, pos_pix_scaled)
+            render_fn = vmap(
+                partial(render_galaxy_fft, image_shape=render_shape),
+                in_axes=((0, 0, 0), None, 0, 0, 0),
+            )
+            stamps = render_fn(
+                gal_mix, psf_data["fft"], shapes, wcs_cd_inv_scaled, pos_pix_scaled
+            )
 
             if scale > 1.001:
-                ds_fn = vmap(partial(downsample_image, target_shape=(H, W),
-                                     pixel_integration=pixel_integration))
+                ds_fn = vmap(
+                    partial(
+                        downsample_image,
+                        target_shape=(H, W),
+                        pixel_integration=pixel_integration,
+                    )
+                )
                 stamps = ds_fn(stamps)
             return stamps
 
         def compute_stamps_mog(op):
             psf_mix = (psf_data["amp"], psf_data["mean"], psf_data["var"])
             gal_mix = (profiles["amp"], profiles["mean"], profiles["var"])
-            render_fn = vmap(partial(render_galaxy_mog, image_shape=(H, W)), in_axes=((0, 0, 0), None, 0, 0, 0))
+            render_fn = vmap(
+                partial(render_galaxy_mog, image_shape=(H, W)),
+                in_axes=((0, 0, 0), None, 0, 0, 0),
+            )
             stamps = render_fn(gal_mix, psf_mix, shapes, wcs_cd_inv, pos_pix)
             return stamps
 
         # See render_batch_point_sources: batched-pred lax.cond miscompiles on GPU.
-        stamps = jnp.where(psf_data['type_code'] == 0,
-                           compute_stamps_fft(None), compute_stamps_mog(None))
+        stamps = jnp.where(
+            psf_data["type_code"] == 0,
+            compute_stamps_fft(None),
+            compute_stamps_mog(None),
+        )
 
         if mask is not None:
             stamps = stamps * mask[:, jnp.newaxis, jnp.newaxis]
@@ -1696,7 +1820,7 @@ def compute_fisher_diagonal(image_data, batches, n_flux, pixel_integration="wind
 
     # 3. Background
     if "Background" in batches:
-        f_idx = batches["Background"]["flux_idx"] # (1,)
+        f_idx = batches["Background"]["flux_idx"]  # (1,)
         # Derivative is 1.0
         contrib = jnp.sum(invvar)
         fisher_diag = fisher_diag.at[f_idx].add(contrib)
@@ -1763,7 +1887,7 @@ def _place_native_stamp(stamp, n0y, n0x, H, W):
     Sn = stamp.shape[0]
     canvas = jnp.zeros((H + 2 * Sn, W + 2 * Sn), stamp.dtype)
     canvas = jax.lax.dynamic_update_slice(canvas, stamp, (n0y + Sn, n0x + Sn))
-    return canvas[Sn:Sn + H, Sn:Sn + W]
+    return canvas[Sn : Sn + H, Sn : Sn + W]
 
 
 def _compact_hr_to_native(hr, h0y, h0x, k, H, W, pixel_integration="window"):
@@ -1787,9 +1911,9 @@ def _compact_hr_to_native(hr, h0y, h0x, k, H, W, pixel_integration="window"):
     canvas = jnp.zeros((S + k, S + k), hr.dtype)
     canvas = jax.lax.dynamic_update_slice(canvas, hr, (ay, ax))
     if pixel_integration == "point":
-        native = decimate_int_point(canvas, k, k)           # (S/k + 1, S/k + 1)
+        native = decimate_int_point(canvas, k, k)  # (S/k + 1, S/k + 1)
     else:
-        native = rebin_downsample_int_flux(canvas, k, k)    # (S/k + 1, S/k + 1)
+        native = rebin_downsample_int_flux(canvas, k, k)  # (S/k + 1, S/k + 1)
     return _place_native_stamp(native, n0y, n0x, H, W)
 
 
@@ -1810,17 +1934,20 @@ def _compact_ps_templates(pos_hr, unit, fft_stamp, k, H, W, pixel_integration="w
     def one(p, u):
         c = jnp.round(p)
         frac = p - c
-        hr = render_point_source_fft(u, (half + frac[0], half + frac[1]),
-                                     fft_stamp, (S, S))
+        hr = render_point_source_fft(
+            u, (half + frac[0], half + frac[1]), fft_stamp, (S, S)
+        )
         ci = c.astype(jnp.int32)
-        return _compact_hr_to_native(hr, ci[1] - half, ci[0] - half, k, H, W,
-                                     pixel_integration)
+        return _compact_hr_to_native(
+            hr, ci[1] - half, ci[0] - half, k, H, W, pixel_integration
+        )
 
     return vmap(one)(pos_hr, unit)
 
 
-def _compact_gal_templates(gal_mix, fft_stamp, shapes, wcs_scaled, pos_hr,
-                           k, H, W, pixel_integration="window"):
+def _compact_gal_templates(
+    gal_mix, fft_stamp, shapes, wcs_scaled, pos_hr, k, H, W, pixel_integration="window"
+):
     """Galaxy templates on a compact ``S x S`` high-res stamp (see
     :func:`_compact_ps_templates`); the analytic mixture transform is
     evaluated on the stamp's frequency grid at the sub-pixel position."""
@@ -1830,19 +1957,31 @@ def _compact_gal_templates(gal_mix, fft_stamp, shapes, wcs_scaled, pos_hr,
     def one(mix, shp, cd, p):
         c = jnp.round(p)
         frac = p - c
-        hr = render_galaxy_fft(mix, fft_stamp, shp, cd,
-                               (half + frac[0], half + frac[1]), (S, S))
+        hr = render_galaxy_fft(
+            mix, fft_stamp, shp, cd, (half + frac[0], half + frac[1]), (S, S)
+        )
         ci = c.astype(jnp.int32)
-        return _compact_hr_to_native(hr, ci[1] - half, ci[0] - half, k, H, W,
-                                     pixel_integration)
+        return _compact_hr_to_native(
+            hr, ci[1] - half, ci[0] - half, k, H, W, pixel_integration
+        )
 
-    return vmap(one, in_axes=((0, 0, 0), 0, 0, 0))(gal_mix, shapes, wcs_scaled,
-                                                   pos_hr)
+    return vmap(one, in_axes=((0, 0, 0), 0, 0, 0))(gal_mix, shapes, wcs_scaled, pos_hr)
 
 
-def _fullgrid_gal_templates(gal_mix, psf_fft, shapes, wcs_scaled, pos_scaled,
-                            H, W, H_hr_grid, W_hr_grid, s, sampling_factor,
-                            pixel_integration="window"):
+def _fullgrid_gal_templates(
+    gal_mix,
+    psf_fft,
+    shapes,
+    wcs_scaled,
+    pos_scaled,
+    H,
+    W,
+    H_hr_grid,
+    W_hr_grid,
+    s,
+    sampling_factor,
+    pixel_integration="window",
+):
     """Full padded-grid galaxy templates for an arbitrary sub-batch (used for
     the galaxies too extended for the compact stamp). Mirrors the default
     ``_gal_stamps_fft`` path exactly."""
@@ -1852,11 +1991,16 @@ def _fullgrid_gal_templates(gal_mix, psf_fft, shapes, wcs_scaled, pos_scaled,
         valid_W = min(int(round(W * s)), W_hr_grid)
     else:
         valid_H, valid_W = H_hr_grid, W_hr_grid
-    render_fn = vmap(partial(render_galaxy_fft, image_shape=render_shape),
-                     in_axes=((0, 0, 0), None, 0, 0, 0))
+    render_fn = vmap(
+        partial(render_galaxy_fft, image_shape=render_shape),
+        in_axes=((0, 0, 0), None, 0, 0, 0),
+    )
     stamps = render_fn(gal_mix, psf_fft, shapes, wcs_scaled, pos_scaled)
-    ds_fn = vmap(partial(downsample_image, target_shape=(H, W),
-                         pixel_integration=pixel_integration))
+    ds_fn = vmap(
+        partial(
+            downsample_image, target_shape=(H, W), pixel_integration=pixel_integration
+        )
+    )
     if sampling_factor is not None and s > 1.001:
         stamps = stamps[:, :valid_H, :valid_W]
         stamps = ds_fn(stamps)
@@ -1866,9 +2010,15 @@ def _fullgrid_gal_templates(gal_mix, psf_fft, shapes, wcs_scaled, pos_scaled,
     return stamps
 
 
-def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
-                             psf_type=None, render_mode="auto",
-                             pixel_integration="window"):
+def _render_source_templates(
+    image_data,
+    batches,
+    n_flux,
+    sampling_factor=None,
+    psf_type=None,
+    render_mode="auto",
+    pixel_integration="window",
+):
     """
     Render unit-flux template images for every source (and background).
 
@@ -1927,20 +2077,24 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
         per flux parameter.
     """
     if render_mode not in _RENDER_MODES:
-        raise ValueError(f"render_mode must be one of {_RENDER_MODES}, "
-                         f"got {render_mode!r}")
+        raise ValueError(
+            f"render_mode must be one of {_RENDER_MODES}, " f"got {render_mode!r}"
+        )
     if pixel_integration not in PIXEL_INTEGRATIONS:
-        raise ValueError(f"pixel_integration must be one of {PIXEL_INTEGRATIONS}, "
-                         f"got {pixel_integration!r}")
+        raise ValueError(
+            f"pixel_integration must be one of {PIXEL_INTEGRATIONS}, "
+            f"got {pixel_integration!r}"
+        )
     if psf_type not in _PSF_TYPES:
-        raise ValueError(f"psf_type must be one of {_PSF_TYPES}, "
-                         f"got {psf_type!r}")
-    H, W = image_data['data'].shape
+        raise ValueError(f"psf_type must be one of {_PSF_TYPES}, " f"got {psf_type!r}")
+    H, W = image_data["data"].shape
     psf_data = image_data["psf"]
     has_stamp = "fft_stamp" in psf_data
     if render_mode == "stamp" and not has_stamp:
-        raise ValueError("render_mode='stamp' needs psf_data['fft_stamp']; "
-                         "build the batch with render_stamp=S")
+        raise ValueError(
+            "render_mode='stamp' needs psf_data['fft_stamp']; "
+            "build the batch with render_stamp=S"
+        )
     compact = has_stamp and render_mode != "full"
     templates = jnp.zeros((n_flux, H, W))
 
@@ -1953,10 +2107,10 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
         if sampling_factor is not None:
             s = sampling_factor
         else:
-            s = psf_data['sampling']
+            s = psf_data["sampling"]
 
-        H_hr_grid = psf_data['fft'].shape[0]
-        W_hr_grid = (psf_data['fft'].shape[1] - 1) * 2
+        H_hr_grid = psf_data["fft"].shape[0]
+        W_hr_grid = (psf_data["fft"].shape[1] - 1) * 2
 
         def _ps_stamps_fft(op):
             render_shape = (H_hr_grid, W_hr_grid)
@@ -1972,11 +2126,18 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
             unit = jnp.ones(pos_pix.shape[0])
             if mask is not None:
                 unit = unit * mask
-            render_fn = vmap(partial(render_point_source_fft, image_shape=render_shape),
-                             in_axes=(0, 0, None))
-            stamps = render_fn(unit, pos_scaled, psf_data['fft'])
-            ds_fn = vmap(partial(downsample_image, target_shape=(H, W),
-                                 pixel_integration=pixel_integration))
+            render_fn = vmap(
+                partial(render_point_source_fft, image_shape=render_shape),
+                in_axes=(0, 0, None),
+            )
+            stamps = render_fn(unit, pos_scaled, psf_data["fft"])
+            ds_fn = vmap(
+                partial(
+                    downsample_image,
+                    target_shape=(H, W),
+                    pixel_integration=pixel_integration,
+                )
+            )
             if sampling_factor is not None and s > 1.001:
                 stamps = stamps[:, :valid_H, :valid_W]
                 stamps = ds_fn(stamps)
@@ -1990,25 +2151,30 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
             unit = jnp.ones(pos_pix.shape[0])
             if mask is not None:
                 unit = unit * mask
-            render_fn = vmap(partial(render_point_source_mog, image_shape=(H, W)),
-                             in_axes=(0, 0, None))
+            render_fn = vmap(
+                partial(render_point_source_mog, image_shape=(H, W)),
+                in_axes=(0, 0, None),
+            )
             return render_fn(unit, pos_pix, psf_mix)
 
         k_int = _integer_hr_factor(H, W, H_hr_grid, W_hr_grid, s, sampling_factor)
         if compact and k_int is None and render_mode == "stamp":
-            raise ValueError("render_mode='stamp' requires an integer high-res "
-                             "factor (valid = native * k on both axes)")
+            raise ValueError(
+                "render_mode='stamp' requires an integer high-res "
+                "factor (valid = native * k on both axes)"
+            )
         if compact and k_int is not None:
-            valid_H, valid_W = _valid_hr_extent(H, W, H_hr_grid, W_hr_grid, s,
-                                                sampling_factor)
+            valid_H, valid_W = _valid_hr_extent(
+                H, W, H_hr_grid, W_hr_grid, s, sampling_factor
+            )
             f_xy = jnp.array([valid_W / W, valid_H / H])
             pos_scaled = pos_pix * f_xy + (f_xy - 1.0) / 2.0
             unit = jnp.ones(pos_pix.shape[0])
             if mask is not None:
                 unit = unit * mask
-            ps_stamps = _compact_ps_templates(pos_scaled, unit,
-                                              psf_data["fft_stamp"], k_int, H, W,
-                                              pixel_integration)
+            ps_stamps = _compact_ps_templates(
+                pos_scaled, unit, psf_data["fft_stamp"], k_int, H, W, pixel_integration
+            )
         elif psf_type == "fft":
             ps_stamps = _ps_stamps_fft(None)
         elif psf_type == "mog":
@@ -2016,8 +2182,9 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
         else:
             # See render_batch_point_sources: batched-pred lax.cond miscompiles
             # on GPU.
-            ps_stamps = jnp.where(psf_data['type_code'] == 0,
-                                  _ps_stamps_fft(None), _ps_stamps_mog(None))
+            ps_stamps = jnp.where(
+                psf_data["type_code"] == 0, _ps_stamps_fft(None), _ps_stamps_mog(None)
+            )
         templates = templates.at[f_idx].add(ps_stamps)
 
     if "Galaxy" in batches:
@@ -2032,10 +2199,10 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
         if sampling_factor is not None:
             s = sampling_factor
         else:
-            s = psf_data['sampling']
+            s = psf_data["sampling"]
 
-        H_hr_grid = psf_data['fft'].shape[0]
-        W_hr_grid = (psf_data['fft'].shape[1] - 1) * 2
+        H_hr_grid = psf_data["fft"].shape[0]
+        W_hr_grid = (psf_data["fft"].shape[1] - 1) * 2
 
         def _gal_stamps_fft(op):
             render_shape = (H_hr_grid, W_hr_grid)
@@ -2050,11 +2217,18 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
             pos_scaled = pos_pix * f_xy + (f_xy - 1.0) / 2.0
             wcs_scaled = wcs_cd_inv * f_xy[:, jnp.newaxis]
             gal_mix = (profiles["amp"], profiles["mean"], profiles["var"])
-            render_fn = vmap(partial(render_galaxy_fft, image_shape=render_shape),
-                             in_axes=((0, 0, 0), None, 0, 0, 0))
-            stamps = render_fn(gal_mix, psf_data['fft'], shapes, wcs_scaled, pos_scaled)
-            ds_fn = vmap(partial(downsample_image, target_shape=(H, W),
-                                 pixel_integration=pixel_integration))
+            render_fn = vmap(
+                partial(render_galaxy_fft, image_shape=render_shape),
+                in_axes=((0, 0, 0), None, 0, 0, 0),
+            )
+            stamps = render_fn(gal_mix, psf_data["fft"], shapes, wcs_scaled, pos_scaled)
+            ds_fn = vmap(
+                partial(
+                    downsample_image,
+                    target_shape=(H, W),
+                    pixel_integration=pixel_integration,
+                )
+            )
             if sampling_factor is not None and s > 1.001:
                 stamps = stamps[:, :valid_H, :valid_W]
                 stamps = ds_fn(stamps)
@@ -2066,17 +2240,22 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
         def _gal_stamps_mog(op):
             psf_mix = (psf_data["amp"], psf_data["mean"], psf_data["var"])
             gal_mix = (profiles["amp"], profiles["mean"], profiles["var"])
-            render_fn = vmap(partial(render_galaxy_mog, image_shape=(H, W)),
-                             in_axes=((0, 0, 0), None, 0, 0, 0))
+            render_fn = vmap(
+                partial(render_galaxy_mog, image_shape=(H, W)),
+                in_axes=((0, 0, 0), None, 0, 0, 0),
+            )
             return render_fn(gal_mix, psf_mix, shapes, wcs_cd_inv, pos_pix)
 
         k_int = _integer_hr_factor(H, W, H_hr_grid, W_hr_grid, s, sampling_factor)
         if compact and k_int is None and render_mode == "stamp":
-            raise ValueError("render_mode='stamp' requires an integer high-res "
-                             "factor (valid = native * k on both axes)")
+            raise ValueError(
+                "render_mode='stamp' requires an integer high-res "
+                "factor (valid = native * k on both axes)"
+            )
         if compact and k_int is not None:
-            valid_H, valid_W = _valid_hr_extent(H, W, H_hr_grid, W_hr_grid, s,
-                                                sampling_factor)
+            valid_H, valid_W = _valid_hr_extent(
+                H, W, H_hr_grid, W_hr_grid, s, sampling_factor
+            )
             f_xy = jnp.array([valid_W / W, valid_H / H])
             pos_scaled = pos_pix * f_xy + (f_xy - 1.0) / 2.0
             wcs_scaled = wcs_cd_inv * f_xy[:, jnp.newaxis]
@@ -2089,20 +2268,40 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
             if stamp_mask is not None:
                 unit = unit * stamp_mask
             gal_stamps = _compact_gal_templates(
-                gal_mix, psf_data["fft_stamp"], shapes, wcs_scaled, pos_scaled,
-                k_int, H, W, pixel_integration)
+                gal_mix,
+                psf_data["fft_stamp"],
+                shapes,
+                wcs_scaled,
+                pos_scaled,
+                k_int,
+                H,
+                W,
+                pixel_integration,
+            )
             gal_stamps = gal_stamps * unit[:, jnp.newaxis, jnp.newaxis]
             templates = templates.at[f_idx].add(gal_stamps)
             large_idx = batch.get("large_idx")
             if large_idx is not None:
                 lmask = batch["large_mask"]
-                gal_mix_l = (profiles["amp"][large_idx], profiles["mean"][large_idx],
-                             profiles["var"][large_idx])
+                gal_mix_l = (
+                    profiles["amp"][large_idx],
+                    profiles["mean"][large_idx],
+                    profiles["var"][large_idx],
+                )
                 large_stamps = _fullgrid_gal_templates(
-                    gal_mix_l, psf_data['fft'], shapes[large_idx],
-                    wcs_scaled[large_idx], pos_scaled[large_idx],
-                    H, W, H_hr_grid, W_hr_grid, s, sampling_factor,
-                    pixel_integration)
+                    gal_mix_l,
+                    psf_data["fft"],
+                    shapes[large_idx],
+                    wcs_scaled[large_idx],
+                    pos_scaled[large_idx],
+                    H,
+                    W,
+                    H_hr_grid,
+                    W_hr_grid,
+                    s,
+                    sampling_factor,
+                    pixel_integration,
+                )
                 large_stamps = large_stamps * lmask[:, jnp.newaxis, jnp.newaxis]
                 templates = templates.at[f_idx[large_idx]].add(large_stamps)
         else:
@@ -2113,8 +2312,11 @@ def _render_source_templates(image_data, batches, n_flux, sampling_factor=None,
             else:
                 # See render_batch_point_sources: batched-pred lax.cond
                 # miscompiles on GPU.
-                gal_stamps = jnp.where(psf_data['type_code'] == 0,
-                                       _gal_stamps_fft(None), _gal_stamps_mog(None))
+                gal_stamps = jnp.where(
+                    psf_data["type_code"] == 0,
+                    _gal_stamps_fft(None),
+                    _gal_stamps_mog(None),
+                )
             if mask is not None:
                 gal_stamps = gal_stamps * mask[:, jnp.newaxis, jnp.newaxis]
             templates = templates.at[f_idx].add(gal_stamps)
@@ -2152,7 +2354,9 @@ def _fit_diagnostics(A, data_flat, w_flat, fluxes):
     has_good = t_good > 0
     chi2 = jnp.where(has_good, chi2_num / jnp.where(has_good, t_good, 1.0), jnp.nan)
     has_any = t_all > 0
-    mask_frac = jnp.where(has_any, 1.0 - t_good / jnp.where(has_any, t_all, 1.0), jnp.nan)
+    mask_frac = jnp.where(
+        has_any, 1.0 - t_good / jnp.where(has_any, t_all, 1.0), jnp.nan
+    )
     return {"chi2": chi2, "mask_frac": mask_frac}
 
 
@@ -2163,10 +2367,18 @@ def _with_diagnostics(result, A, data_flat, w_flat):
     return result, _fit_diagnostics(A, data_flat, w_flat, result)
 
 
-def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=False,
-                        sampling_factor=None, rcond=1e-12, psf_type=None,
-                        render_mode="auto", pixel_integration="window",
-                        return_diagnostics=False):
+def solve_fluxes_linear(
+    initial_fluxes,
+    image_data,
+    batches,
+    return_variances=False,
+    sampling_factor=None,
+    rcond=1e-12,
+    psf_type=None,
+    render_mode="auto",
+    pixel_integration="window",
+    return_diagnostics=False,
+):
     """
     Direct linear solve for forced photometry on a SINGLE image.
 
@@ -2214,13 +2426,17 @@ def solve_fluxes_linear(initial_fluxes, image_data, batches, return_variances=Fa
     with no unmasked pixels) are pinned to flux 0 with infinite variance.
     """
     n_flux = initial_fluxes.shape[0]
-    H, W = image_data['data'].shape
+    H, W = image_data["data"].shape
 
-    templates = _render_source_templates(image_data, batches, n_flux,
-                                         sampling_factor=sampling_factor,
-                                         psf_type=psf_type,
-                                         render_mode=render_mode,
-                                         pixel_integration=pixel_integration)
+    templates = _render_source_templates(
+        image_data,
+        batches,
+        n_flux,
+        sampling_factor=sampling_factor,
+        psf_type=psf_type,
+        render_mode=render_mode,
+        pixel_integration=pixel_integration,
+    )
 
     data_flat = image_data["data"].ravel()
     w_flat = image_data["invvar"].ravel()
@@ -2258,6 +2474,7 @@ def _host_eigh_numpy(a, nthreads):
     pool, not the library, provides the parallelism."""
     import numpy as _np
     from concurrent.futures import ThreadPoolExecutor
+
     # numpy's eigh gufunc releases the GIL, so the pool really runs the 49
     # matrices in parallel (49x102^2: 47 ms serial -> 15 ms on 4 threads).
     # scipy.linalg.eigh(driver="evd") is faster serially (35 ms) but holds
@@ -2275,7 +2492,11 @@ def _host_eigh_numpy(a, nthreads):
     if pool is None:
         pool = _HOST_EIGH_POOLS[nthreads] = ThreadPoolExecutor(nthreads)
     res = list(pool.map(lambda i: _eigh1(flat[i]), range(flat.shape[0])))
-    w = _np.stack([r[0] for r in res]).astype(dt, copy=False).reshape(lead + (a.shape[-1],))
+    w = (
+        _np.stack([r[0] for r in res])
+        .astype(dt, copy=False)
+        .reshape(lead + (a.shape[-1],))
+    )
     v = _np.stack([r[1] for r in res]).astype(dt, copy=False).reshape(a.shape)
     return w, v
 
@@ -2296,21 +2517,35 @@ def _eigh_dispatch(Ghat, eig_method="cusolver", eig_host_threads=4):
     receives the whole batch at once (``vmap_method="expand_dims"``).
     """
     if eig_method not in _EIG_METHODS:
-        raise ValueError(f"eig_method must be one of {_EIG_METHODS}, got {eig_method!r}")
+        raise ValueError(
+            f"eig_method must be one of {_EIG_METHODS}, got {eig_method!r}"
+        )
     if eig_method == "cusolver":
-        return jnp.linalg.eigh(Ghat)      # ascending eigenvalues
+        return jnp.linalg.eigh(Ghat)  # ascending eigenvalues
     w_shape = jax.ShapeDtypeStruct(Ghat.shape[:-1], Ghat.dtype)
     v_shape = jax.ShapeDtypeStruct(Ghat.shape, Ghat.dtype)
-    return jax.pure_callback(partial(_host_eigh_numpy, nthreads=int(eig_host_threads)),
-                             (w_shape, v_shape), Ghat, vmap_method="expand_dims")
+    return jax.pure_callback(
+        partial(_host_eigh_numpy, nthreads=int(eig_host_threads)),
+        (w_shape, v_shape),
+        Ghat,
+        vmap_method="expand_dims",
+    )
 
 
-def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
-                          return_variances=False, sampling_factor=None,
-                          floor=1e-4, psf_type=None, render_mode="auto",
-                          pixel_integration="window",
-                          eig_method="cusolver", eig_host_threads=4,
-                          return_diagnostics=False):
+def solve_fluxes_eigfloor(
+    initial_fluxes,
+    image_data,
+    batches,
+    return_variances=False,
+    sampling_factor=None,
+    floor=1e-4,
+    psf_type=None,
+    render_mode="auto",
+    pixel_integration="window",
+    eig_method="cusolver",
+    eig_host_threads=4,
+    return_diagnostics=False,
+):
     """
     Direct linear solve with an eigenvalue floor on the Jacobi-normalized AtWA.
 
@@ -2381,11 +2616,15 @@ def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
     """
     n_flux = initial_fluxes.shape[0]
 
-    templates = _render_source_templates(image_data, batches, n_flux,
-                                         sampling_factor=sampling_factor,
-                                         psf_type=psf_type,
-                                         render_mode=render_mode,
-                                         pixel_integration=pixel_integration)
+    templates = _render_source_templates(
+        image_data,
+        batches,
+        n_flux,
+        sampling_factor=sampling_factor,
+        psf_type=psf_type,
+        render_mode=render_mode,
+        pixel_integration=pixel_integration,
+    )
 
     data_flat = image_data["data"].ravel()
     w_flat = image_data["invvar"].ravel()
@@ -2409,11 +2648,10 @@ def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
     # eigenvalues of 1 cannot change ``emax`` or the floor applied to live
     # modes.  Dead outputs are still forced to 0/inf below.
     live_outer = live[:, jnp.newaxis] & live[jnp.newaxis, :]
-    Ghat = (jnp.where(live_outer, Ghat, 0.0)
-            + jnp.diag((~live).astype(Ghat.dtype)))
+    Ghat = jnp.where(live_outer, Ghat, 0.0) + jnp.diag((~live).astype(Ghat.dtype))
     bhat = AtWd / D
 
-    evals, evecs = _eigh_dispatch(Ghat, eig_method, eig_host_threads)   # ascending
+    evals, evecs = _eigh_dispatch(Ghat, eig_method, eig_host_threads)  # ascending
     emax = jnp.clip(evals[-1], 1e-30)
     evals_f = jnp.maximum(evals, floor * emax)
 
@@ -2432,9 +2670,16 @@ def solve_fluxes_eigfloor(initial_fluxes, image_data, batches,
     return result
 
 
-def _eigfloor_prior_core(AtWA, AtWd, lambda_diag, f_prior, floor=1e-4,
-                         return_variances=False, eig_method="cusolver",
-                         eig_host_threads=4):
+def _eigfloor_prior_core(
+    AtWA,
+    AtWd,
+    lambda_diag,
+    f_prior,
+    floor=1e-4,
+    return_variances=False,
+    eig_method="cusolver",
+    eig_host_threads=4,
+):
     """
     Ridge-toward-prior eigfloor solve on prebuilt normal equations.
 
@@ -2500,11 +2745,10 @@ def _eigfloor_prior_core(AtWA, AtWd, lambda_diag, f_prior, floor=1e-4,
     # As in the blind eigfloor solver, pin the otherwise all-zero dead block
     # to identity before the GPU eigendecomposition.  This changes only
     # coordinates whose returned flux/variance are discarded as 0/inf.
-    Ghat = Ghat_data + jnp.diag(
-        lam_hat + (~live).astype(Ghat_data.dtype))
+    Ghat = Ghat_data + jnp.diag(lam_hat + (~live).astype(Ghat_data.dtype))
     bhat = AtWd / D + lam_hat * (D * f_prior)
 
-    evals, evecs = _eigh_dispatch(Ghat, eig_method, eig_host_threads)   # ascending
+    evals, evecs = _eigh_dispatch(Ghat, eig_method, eig_host_threads)  # ascending
     emax_data = jnp.clip(_power_iter_lmax(Ghat_data), 1e-30)
     evals_f = jnp.maximum(evals, floor * emax_data)
 
@@ -2520,13 +2764,22 @@ def _eigfloor_prior_core(AtWA, AtWd, lambda_diag, f_prior, floor=1e-4,
     return fluxes
 
 
-def solve_fluxes_eigfloor_prior(initial_fluxes, image_data, batches,
-                                lambda_diag=None, f_prior=None,
-                                return_variances=False, sampling_factor=None,
-                                floor=1e-4, psf_type=None, render_mode="auto",
-                                pixel_integration="window",
-                                eig_method="cusolver", eig_host_threads=4,
-                                return_diagnostics=False):
+def solve_fluxes_eigfloor_prior(
+    initial_fluxes,
+    image_data,
+    batches,
+    lambda_diag=None,
+    f_prior=None,
+    return_variances=False,
+    sampling_factor=None,
+    floor=1e-4,
+    psf_type=None,
+    render_mode="auto",
+    pixel_integration="window",
+    eig_method="cusolver",
+    eig_host_threads=4,
+    return_diagnostics=False,
+):
     """
     Eigfloor solve with per-source Gaussian flux priors (ridge-toward-prior).
 
@@ -2607,11 +2860,15 @@ def solve_fluxes_eigfloor_prior(initial_fluxes, image_data, batches,
     if f_prior is None:
         f_prior = jnp.zeros(n_flux, dtype=initial_fluxes.dtype)
 
-    templates = _render_source_templates(image_data, batches, n_flux,
-                                         sampling_factor=sampling_factor,
-                                         psf_type=psf_type,
-                                         render_mode=render_mode,
-                                         pixel_integration=pixel_integration)
+    templates = _render_source_templates(
+        image_data,
+        batches,
+        n_flux,
+        sampling_factor=sampling_factor,
+        psf_type=psf_type,
+        render_mode=render_mode,
+        pixel_integration=pixel_integration,
+    )
 
     data_flat = image_data["data"].ravel()
     w_flat = image_data["invvar"].ravel()
@@ -2621,10 +2878,16 @@ def solve_fluxes_eigfloor_prior(initial_fluxes, image_data, batches,
     AtWA = Aw.T @ A
     AtWd = Aw.T @ data_flat
 
-    result = _eigfloor_prior_core(AtWA, AtWd, lambda_diag, f_prior,
-                                  eig_method=eig_method, eig_host_threads=eig_host_threads,
-                                  floor=floor,
-                                  return_variances=return_variances)
+    result = _eigfloor_prior_core(
+        AtWA,
+        AtWd,
+        lambda_diag,
+        f_prior,
+        eig_method=eig_method,
+        eig_host_threads=eig_host_threads,
+        floor=floor,
+        return_variances=return_variances,
+    )
     if return_diagnostics:
         return _with_diagnostics(result, A, data_flat, w_flat)
     return result
@@ -2731,7 +2994,9 @@ def lasso_fista(G, b, lam, *, nonneg=True, free=None, n_iter=1000, reg=0.0):
         beta_new = prox(y - grad / L)
         restart = jnp.vdot(y - beta_new, beta_new - beta) > 0
         t_new = jnp.where(restart, 1.0, 0.5 * (1.0 + jnp.sqrt(1.0 + 4.0 * t * t)))
-        y_new = beta_new + jnp.where(restart, 0.0, (t - 1.0) / t_new) * (beta_new - beta)
+        y_new = beta_new + jnp.where(restart, 0.0, (t - 1.0) / t_new) * (
+            beta_new - beta
+        )
         return (beta_new, y_new, t_new), None
 
     beta0 = jnp.zeros(n)
@@ -2784,18 +3049,34 @@ def _ln_binom(p, k):
         ``log C(p, k)``.
     """
     from jax.scipy.special import gammaln
+
     return gammaln(p + 1.0) - gammaln(k + 1.0) - gammaln(p - k + 1.0)
 
 
-def solve_fluxes_lasso(initial_fluxes, image_data, batches,
-                       return_variances=False, sampling_factor=None,
-                       psf_type=None, render_mode="auto",
-                       pixel_integration="window",
-                       alpha=None, penalty_mode="snr", penalty_weights=None,
-                       nonneg=True, selection_mode="fixed", criterion="ebic",
-                       grid=None, ebic_gamma=0.5, return_path=False,
-                       debias=True, debias_signfree="none", return_aux=False,
-                       n_iter=1000, rcond=1e-12):
+def solve_fluxes_lasso(
+    initial_fluxes,
+    image_data,
+    batches,
+    return_variances=False,
+    sampling_factor=None,
+    psf_type=None,
+    render_mode="auto",
+    pixel_integration="window",
+    alpha=None,
+    penalty_mode="snr",
+    penalty_weights=None,
+    nonneg=True,
+    selection_mode="fixed",
+    criterion="ebic",
+    grid=None,
+    ebic_gamma=0.5,
+    return_path=False,
+    debias=True,
+    debias_signfree="none",
+    return_aux=False,
+    n_iter=1000,
+    rcond=1e-12,
+):
     """
     L1-regularized (LASSO) forced photometry on a SINGLE image.
 
@@ -2927,44 +3208,76 @@ def solve_fluxes_lasso(initial_fluxes, image_data, batches,
     """
     n_flux = initial_fluxes.shape[0]
 
-    templates = _render_source_templates(image_data, batches, n_flux,
-                                         sampling_factor=sampling_factor,
-                                         psf_type=psf_type,
-                                         render_mode=render_mode,
-                                         pixel_integration=pixel_integration)
+    templates = _render_source_templates(
+        image_data,
+        batches,
+        n_flux,
+        sampling_factor=sampling_factor,
+        psf_type=psf_type,
+        render_mode=render_mode,
+        pixel_integration=pixel_integration,
+    )
     data_flat = image_data["data"].ravel()
     w_flat = image_data["invvar"].ravel()
     A = templates.reshape(n_flux, -1).T
 
     Aw = A * w_flat[:, jnp.newaxis]
-    G = Aw.T @ A                       # AtWA
-    b = Aw.T @ data_flat               # AtWd
+    G = Aw.T @ A  # AtWA
+    b = Aw.T @ data_flat  # AtWd
     dWd = jnp.sum(data_flat * data_flat * w_flat)
     n_eff = jnp.sum(w_flat > 0)
 
     wj, free = _lasso_penalty_weights(n_flux, batches, penalty_weights, G.dtype)
 
-    return _lasso_core(G, b, dWd, n_eff, wj, free,
-                       alpha=alpha, penalty_mode=penalty_mode, nonneg=nonneg,
-                       selection_mode=selection_mode, criterion=criterion,
-                       grid=grid, ebic_gamma=ebic_gamma,
-                       return_path=return_path, debias=debias,
-                       debias_signfree=debias_signfree,
-                       return_variances=return_variances,
-                       return_aux=return_aux, n_iter=n_iter, rcond=rcond)
+    return _lasso_core(
+        G,
+        b,
+        dWd,
+        n_eff,
+        wj,
+        free,
+        alpha=alpha,
+        penalty_mode=penalty_mode,
+        nonneg=nonneg,
+        selection_mode=selection_mode,
+        criterion=criterion,
+        grid=grid,
+        ebic_gamma=ebic_gamma,
+        return_path=return_path,
+        debias=debias,
+        debias_signfree=debias_signfree,
+        return_variances=return_variances,
+        return_aux=return_aux,
+        n_iter=n_iter,
+        rcond=rcond,
+    )
 
 
-def solve_fluxes_lasso_batched(initial_fluxes, image_data, batches, data_stack,
-                               return_variances=False, sampling_factor=None,
-                               psf_type=None, render_mode="auto",
-                               pixel_integration="window",
-                               alpha=None, penalty_mode="snr",
-                               penalty_weights=None, nonneg=True,
-                               selection_mode="fixed", criterion="ebic",
-                               grid=None, ebic_gamma=0.5, return_path=False,
-                               debias=True, debias_signfree="none",
-                               return_aux=False,
-                               n_iter=1000, rcond=1e-12):
+def solve_fluxes_lasso_batched(
+    initial_fluxes,
+    image_data,
+    batches,
+    data_stack,
+    return_variances=False,
+    sampling_factor=None,
+    psf_type=None,
+    render_mode="auto",
+    pixel_integration="window",
+    alpha=None,
+    penalty_mode="snr",
+    penalty_weights=None,
+    nonneg=True,
+    selection_mode="fixed",
+    criterion="ebic",
+    grid=None,
+    ebic_gamma=0.5,
+    return_path=False,
+    debias=True,
+    debias_signfree="none",
+    return_aux=False,
+    n_iter=1000,
+    rcond=1e-12,
+):
     """
     LASSO forced photometry for a BATCH of data realizations of ONE image.
 
@@ -3006,11 +3319,15 @@ def solve_fluxes_lasso_batched(initial_fluxes, image_data, batches, data_stack,
     """
     n_flux = initial_fluxes.shape[0]
 
-    templates = _render_source_templates(image_data, batches, n_flux,
-                                         sampling_factor=sampling_factor,
-                                         psf_type=psf_type,
-                                         render_mode=render_mode,
-                                         pixel_integration=pixel_integration)
+    templates = _render_source_templates(
+        image_data,
+        batches,
+        n_flux,
+        sampling_factor=sampling_factor,
+        psf_type=psf_type,
+        render_mode=render_mode,
+        pixel_integration=pixel_integration,
+    )
     w_flat = image_data["invvar"].ravel()
     A = templates.reshape(n_flux, -1).T
 
@@ -3021,18 +3338,32 @@ def solve_fluxes_lasso_batched(initial_fluxes, image_data, batches, data_stack,
     wj, free = _lasso_penalty_weights(n_flux, batches, penalty_weights, G.dtype)
 
     d_flat = data_stack.reshape(data_stack.shape[0], -1)
-    b_stack = d_flat @ Aw                                  # (B, n_flux)
+    b_stack = d_flat @ Aw  # (B, n_flux)
     dWd_stack = jnp.sum(d_flat * d_flat * w_flat[None, :], axis=1)
 
     def _solve_one(b, dWd):
-        return _lasso_core(G, b, dWd, n_eff, wj, free,
-                           alpha=alpha, penalty_mode=penalty_mode,
-                           nonneg=nonneg, selection_mode=selection_mode,
-                           criterion=criterion, grid=grid,
-                           ebic_gamma=ebic_gamma, return_path=return_path,
-                           debias=debias, debias_signfree=debias_signfree,
-                           return_variances=return_variances,
-                           return_aux=return_aux, n_iter=n_iter, rcond=rcond)
+        return _lasso_core(
+            G,
+            b,
+            dWd,
+            n_eff,
+            wj,
+            free,
+            alpha=alpha,
+            penalty_mode=penalty_mode,
+            nonneg=nonneg,
+            selection_mode=selection_mode,
+            criterion=criterion,
+            grid=grid,
+            ebic_gamma=ebic_gamma,
+            return_path=return_path,
+            debias=debias,
+            debias_signfree=debias_signfree,
+            return_variances=return_variances,
+            return_aux=return_aux,
+            n_iter=n_iter,
+            rcond=rcond,
+        )
 
     return jax.vmap(_solve_one)(b_stack, dWd_stack)
 
@@ -3074,13 +3405,29 @@ def _lasso_penalty_weights(n_flux, batches, penalty_weights, dtype):
     return wj, free
 
 
-def _lasso_core(G, b, dWd, n_eff, wj, free, *,
-                alpha=None, penalty_mode="snr", nonneg=True,
-                selection_mode="fixed", criterion="ebic", grid=None,
-                ebic_gamma=0.5, return_path=False, debias=True,
-                debias_signfree="none",
-                return_variances=False, return_aux=False,
-                n_iter=1000, rcond=1e-12):
+def _lasso_core(
+    G,
+    b,
+    dWd,
+    n_eff,
+    wj,
+    free,
+    *,
+    alpha=None,
+    penalty_mode="snr",
+    nonneg=True,
+    selection_mode="fixed",
+    criterion="ebic",
+    grid=None,
+    ebic_gamma=0.5,
+    return_path=False,
+    debias=True,
+    debias_signfree="none",
+    return_variances=False,
+    return_aux=False,
+    n_iter=1000,
+    rcond=1e-12,
+):
     """
     LASSO solve on prebuilt normal equations (G = AtWA, b = AtWd).
 
@@ -3128,8 +3475,10 @@ def _lasso_core(G, b, dWd, n_eff, wj, free, *,
     ``debias=False``.
     """
     if debias_signfree not in ("none", "protected", "all"):
-        raise ValueError(f"debias_signfree must be 'none', 'protected' or "
-                         f"'all'; got {debias_signfree!r}")
+        raise ValueError(
+            f"debias_signfree must be 'none', 'protected' or "
+            f"'all'; got {debias_signfree!r}"
+        )
     Fjj = jnp.clip(jnp.diag(G), 0.0)
     live = Fjj > 0
     reg_j = rcond * Fjj
@@ -3153,8 +3502,9 @@ def _lasso_core(G, b, dWd, n_eff, wj, free, *,
     Dn = jnp.sqrt(jnp.where(live, Fjj, 1.0))
 
     def solve_one_alpha(a):
-        f_biased, kkt = _lasso_fista(G, b, a * lam1, nonneg=nonneg, free=free,
-                                     n_iter=n_iter, reg=reg_j)
+        f_biased, kkt = _lasso_fista(
+            G, b, a * lam1, nonneg=nonneg, free=free, n_iter=n_iter, reg=reg_j
+        )
         # support: active, or unpenalized (protected/background); never padded
         s = ((f_biased != 0) | (wj == 0)) & live
         s = jax.lax.stop_gradient(s.astype(G.dtype))
@@ -3163,15 +3513,15 @@ def _lasso_core(G, b, dWd, n_eff, wj, free, *,
         # `signfree` coordinates (see debias_signfree in the docstring)
         f_solve = jnp.linalg.solve(support_pinned(s), b * s)
         if nonneg:
-            f_deb = jnp.where(signfree, f_solve,
-                              jnp.maximum(f_solve, 0.0)) * s
+            f_deb = jnp.where(signfree, f_solve, jnp.maximum(f_solve, 0.0)) * s
         else:
             f_deb = f_solve * s
 
         f_out = f_deb if debias else f_biased
         rss_deb = jnp.maximum(f_deb @ G @ f_deb - 2.0 * (b @ f_deb) + dWd, 1e-30)
-        rss_bia = jnp.maximum(f_biased @ G @ f_biased - 2.0 * (b @ f_biased) + dWd,
-                              1e-30)
+        rss_bia = jnp.maximum(
+            f_biased @ G @ f_biased - 2.0 * (b @ f_biased) + dWd, 1e-30
+        )
         # per-source stability diagnostics in S/N units (production flag):
         # residual matched-filter correlation at the biased solution (entry
         # margin alpha - c_j for inactive sources) and the debiased S/N
@@ -3185,26 +3535,33 @@ def _lasso_core(G, b, dWd, n_eff, wj, free, *,
             grid_vals = jnp.logspace(jnp.log10(0.5), jnp.log10(5.0), 16)
         else:
             grid_vals = jnp.asarray(grid)
-        (f_p, s_p, kkt_p, rssd_p, rssb_p,
-         corr_p, snrd_p) = jax.vmap(solve_one_alpha)(grid_vals)
+        f_p, s_p, kkt_p, rssd_p, rssb_p, corr_p, snrd_p = jax.vmap(solve_one_alpha)(
+            grid_vals
+        )
 
-        df = jnp.sum(s_p, axis=1)                          # all fitted params
-        n_pen = jnp.sum((wj > 0) & live)                   # candidate pool size
+        df = jnp.sum(s_p, axis=1)  # all fitted params
+        n_pen = jnp.sum((wj > 0) & live)  # candidate pool size
         k_pen = jnp.sum(s_p * ((wj > 0) & live)[None, :], axis=1)
         if criterion == "sure":
             crit = rssb_p + 2.0 * df - n_eff
         else:
             gam = 0.0 if criterion == "bic" else ebic_gamma
-            crit = (n_eff * jnp.log(rssd_p / n_eff) + df * jnp.log(n_eff)
-                    + 2.0 * gam * _ln_binom(n_pen, k_pen))
+            crit = (
+                n_eff * jnp.log(rssd_p / n_eff)
+                + df * jnp.log(n_eff)
+                + 2.0 * gam * _ln_binom(n_pen, k_pen)
+            )
         k_star = jnp.argmin(crit)
         fluxes = jnp.take(f_p, k_star, axis=0)
         support = jnp.take(s_p, k_star, axis=0)
         kkt = jnp.take(kkt_p, k_star)
         alpha_star = jnp.take(grid_vals, k_star)
         aux = {
-            "support": support, "alpha": alpha_star, "alpha_index": k_star,
-            "criterion_values": crit, "kkt": kkt,
+            "support": support,
+            "alpha": alpha_star,
+            "alpha_index": k_star,
+            "criterion_values": crit,
+            "kkt": kkt,
             "n_active": jnp.sum(support),
             "resid_corr_snr": jnp.take(corr_p, k_star, axis=0),
             "snr_deb": jnp.take(snrd_p, k_star, axis=0),
@@ -3214,8 +3571,9 @@ def _lasso_core(G, b, dWd, n_eff, wj, free, *,
     else:
         if isinstance(alpha, str):
             if alpha != "auto":
-                raise ValueError(f"alpha must be a number, None, or 'auto'; "
-                                 f"got {alpha!r}")
+                raise ValueError(
+                    f"alpha must be a number, None, or 'auto'; " f"got {alpha!r}"
+                )
             # universal-threshold rule alpha = sqrt(2 ln p), p = number of
             # PENALIZED live candidates in this solve. Deterministic in the
             # prior catalog (never in the pixel data), so it cannot couple
@@ -3229,11 +3587,14 @@ def _lasso_core(G, b, dWd, n_eff, wj, free, *,
             a = jnp.asarray(alpha if alpha is not None else 0.0, dtype=G.dtype)
         fluxes, support, kkt, _, _, resid_corr_snr, snr_deb = solve_one_alpha(a)
         aux = {
-            "support": support, "alpha": a,
+            "support": support,
+            "alpha": a,
             "alpha_index": jnp.asarray(0, dtype=jnp.int32),
-            "criterion_values": jnp.zeros(1, dtype=G.dtype), "kkt": kkt,
+            "criterion_values": jnp.zeros(1, dtype=G.dtype),
+            "kkt": kkt,
             "n_active": jnp.sum(support),
-            "resid_corr_snr": resid_corr_snr, "snr_deb": snr_deb,
+            "resid_corr_snr": resid_corr_snr,
+            "snr_deb": snr_deb,
         }
 
     if return_variances:
@@ -3248,7 +3609,15 @@ def _lasso_core(G, b, dWd, n_eff, wj, free, *,
     return fluxes
 
 
-def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=False, sampling_factor=None, use_preconditioner=True, precond_eps=1e-12):
+def solve_fluxes_core(
+    initial_fluxes,
+    image_data,
+    batches,
+    return_variances=False,
+    sampling_factor=None,
+    use_preconditioner=True,
+    precond_eps=1e-12,
+):
     """
     Pure JAX core optimization logic for a SINGLE image (Newton-CG).
 
@@ -3281,7 +3650,9 @@ def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=Fals
     """
 
     def loss_fn(fluxes):
-        model_image = render_image(fluxes, image_data, batches, sampling_factor=sampling_factor)
+        model_image = render_image(
+            fluxes, image_data, batches, sampling_factor=sampling_factor
+        )
         data = image_data["data"]
         invvar = image_data["invvar"]
         diff = data - model_image
@@ -3302,8 +3673,10 @@ def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=Fals
         inv_fisher_diag = 1.0 / fisher_diag
 
     if use_preconditioner:
+
         def precond(v):
             return v * inv_fisher_diag
+
         step, info = jax.scipy.sparse.linalg.cg(
             matvec, -grads, maxiter=500, tol=1e-6, M=precond
         )
@@ -3319,7 +3692,32 @@ def solve_fluxes_core(initial_fluxes, image_data, batches, return_variances=Fals
     return optimized_fluxes
 
 
-def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=False, fit_background=False, update_catalog=False, vmap_images=True, use_sharding=True, bucket_sizes=None, bucket_mode="auto", bucket_shape_mode="square", bucket_base=32, use_tiling=False, tile_size=256, tile_super_halo=None, use_preconditioner=True, precond_eps=1e-12, solver="linear", penalty=None, selection=None, debias=True, debias_signfree="none", return_aux=False, lasso_n_iter=1000, eig_floor=1e-4):
+def optimize_fluxes(
+    tractor_obj,
+    oversample_rendering=False,
+    return_variances=False,
+    fit_background=False,
+    update_catalog=False,
+    vmap_images=True,
+    use_sharding=True,
+    bucket_sizes=None,
+    bucket_mode="auto",
+    bucket_shape_mode="square",
+    bucket_base=32,
+    use_tiling=False,
+    tile_size=256,
+    tile_super_halo=None,
+    use_preconditioner=True,
+    precond_eps=1e-12,
+    solver="linear",
+    penalty=None,
+    selection=None,
+    debias=True,
+    debias_signfree="none",
+    return_aux=False,
+    lasso_n_iter=1000,
+    eig_floor=1e-4,
+):
     """
     Optimize fluxes for forced photometry using JAX.
 
@@ -3404,16 +3802,17 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
 
     results = []
 
-    _solver_map = {"linear": solve_fluxes_linear,
-                   "eigfloor": solve_fluxes_eigfloor,
-                   "lasso": solve_fluxes_lasso}
+    _solver_map = {
+        "linear": solve_fluxes_linear,
+        "eigfloor": solve_fluxes_eigfloor,
+        "lasso": solve_fluxes_lasso,
+    }
     _solver_fn = _solver_map.get(solver, solve_fluxes_core)
 
     if solver == "linear":
         _solver_kwargs = dict(return_variances=return_variances)
     elif solver == "eigfloor":
-        _solver_kwargs = dict(return_variances=return_variances,
-                              floor=eig_floor)
+        _solver_kwargs = dict(return_variances=return_variances, floor=eig_floor)
     elif solver == "lasso":
         penalty = penalty or {}
         selection = selection or {}
@@ -3434,9 +3833,11 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
             n_iter=lasso_n_iter,
         )
         if not getattr(jax.config, "jax_enable_x64", False):
-            print("JAX Optimization: lasso solver running in float32; "
-                  "enable x64 (JaxOptimizer(enable_x64=True)) for "
-                  "calibration-grade fluxes/variances.")
+            print(
+                "JAX Optimization: lasso solver running in float32; "
+                "enable x64 (JaxOptimizer(enable_x64=True)) for "
+                "calibration-grade fluxes/variances."
+            )
     else:
         _solver_kwargs = dict(
             return_variances=return_variances,
@@ -3459,15 +3860,15 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
             max_r_eff = 0.0
             for img in tractor_obj.images:
                 psf = img.getPsf()
-                if hasattr(psf, 'get_r_eff'):
+                if hasattr(psf, "get_r_eff"):
                     r = psf.get_r_eff(0.999)
                     if isinstance(psf, PixelizedPSF):
-                        s = getattr(psf, 'sampling', 1.0)
+                        s = getattr(psf, "sampling", 1.0)
                         r = r / s
                     max_r_eff = max(max_r_eff, r)
                 else:
                     # Fallback
-                    max_r_eff = max(max_r_eff, 32.0) # Default conservative
+                    max_r_eff = max(max_r_eff, 32.0)  # Default conservative
             halo = int(math.ceil(max_r_eff))
 
         print(f"JAX Optimization: Tiling enabled. Tile size {tile_size}, Halo {halo}")
@@ -3475,13 +3876,12 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
         # 2. Generate Tiles & Filter Sources
         all_tiles = []
         all_indices = []
-        original_img_indices = [] # Map tile -> original image index (if needed)
+        original_img_indices = []  # Map tile -> original image index (if needed)
         all_meta = []
         pos_cat_per_img = []
 
         if _lasso_aux:
-            raise NotImplementedError(
-                "return_aux is not supported in tiling mode")
+            raise NotImplementedError("return_aux is not supported in tiling mode")
 
         for i_img, img in enumerate(tractor_obj.images):
             # Project catalog to this image's pixel coords
@@ -3490,12 +3890,14 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
 
             tiles_with_meta = tile_image(img, tile_size, halo)
 
-            for (tile_img, meta) in tiles_with_meta:
+            for tile_img, meta in tiles_with_meta:
                 indices = filter_sources_by_box(
                     pos_cat,
-                    meta['x_start'], meta['x_end'],
-                    meta['y_start'], meta['y_end'],
-                    margin=0 # Halo already included in start/end
+                    meta["x_start"],
+                    meta["x_end"],
+                    meta["y_start"],
+                    meta["y_end"],
+                    margin=0,  # Halo already included in start/end
                 )
 
                 # Keep tiles with no sources: the background can still be fit.
@@ -3509,7 +3911,9 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
         max_factor = stats["max_factor"]
         req_shapes = compute_image_shapes(all_tiles, stats)
 
-        bucket_map = assign_buckets(req_shapes, bucket_sizes, bucket_mode, bucket_shape_mode, bucket_base)
+        bucket_map = assign_buckets(
+            req_shapes, bucket_sizes, bucket_mode, bucket_shape_mode, bucket_base
+        )
 
         print(f"JAX Optimization: {len(all_tiles)} tiles -> {len(bucket_map)} buckets")
 
@@ -3523,7 +3927,9 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
                 continue
 
             sub_tiles = [all_tiles[i] for i in tile_idxs]
-            sub_source_indices = {k: all_indices[original_idx] for k, original_idx in enumerate(tile_idxs)}
+            sub_source_indices = {
+                k: all_indices[original_idx] for k, original_idx in enumerate(tile_idxs)
+            }
 
             # sub_tractor needs same catalog
             sub_tractor = Tractor(sub_tiles, tractor_obj.catalog)
@@ -3545,12 +3951,18 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
             batches_in_axes = {}
             if "PointSource" in batches:
                 batches_in_axes["PointSource"] = {
-                    "flux_idx": 0, "pos_pix": 0, "mask": 0
+                    "flux_idx": 0,
+                    "pos_pix": 0,
+                    "mask": 0,
                 }
             if "Galaxy" in batches:
                 batches_in_axes["Galaxy"] = {
-                    "flux_idx": 0, "pos_pix": 0, "wcs_cd_inv": 0, "shapes": 0, "mask": 0,
-                    "profile": {"amp": 0, "mean": 0, "var": 0}
+                    "flux_idx": 0,
+                    "pos_pix": 0,
+                    "wcs_cd_inv": 0,
+                    "shapes": 0,
+                    "mask": 0,
+                    "profile": {"amp": 0, "mean": 0, "var": 0},
                 }
             if "Background" in batches:
                 # Background flux_idx is a row-relative scalar identical for
@@ -3558,16 +3970,20 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
                 batches_in_axes["Background"] = {"flux_idx": None}
 
             if use_sharding:
-                images_data, batches, initial_fluxes = prepare_sharded_inputs(images_data, batches, initial_fluxes)
+                images_data, batches, initial_fluxes = prepare_sharded_inputs(
+                    images_data, batches, initial_fluxes
+                )
 
-            solve_fn = jit(vmap(
-                partial(
-                    _solver_fn,
-                    **_solver_kwargs,
-                    sampling_factor=max_factor,
-                ),
-                in_axes=(0, 0, batches_in_axes)
-            ))
+            solve_fn = jit(
+                vmap(
+                    partial(
+                        _solver_fn,
+                        **_solver_kwargs,
+                        sampling_factor=max_factor,
+                    ),
+                    in_axes=(0, 0, batches_in_axes),
+                )
+            )
 
             out = solve_fn(initial_fluxes, images_data, batches)
             if return_variances:
@@ -3610,8 +4026,8 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
         for i_img in range(len(tractor_obj.images)):
             t_list = tiles_of_img[i_img]
             metas = [all_meta[t] for t in t_list]
-            core_cx = np.array([m['x0'] + 0.5 * m['core_w'] for m in metas])
-            core_cy = np.array([m['y0'] + 0.5 * m['core_h'] for m in metas])
+            core_cx = np.array([m["x0"] + 0.5 * m["core_w"] for m in metas])
+            core_cy = np.array([m["y0"] + 0.5 * m["core_h"] for m in metas])
 
             n_flux = n_src_params + (1 if fit_background else 0)
             merged_f = np.zeros(n_flux, dtype=np.float32)
@@ -3624,27 +4040,29 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
                     continue  # unprojectable source: left at 0
                 owner = None
                 for k, m in enumerate(metas):
-                    if (m['x0'] <= x < m['x0'] + m['core_w']
-                            and m['y0'] <= y < m['y0'] + m['core_h']):
+                    if (
+                        m["x0"] <= x < m["x0"] + m["core_w"]
+                        and m["y0"] <= y < m["y0"] + m["core_h"]
+                    ):
                         owner = k
                         break
                 if owner is None:
-                    owner = int(np.argmin((core_cx - x) ** 2
-                                          + (core_cy - y) ** 2))
+                    owner = int(np.argmin((core_cx - x) ** 2 + (core_cy - y) ** 2))
                 t_i = t_list[owner]
                 slot = tile_slots[t_i].get(ci)
                 if slot is None:
                     continue  # outside the owner tile's padded box: left at 0
                 s_off = slot[0]
-                merged_f[f_off:f_off + n_p] = tile_fluxes[t_i][s_off:s_off + n_p]
+                merged_f[f_off : f_off + n_p] = tile_fluxes[t_i][s_off : s_off + n_p]
                 if return_variances:
-                    merged_v[f_off:f_off + n_p] = tile_vars[t_i][s_off:s_off + n_p]
+                    merged_v[f_off : f_off + n_p] = tile_vars[t_i][s_off : s_off + n_p]
 
             if fit_background:
                 # Tile backgrounds are independent fits; report the
                 # core-area weighted mean (variance likewise, approximate).
-                w = np.array([m['core_w'] * m['core_h'] for m in metas],
-                             dtype=np.float64)
+                w = np.array(
+                    [m["core_w"] * m["core_h"] for m in metas], dtype=np.float64
+                )
                 w = w / w.sum()
                 bgs = np.array([tile_fluxes[t][-1] for t in t_list])
                 merged_f[-1] = float((w * bgs).sum())
@@ -3663,10 +4081,12 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
                         continue
                     if hasattr(src, "brightness"):
                         n = src.brightness.numberOfParams()
-                        src.brightness.setParams(f_vec[ptr:ptr + n])
+                        src.brightness.setParams(f_vec[ptr : ptr + n])
                         ptr += n
             else:
-                print("Warning: update_catalog=True but N_img > 1. Catalog not updated to avoid ambiguity.")
+                print(
+                    "Warning: update_catalog=True but N_img > 1. Catalog not updated to avoid ambiguity."
+                )
 
         return results
 
@@ -3675,9 +4095,13 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
         stats = compute_target_stats(tractor_obj.images, oversample_rendering)
         max_factor = stats["max_factor"]
         req_shapes = compute_image_shapes(tractor_obj.images, stats)
-        bucket_map = assign_buckets(req_shapes, bucket_sizes, bucket_mode, bucket_shape_mode, bucket_base)
+        bucket_map = assign_buckets(
+            req_shapes, bucket_sizes, bucket_mode, bucket_shape_mode, bucket_base
+        )
 
-        print(f"JAX Optimization: {len(tractor_obj.images)} images -> {len(bucket_map)} buckets")
+        print(
+            f"JAX Optimization: {len(tractor_obj.images)} images -> {len(bucket_map)} buckets"
+        )
         for shape, idxs in bucket_map.items():
             print(f"  Bucket {shape}: {len(idxs)} images")
 
@@ -3701,7 +4125,7 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
                 oversample_rendering=oversample_rendering,
                 fit_background=fit_background,
                 fixed_target_shape=shape,
-                fixed_max_factor=max_factor
+                fixed_max_factor=max_factor,
             )
 
             # 2. Define in_axes for batches
@@ -3725,26 +4149,28 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
                         "amp": 0,
                         "mean": 0,
                         "var": 0,
-                    }
+                    },
                 }
             if "Background" in batches:
-                batches_in_axes["Background"] = {
-                    "flux_idx": None
-                }
+                batches_in_axes["Background"] = {"flux_idx": None}
 
             # 3. Vmap Optimization
 
             if use_sharding:
-                images_data, batches, initial_fluxes = prepare_sharded_inputs(images_data, batches, initial_fluxes)
+                images_data, batches, initial_fluxes = prepare_sharded_inputs(
+                    images_data, batches, initial_fluxes
+                )
 
-            solve_fn = jit(vmap(
-                partial(
-                    _solver_fn,
-                    **_solver_kwargs,
-                    sampling_factor=max_factor,
-                ),
-                in_axes=(0, 0, batches_in_axes)
-            ))
+            solve_fn = jit(
+                vmap(
+                    partial(
+                        _solver_fn,
+                        **_solver_kwargs,
+                        sampling_factor=max_factor,
+                    ),
+                    in_axes=(0, 0, batches_in_axes),
+                )
+            )
 
             out = solve_fn(initial_fluxes, images_data, batches)
             aux_stack = None
@@ -3764,8 +4190,9 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
             for k, original_idx in enumerate(img_indices):
                 f = res_fluxes[k]
                 if aux_stack is not None:
-                    aux_all[original_idx] = {key: np.array(val[k])
-                                             for key, val in aux_stack.items()}
+                    aux_all[original_idx] = {
+                        key: np.array(val[k]) for key, val in aux_stack.items()
+                    }
                 if return_variances:
                     v = res_variances[k]
                     all_results[original_idx] = (f, v)
@@ -3780,9 +4207,9 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
             else:
                 optimized_fluxes_np = np.array(all_results)
         else:
-             optimized_fluxes_np = np.array([])
-             if return_variances:
-                 variances_np = np.array([])
+            optimized_fluxes_np = np.array([])
+            if return_variances:
+                variances_np = np.array([])
 
     else:
         # Sequential Processing: images one by one to save memory,
@@ -3790,7 +4217,9 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
         fluxes_list = []
         variances_list = []
 
-        batches = {} # Initialize in case loop doesn't run, to avoid UnboundLocalError for bg check
+        batches = (
+            {}
+        )  # Initialize in case loop doesn't run, to avoid UnboundLocalError for bg check
 
         for _img_i, img in enumerate(tractor_obj.images):
             # extract_model_data works on Tractor objects; wrap the single image
@@ -3799,7 +4228,7 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
             img_data, batches, init_flux = extract_model_data(
                 sub_tractor,
                 oversample_rendering=oversample_rendering,
-                fit_background=fit_background
+                fit_background=fit_background,
             )
 
             # img_data is stacked with shape (1, ...). We unbatch.
@@ -3811,18 +4240,20 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
             single_batches = batches.copy()
             if "PointSource" in batches:
                 single_batches["PointSource"] = jax.tree_util.tree_map(
-                    lambda x: x[0], batches["PointSource"])
+                    lambda x: x[0], batches["PointSource"]
+                )
 
             if "Galaxy" in batches:
                 single_batches["Galaxy"] = jax.tree_util.tree_map(
-                    lambda x: x[0], batches["Galaxy"])
+                    lambda x: x[0], batches["Galaxy"]
+                )
 
             if "Background" in batches:
                 # Background flux_idx is row-relative, not image-batched;
                 # nothing to slice.
                 pass
 
-            single_flux = init_flux[0] # (N_params,)
+            single_flux = init_flux[0]  # (N_params,)
 
             out = solve_jit(single_flux, single_data, single_batches)
             if _lasso_aux:
@@ -3872,7 +4303,7 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
 
     if update_catalog:
         if N_img == 1:
-            f_vec = optimized_fluxes_np[0] # Single image
+            f_vec = optimized_fluxes_np[0]  # Single image
 
             if "PointSource" in batches:
                 # Fluxes are packed [src1_params, src2_params, ...] in catalog
@@ -3885,12 +4316,14 @@ def optimize_fluxes(tractor_obj, oversample_rendering=False, return_variances=Fa
                         continue
                     if hasattr(src, "brightness"):
                         n = src.brightness.numberOfParams()
-                        vals = f_vec[ptr : ptr+n]
+                        vals = f_vec[ptr : ptr + n]
                         src.brightness.setParams(vals)
                         ptr += n
 
         else:
-            print("Warning: update_catalog=True but N_img > 1. Catalog not updated to avoid ambiguity.")
+            print(
+                "Warning: update_catalog=True but N_img > 1. Catalog not updated to avoid ambiguity."
+            )
 
     return results
 
@@ -3901,9 +4334,20 @@ class JaxOptimizer(Optimizer):
         if enable_x64:
             jax.config.update("jax_enable_x64", True)
 
-    def optimize(self, tractor, alphas=None, damp=0, priors=True,
-                 scale_columns=True, shared_params=True, variance=False,
-                 just_variance=False, vmap_images=True, use_sharding=True, **kwargs):
+    def optimize(
+        self,
+        tractor,
+        alphas=None,
+        damp=0,
+        priors=True,
+        scale_columns=True,
+        shared_params=True,
+        variance=False,
+        just_variance=False,
+        vmap_images=True,
+        use_sharding=True,
+        **kwargs,
+    ):
         """
         Perform one optimization step using JAX.
 
@@ -3953,7 +4397,7 @@ class JaxOptimizer(Optimizer):
             update_catalog=True,
             vmap_images=vmap_images,
             use_sharding=use_sharding,
-            **kwargs
+            **kwargs,
         )
 
         p1 = tractor.getParams()
@@ -3981,6 +4425,6 @@ class JaxOptimizer(Optimizer):
 
         return dlnp, X, alpha
 
-    def optimize_loop(self, tractor, dchisq=0., steps=50, **kwargs):
+    def optimize_loop(self, tractor, dchisq=0.0, steps=50, **kwargs):
         # Run single step as JAX CG solves it
         return self.optimize(tractor, **kwargs)

@@ -1,4 +1,3 @@
-
 import numpy as np
 import jax.numpy as jnp
 from tractor_jax.jax.optimizer import optimize_fluxes
@@ -6,6 +5,7 @@ from tractor_jax.pointsource import PointSource
 from tractor_jax.brightness import Flux
 from tractor_jax.psf import GaussianMixturePSF
 from tractor_jax.mixture_profiles import MixtureOfGaussians
+
 
 # Mock classes
 class MockImage:
@@ -16,21 +16,32 @@ class MockImage:
         self.wcs = wcs
         self.shape = data.shape
 
-    def getImage(self): return self.data
-    def getInvError(self): return np.sqrt(self.invvar)
-    def getPsf(self): return self.psf
-    def getWcs(self): return self.wcs
+    def getImage(self):
+        return self.data
+
+    def getInvError(self):
+        return np.sqrt(self.invvar)
+
+    def getPsf(self):
+        return self.psf
+
+    def getWcs(self):
+        return self.wcs
+
 
 class MockWCS:
     def positionToPixel(self, pos, src=None):
         return pos[0], pos[1]
+
     def cdInverseAtPixel(self, x, y):
         return np.eye(2)
+
 
 class MockTractor:
     def __init__(self, images, catalog):
         self.images = images
         self.catalog = catalog
+
 
 def test_jax_optimizer_variance_integration():
     print("Testing integration of variance calculation...")
@@ -53,10 +64,7 @@ def test_jax_optimizer_variance_integration():
     img = MockImage(data, invvar, psf, wcs)
 
     # Source
-    src = PointSource(
-        None,
-        Flux(100.0)
-    )
+    src = PointSource(None, Flux(100.0))
     # Monkey patch getPosition/getSourceType
     src.getPosition = lambda: np.array([10.0, 10.0])
     # Flux object
@@ -93,6 +101,7 @@ def test_jax_optimizer_variance_integration():
     assert isinstance(results_novar[0], np.ndarray)
 
     print("Integration test passed!")
+
 
 if __name__ == "__main__":
     test_jax_optimizer_variance_integration()

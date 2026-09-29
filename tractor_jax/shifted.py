@@ -67,30 +67,35 @@ class ShiftedPsf(ParamsWrapper, ducks.ImageCalibration):
         self.x0 = x0
         self.y0 = y0
 
-        if hasattr(psf, 'getMixtureOfGaussians'):
+        if hasattr(psf, "getMixtureOfGaussians"):
             self.getMixtureOfGaussians = self._getMixtureOfGaussians
 
     def __str__(self):
-        return ('ShiftedPsf: %i,%i + ' % (self.x0, self.y0)) + str(self.psf)
+        return ("ShiftedPsf: %i,%i + " % (self.x0, self.y0)) + str(self.psf)
 
     def hashkey(self):
-        return ('ShiftedPsf', self.x0, self.y0) + self.psf.hashkey()
+        return ("ShiftedPsf", self.x0, self.y0) + self.psf.hashkey()
 
-    def getPointSourcePatch(self, px, py, extent=None, derivs=False,
-                            modelMask=None, **kwargs):
+    def getPointSourcePatch(
+        self, px, py, extent=None, derivs=False, modelMask=None, **kwargs
+    ):
         if extent is not None:
-            (ex0, ex1, ey0, ey1) = extent
-            extent = (ex0 + self.x0, ex1 + self.x0,
-                      ey0 + self.y0, ey1 + self.y0)
+            ex0, ex1, ey0, ey1 = extent
+            extent = (ex0 + self.x0, ex1 + self.x0, ey0 + self.y0, ey1 + self.y0)
         mm = None
         if modelMask is not None:
             from .patch import Patch
-            mm = Patch(modelMask.x0 + self.x0, modelMask.y0 +
-                       self.y0, modelMask.patch)
 
-        p = self.psf.getPointSourcePatch(self.x0 + px, self.y0 + py,
-                                         extent=extent, derivs=derivs,
-                                         modelMask=mm, **kwargs)
+            mm = Patch(modelMask.x0 + self.x0, modelMask.y0 + self.y0, modelMask.patch)
+
+        p = self.psf.getPointSourcePatch(
+            self.x0 + px,
+            self.y0 + py,
+            extent=extent,
+            derivs=derivs,
+            modelMask=mm,
+            **kwargs,
+        )
         # Now we have to shift the patch back too
         if p is None:
             return None
@@ -125,7 +130,7 @@ class ScaledPhotoCal(ParamsWrapper, ducks.ImageCalibration):
         self.factor = factor
 
     def hashkey(self):
-        return ('ScaledPhotoCal', self.factor) + self.pc.hashkey()
+        return ("ScaledPhotoCal", self.factor) + self.pc.hashkey()
 
     def brightnessToCounts(self, brightness):
         return self.factor * self.pc.brightnessToCounts(brightness)
@@ -138,7 +143,7 @@ class ScaledWcs(ParamsWrapper, ducks.ImageCalibration):
         self.wcs = wcs
 
     def hashkey(self):
-        return ('ScaledWcs', self.factor) + tuple(self.wcs.hashkey())
+        return ("ScaledWcs", self.factor) + tuple(self.wcs.hashkey())
 
     def cdAtPixel(self, x, y):
         x, y = (x + 0.5) / self.factor - 0.5, (y + 0.5) * self.factor - 0.5
@@ -148,12 +153,11 @@ class ScaledWcs(ParamsWrapper, ducks.ImageCalibration):
     def positionToPixel(self, pos, src=None):
         x, y = self.wcs.positionToPixel(pos, src=src)
         # Or somethin'
-        return ((x + 0.5) * self.factor - 0.5,
-                (y + 0.5) * self.factor - 0.5)
+        return ((x + 0.5) * self.factor - 0.5, (y + 0.5) * self.factor - 0.5)
 
 
 class ShiftedWcs(ParamsWrapper, ducks.ImageCalibration):
-    '''Wrap a WCS in order to use it for a subimage.
+    """Wrap a WCS in order to use it for a subimage.
 
     Parameters
     ----------
@@ -163,7 +167,7 @@ class ShiftedWcs(ParamsWrapper, ducks.ImageCalibration):
         Pixel x offset of the subimage within the parent image.
     y0 : int
         Pixel y offset of the subimage within the parent image.
-    '''
+    """
 
     def __init__(self, wcs, x0, y0):
         super(ShiftedWcs, self).__init__(wcs)
@@ -171,20 +175,19 @@ class ShiftedWcs(ParamsWrapper, ducks.ImageCalibration):
         self.y0 = y0
         self.wcs = wcs
 
-    def toFitsHeader(self, hdr, prefix=''):
+    def toFitsHeader(self, hdr, prefix=""):
         tt = type(self.wcs)
-        sub_type = '%s.%s' % (tt.__module__, tt.__name__)
-        hdr.add_record(dict(name=prefix + 'SUB', value=sub_type,
-                            comment='ShiftedWcs sub-type'))
-        hdr.add_record(dict(name=prefix + 'X0', value=self.x0,
-                            comment='ShiftedWcs x0'))
-        hdr.add_record(dict(name=prefix + 'Y0', value=self.y0,
-                            comment='ShiftedWcs y0'))
-        print('Sub wcs:', self.wcs)
+        sub_type = "%s.%s" % (tt.__module__, tt.__name__)
+        hdr.add_record(
+            dict(name=prefix + "SUB", value=sub_type, comment="ShiftedWcs sub-type")
+        )
+        hdr.add_record(dict(name=prefix + "X0", value=self.x0, comment="ShiftedWcs x0"))
+        hdr.add_record(dict(name=prefix + "Y0", value=self.y0, comment="ShiftedWcs y0"))
+        print("Sub wcs:", self.wcs)
         self.wcs.toFitsHeader(hdr, prefix=prefix)
 
     def hashkey(self):
-        return ('ShiftedWcs', self.x0, self.y0) + tuple(self.wcs.hashkey())
+        return ("ShiftedWcs", self.x0, self.y0) + tuple(self.wcs.hashkey())
 
     def cdAtPixel(self, x, y):
         return self.wcs.cdAtPixel(x + self.x0, y + self.y0)

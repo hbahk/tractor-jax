@@ -1,10 +1,11 @@
-'''
+"""
 Core image modeling and fitting.
 
 This file is part of the Tractor project.
 Copyright 2011, 2012 Dustin Lang and David W. Hogg.
 Licensed under the GPLv2; see the file COPYING for details.
-'''
+"""
+
 from __future__ import print_function
 import logging
 
@@ -17,17 +18,24 @@ from tractor_jax.utils import savetxt_cpu_append
 
 import time
 
-logger = logging.getLogger('tractor.engine')
+logger = logging.getLogger("tractor.engine")
+
+
 def logverb(*args):
     if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(' '.join(map(str, args)))
+        logger.debug(" ".join(map(str, args)))
+
+
 def logmsg(*args):
-    logger.info(' '.join(map(str, args)))
+    logger.info(" ".join(map(str, args)))
+
+
 def isverbose():
     return logger.isEnabledFor(logging.DEBUG)
 
+
 def set_fp_err():
-    '''
+    """
     Cause all floating-point errors to raise exceptions.
 
     Returns
@@ -38,12 +46,12 @@ def set_fp_err():
             olderr = set_fp_err()
             # do stuff
             np.seterr(**olderr)
-    '''
-    return np.seterr(all='raise')
+    """
+    return np.seterr(all="raise")
 
 
 class Catalog(MultiParams):
-    '''
+    """
     A list of Source objects.
 
     This class allows the Tractor to treat a set of astronomical
@@ -60,17 +68,17 @@ class Catalog(MultiParams):
 
         srcs = [src1, src2, src3]
         cat = Catalog(*srcs)
-    '''
+    """
+
     deepcopy = MultiParams.copy
 
     def __str__(self):
-        return ('Catalog: %i sources, %i parameters' %
-                (len(self), self.numberOfParams()))
+        return "Catalog: %i sources, %i parameters" % (len(self), self.numberOfParams())
 
     def printLong(self):
-        print('Catalog with %i sources:' % len(self))
+        print("Catalog with %i sources:" % len(self))
         for i, x in enumerate(self):
-            print('  %i:' % i, x)
+            print("  %i:" % i, x)
 
     def getThawedSources(self):
         return self._getActiveSubs()
@@ -79,7 +87,7 @@ class Catalog(MultiParams):
         return self._getInactiveSubs()
 
     def getNamedParamName(self, j):
-        return 'source%i' % j
+        return "source%i" % j
 
 
 class Images(MultiParams):
@@ -94,16 +102,16 @@ class Images(MultiParams):
     """
 
     def getNamedParamName(self, j):
-        return 'image%i' % j
+        return "image%i" % j
 
 
-class OptResult():
+class OptResult:
     # quack
     pass
 
 
 class Tractor(MultiParams):
-    '''
+    """
     Heavy farm machinery.
 
     As you might guess from the name, this is the main class of the
@@ -111,18 +119,18 @@ class Tractor(MultiParams):
     :class:`~tractor_jax.engine.Images` and a set of Sources
     (a :class:`~tractor_jax.engine.Catalog`), and has methods to
     optimize the parameters of those Images and Sources.
-    '''
+    """
+
     @staticmethod
     def getName():
-        return 'Tractor'
+        return "Tractor"
 
     @staticmethod
     def getNamedParams():
         return dict(images=0, catalog=1)
 
-    def __init__(self, images=None, catalog=None, optimizer=None,
-                 model_kwargs=None):
-        '''
+    def __init__(self, images=None, catalog=None, optimizer=None, model_kwargs=None):
+        """
         Create a new Tractor.
 
         Parameters
@@ -137,7 +145,7 @@ class Tractor(MultiParams):
         model_kwargs : dict, optional
             Default keyword arguments passed to model-image and
             optimization methods.
-        '''
+        """
         self.blobid = None
         if images is None:
             images = []
@@ -154,12 +162,14 @@ class Tractor(MultiParams):
         if optimizer is None:
             try:
                 from .lsqr_optimizer import LsqrOptimizer
+
                 self.optimizer = LsqrOptimizer()
             except ImportError:
                 # lsqr_optimizer is not part of the trimmed JAX engine; fall
                 # back to the JAX optimizer so a default Tractor() is usable
                 # (optimize_fluxes constructs sub-Tractors without optimizer=).
                 from .jax.optimizer import JaxOptimizer
+
                 self.optimizer = JaxOptimizer()
         else:
             self.optimizer = optimizer
@@ -169,15 +179,18 @@ class Tractor(MultiParams):
         self.model_kwargs = model_kwargs
 
     def __str__(self):
-        s = ('%s with %i sources and %i images' % (
-            self.getName(), len(self.catalog), len(self.images)))
+        s = "%s with %i sources and %i images" % (
+            self.getName(),
+            len(self.catalog),
+            len(self.images),
+        )
         names = []
         for im in self.images:
             if im.name is None:
-                names.append('[unnamed]')
+                names.append("[unnamed]")
             else:
                 names.append(im.name)
-        s += ' (' + ', '.join(names) + ')'
+        s += " (" + ", ".join(names) + ")"
         return s
 
     # For use from emcee
@@ -188,21 +201,43 @@ class Tractor(MultiParams):
     # For pickling
     def __getstate__(self):
         version = 1
-        S = (version, self.getImages(), self.getCatalog(), self.liquid,
-             self.modtype, self.modelMasks, self.expectModelMasks,
-             self.optimizer)
+        S = (
+            version,
+            self.getImages(),
+            self.getCatalog(),
+            self.liquid,
+            self.modtype,
+            self.modelMasks,
+            self.expectModelMasks,
+            self.optimizer,
+        )
         return S
 
     def __setstate__(self, state):
         if len(state) == 6:
             # "backwards compat"
-            (images, catalog, self.liquid, self.modtype, self.modelMasks,
-             self.expectModelMasks) = state
+            (
+                images,
+                catalog,
+                self.liquid,
+                self.modtype,
+                self.modelMasks,
+                self.expectModelMasks,
+            ) = state
             from .lsqr_optimizer import LsqrOptimizer
+
             self.optimizer = LsqrOptimizer()
         elif len(state) == 8:
-            (ver, images, catalog, self.liquid, self.modtype, self.modelMasks,
-             self.expectModelMasks, self.optimizer) = state
+            (
+                ver,
+                images,
+                catalog,
+                self.liquid,
+                self.modtype,
+                self.modelMasks,
+                self.expectModelMasks,
+                self.optimizer,
+            ) = state
         self.subs = [images, catalog]
 
     def getNImages(self):
@@ -216,6 +251,7 @@ class Tractor(MultiParams):
 
     def getImagesGPU(self):
         import jax.numpy as cp
+
         return [cp.asarray(im) for im in self.images]
 
     def getCatalog(self):
@@ -244,7 +280,7 @@ class Tractor(MultiParams):
         self.catalog.remove(src)
 
     def optimize_forced_photometry(self, **kwargs):
-        '''
+        """
         Perform forced photometry, fitting source brightnesses only.
 
         Parameters
@@ -276,7 +312,7 @@ class Tractor(MultiParams):
 
         PRIORS probably don't work because we don't setParams() when
         evaluating likelihood or prior!
-        '''
+        """
         kw = self.model_kwargs.copy()
         kw.update(kwargs)
         return self.optimizer.forced_photometry(self, **kw)
@@ -284,7 +320,7 @@ class Tractor(MultiParams):
     # alphas=None, damp=0, priors=True, scale_columns=True,
     # shared_params=True, variance=False, just_variance=False):
     def optimize(self, **kwargs):
-        '''
+        """
         Perform *one step* of optimization.
 
         Exactly what that entails depends on the optimizer; by
@@ -306,18 +342,18 @@ class Tractor(MultiParams):
             ``(delta-logprob, parameter update X, alpha stepsize, variance)``.
 
             If ``just_variance=True``, returns ``variance``.
-        '''
-        '''
+        """
+        """
         If rois is not None, it must be a list of [x0,x1,y0,y1] the
         same length as the number of images, giving the ROI in which
         the chi value (and derivatives) will be evaluated.
-        '''
+        """
         kw = self.model_kwargs.copy()
         kw.update(kwargs)
         return self.optimizer.optimize(self, **kw)
 
     def optimize_loop(self, **kwargs):
-        '''
+        """
         Perform multiple steps of optimization until convergence.
 
         Parameters
@@ -330,14 +366,14 @@ class Tractor(MultiParams):
         -------
         result : dict
             A dict of results (exact contents varying by optimizer).
-        '''
+        """
         kw = self.model_kwargs.copy()
         kw.update(kwargs)
-        #print ("OPTIMIZER = ", self.optimizer, self.optimizer.optimize_loop)
+        # print ("OPTIMIZER = ", self.optimizer, self.optimizer.optimize_loop)
         return self.optimizer.optimize_loop(self, **kw)
 
     def getDerivs(self, **kwargs):
-        '''
+        """
         Compute model-image derivatives for each parameter.
 
         Parameters
@@ -361,11 +397,11 @@ class Tractor(MultiParams):
             where the ``deriv`` entries are
             :class:`~tractor_jax.patch.Patch` objects and the ``img``
             entries are :class:`~tractor_jax.image.Image` objects.
-        '''
+        """
         t = time.time()
         allderivs = []
 
-        if self.isParamFrozen('catalog'):
+        if self.isParamFrozen("catalog"):
             srcs = []
         else:
             srcs = list(self.catalog.getThawedSources())
@@ -374,12 +410,12 @@ class Tractor(MultiParams):
 
         kw = self.model_kwargs.copy()
         kw.update(kwargs)
-        #print ("TEST1")
+        # print ("TEST1")
 
-        if not self.isParamFrozen('images'):
+        if not self.isParamFrozen("images"):
             for i in self.images.getThawedParamIndices():
                 img = self.images[i]
-                #print ("IMG", img)
+                # print ("IMG", img)
                 derivs = img.getParamDerivatives(self, allsrcs, **kw)
                 mod0 = None
                 for di, deriv in enumerate(derivs):
@@ -393,29 +429,29 @@ class Tractor(MultiParams):
                         mod = self.getModelImage(img, **kwargs)
                         img.setParam(di, oldval)
                         deriv = Patch(0, 0, (mod - mod0) / stepsizes[di])
-                        deriv.name = 'd(im%i)/d(%s)' % (i, paramnames[di])
+                        deriv.name = "d(im%i)/d(%s)" % (i, paramnames[di])
                     allderivs.append([(deriv, img)])
                 del mod0
 
-        #print ("TEST2")
+        # print ("TEST2")
         for src in srcs:
             srcderivs = [[] for i in range(src.numberOfParams())]
             for img in self.images:
-                #print ("IMG2", img)
+                # print ("IMG2", img)
                 derivs = self._getSourceDerivatives(src, img, **kwargs)
                 for k, deriv in enumerate(derivs):
                     if deriv is None:
                         continue
                     srcderivs[k].append((deriv, img))
             allderivs.extend(srcderivs)
-        #print('allderivs:', len(allderivs))
-        #print('N params:', self.numberOfParams())
+        # print('allderivs:', len(allderivs))
+        # print('N params:', self.numberOfParams())
 
-        assert(len(allderivs) == self.numberOfParams())
+        assert len(allderivs) == self.numberOfParams()
         return allderivs
 
     def setModelMasks(self, masks, assumeMasks=True):
-        '''
+        """
         Set the "model masks" defining which pixels are evaluated.
 
         A "model mask" is used to define the pixels that are evaluated
@@ -441,9 +477,9 @@ class Tractor(MultiParams):
             If True (default) and `masks` is not None, sources without
             an entry in the mask dictionary are assumed not to overlap
             the image.
-        '''
+        """
         self.modelMasks = masks
-        assert((masks is None) or (len(masks) == len(self.images)))
+        assert (masks is None) or (len(masks) == len(self.images))
         self.expectModelMasks = (masks is not None) and assumeMasks
 
     def _getModelMaskByIdx(self, idx, src):
@@ -466,19 +502,19 @@ class Tractor(MultiParams):
     def _checkModelMask(self, patch, mask):
         if self.expectModelMasks:
             if patch is not None:
-                assert(mask is not None)
+                assert mask is not None
 
         if patch is not None and mask is not None:
             # not strictly required?  but a good idea!
-            assert(patch.patch.shape == mask.patch.shape)
+            assert patch.patch.shape == mask.patch.shape
 
         if patch is not None and mask is not None and patch.patch is not None:
             nonzero = Patch(patch.x0, patch.y0, patch.patch != 0)
-            #print('nonzero type:', nonzero.patch.dtype)
+            # print('nonzero type:', nonzero.patch.dtype)
             unmasked = Patch(mask.x0, mask.y0, np.logical_not(mask.mask))
-            #print('unmasked type:', unmasked.patch.dtype)
-            bad = nonzero.performArithmetic(unmasked, '__iand__', otype=bool)
-            assert(np.all(bad.patch == False))
+            # print('unmasked type:', unmasked.patch.dtype)
+            bad = nonzero.performArithmetic(unmasked, "__iand__", otype=bool)
+            assert np.all(bad.patch == False)
 
     def _getSourceDerivatives(self, src, img, **kwargs):
         mask = self._getModelMaskFor(img, src)
@@ -486,7 +522,7 @@ class Tractor(MultiParams):
         # HACK! -- assume no modelMask -> no overlap
         if self.expectModelMasks and mask is None:
             return [None] * src.numberOfParams()
-        #print ("D1", src.getParamDerivatives)
+        # print ("D1", src.getParamDerivatives)
         derivs = src.getParamDerivatives(img, modelMask=mask, **kwargs)
 
         # HACK -- auto-add?
@@ -517,7 +553,7 @@ class Tractor(MultiParams):
         return mod
 
     def getModelImage(self, img, srcs=None, sky=True, minsb=None, **kwargs):
-        '''
+        """
         Create a model image for the given "tractor image".
 
         Parameters
@@ -541,7 +577,7 @@ class Tractor(MultiParams):
         -------
         mod : numpy.ndarray
             The rendered model image.
-        '''
+        """
         if _isint(img):
             img = self.getImage(img)
         mod = np.zeros(img.getModelShape(), self.modtype)
@@ -570,8 +606,9 @@ class Tractor(MultiParams):
         for img in self.images:
             yield self.getChiImage(img=img, **kwargs)
 
-    def getChiImageGPU(self, imgi=-1, img=None, srcs=None, minsb=0., **kwargs):
+    def getChiImageGPU(self, imgi=-1, img=None, srcs=None, minsb=0.0, **kwargs):
         import jax.numpy as cp
+
         gi = cp.asarray(self.getChiImage(imgi, img, srcs, minsb, **kwargs))
         """
         TODO: In future use factored_optimizer helpers to get chi2
@@ -590,43 +627,43 @@ class Tractor(MultiParams):
         """
         return gi
 
-    def getChiImage(self, imgi=-1, img=None, srcs=None, minsb=0., **kwargs):
+    def getChiImage(self, imgi=-1, img=None, srcs=None, minsb=0.0, **kwargs):
         if img is None:
             img = self.getImage(imgi)
         mod = self.getModelImage(img, srcs=srcs, minsb=minsb, **kwargs)
         chi = (img.getImage() - mod) * img.getInvError()
-        #savetxt_cpu_append('cmod.txt', mod)
-        #savetxt_cpu_append('cie.txt', img.getInvError())
-        #savetxt_cpu_append('cpix.txt', img.getImage())
+        # savetxt_cpu_append('cmod.txt', mod)
+        # savetxt_cpu_append('cie.txt', img.getInvError())
+        # savetxt_cpu_append('cpix.txt', img.getImage())
         if not np.all(np.isfinite(chi)):
-            print('Chi not finite')
-            print('Image finite?', np.all(np.isfinite(img.getImage())))
-            print('Mod finite?', np.all(np.isfinite(mod)))
-            print('InvErr finite?', np.all(np.isfinite(img.getInvError())))
-            print('Current thawed parameters:')
+            print("Chi not finite")
+            print("Image finite?", np.all(np.isfinite(img.getImage())))
+            print("Mod finite?", np.all(np.isfinite(mod)))
+            print("InvErr finite?", np.all(np.isfinite(img.getInvError())))
+            print("Current thawed parameters:")
             self.printThawedParams()
-            print('Current sources:')
+            print("Current sources:")
             for src in self.getCatalog():
-                print('  ', src)
-            print('Image:', img)
-            print('sky:', img.getSky())
-            print('psf:', img.getPsf())
+                print("  ", src)
+            print("Image:", img)
+            print("sky:", img.getSky())
+            print("psf:", img.getPsf())
         return chi
 
     def getLogLikelihoodGPU(self, **kwargs):
-        chisq = 0.
+        chisq = 0.0
         for i, chi in enumerate(self.getChiImagesGPU(**kwargs)):
             chisq += (chi.astype(float) ** 2).sum()
         return -0.5 * chisq
 
     def getLogLikelihood(self, **kwargs):
-        chisq = 0.
+        chisq = 0.0
         for i, chi in enumerate(self.getChiImages(**kwargs)):
             chisq += (chi.astype(float) ** 2).sum()
         return -0.5 * chisq
 
     def getLogProbGPU(self, **kwargs):
-        '''
+        """
         Return the posterior log PDF, evaluated at the current parameters.
 
         Returns
@@ -635,26 +672,27 @@ class Tractor(MultiParams):
             The log posterior (log prior plus log likelihood, the
             latter computed on the GPU); ``-inf`` if the prior is
             ``-inf`` or the result is NaN.
-        '''
+        """
         import jax.numpy as cp
+
         lnprior = self.getLogPrior()
         if lnprior == -np.inf:
             return lnprior
         t = time.time()
         lnl = self.getLogLikelihoodGPU(**kwargs)
-        #print ("GTL:", gtl, gcl, cl, "GI:", gi)
+        # print ("GTL:", gtl, gcl, cl, "GI:", gi)
         lnp = lnprior + lnl
         if cp.isnan(lnp):
-            print('Tractor.getLogProb() returning NaN.')
-            print('Params:')
+            print("Tractor.getLogProb() returning NaN.")
+            print("Params:")
             self.printThawedParams()
-            print('log likelihood:', lnl)
-            print('log prior:', lnprior)
+            print("log likelihood:", lnl)
+            print("log prior:", lnprior)
             return -np.inf
         return lnp
 
     def getLogProb(self, **kwargs):
-        '''
+        """
         Return the posterior log PDF, evaluated at the current parameters.
 
         Returns
@@ -662,19 +700,19 @@ class Tractor(MultiParams):
         lnp : float
             The log posterior (log prior plus log likelihood); ``-inf``
             if the prior is ``-inf`` or the result is NaN.
-        '''
+        """
         lnprior = self.getLogPrior()
         if lnprior == -np.inf:
             return lnprior
         lnl = self.getLogLikelihood(**kwargs)
-        #print ("TL:", tl, gcl, cl, "GI", gi)
+        # print ("TL:", tl, gcl, cl, "GI", gi)
         lnp = lnprior + lnl
-        #print ("LP", lnprior, "LNL", lnl, "LNP", lnp)
+        # print ("LP", lnprior, "LNL", lnl, "LNP", lnp)
         if np.isnan(lnp):
-            print('Tractor.getLogProb() returning NaN.')
-            print('Params:')
+            print("Tractor.getLogProb() returning NaN.")
+            print("Params:")
             self.printThawedParams()
-            print('log likelihood:', lnl)
-            print('log prior:', lnprior)
+            print("log likelihood:", lnl)
+            print("log prior:", lnprior)
             return -np.inf
         return lnp

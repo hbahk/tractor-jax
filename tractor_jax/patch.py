@@ -1,8 +1,9 @@
 import numpy as np
 
+
 class ModelMask(object):
     def __init__(self, x0, y0, *args):
-        '''Create a ModelMask.
+        """Create a ModelMask.
 
         Can be called as ``ModelMask(x0, y0, w, h)`` or
         ``ModelMask(x0, y0, mask)``.
@@ -17,7 +18,7 @@ class ModelMask(object):
             Either the width `w` and height `h` (two ints), or a
             single `mask` array.  `mask` is assumed to be a binary
             image, True for pixels we're interested in.
-        '''
+        """
         self.x0 = x0
         self.y0 = y0
         if len(args) == 2:
@@ -27,22 +28,24 @@ class ModelMask(object):
             self.mask = args[0]
             self.h, self.w = self.mask.shape
         else:
-            raise ValueError('Wrong number of arguments')
+            raise ValueError("Wrong number of arguments")
 
     def __str__(self):
-        s = ('ModelMask: origin (%i,%i), w=%i, h=%i' %
-             (self.x0, self.y0, self.w, self.h))
+        s = "ModelMask: origin (%i,%i), w=%i, h=%i" % (self.x0, self.y0, self.w, self.h)
         if self.mask is None:
             return s
-        return s + ', has mask'
+        return s + ", has mask"
 
     def __repr__(self):
         if self.mask is None:
-            return ('ModelMask(%i,%i, w=%i, h=%i)' %
-                    (self.x0, self.y0, self.w, self.h))
+            return "ModelMask(%i,%i, w=%i, h=%i)" % (self.x0, self.y0, self.w, self.h)
         else:
-            return ('ModelMask(%i,%i, mask of shape w=%i, h=%i)' %
-                    (self.x0, self.y0, self.w, self.h))
+            return "ModelMask(%i,%i, mask of shape w=%i, h=%i)" % (
+                self.x0,
+                self.y0,
+                self.w,
+                self.h,
+            )
 
     @staticmethod
     def fromExtent(x0, x1, y0, y1):
@@ -64,6 +67,7 @@ class ModelMask(object):
     def extent(self):
         return (self.x0, self.x0 + self.w, self.y0, self.y0 + self.h)
 
+
 # Adds two patches, handling the case when one is None
 
 
@@ -78,7 +82,7 @@ def add_patches(pa, pb):
 
 
 class Patch(object):
-    '''An image patch; a subimage.
+    """An image patch; a subimage.
 
     In the Tractor we use these to hold synthesized (ie, model)
     images.  The patch is a rectangular grid of pixels and it knows
@@ -86,14 +90,14 @@ class Patch(object):
 
     This class overloads arithmetic operations (like add and multiply)
     relevant to synthetic image patches.
-    '''
+    """
 
     def __init__(self, x0, y0, patch):
         self.x0 = x0
         self.y0 = y0
         self.patch = patch
         self.patch_gpu = None
-        self.name = ''
+        self.name = ""
         if patch is not None:
             try:
                 H, W = patch.shape
@@ -110,16 +114,16 @@ class Patch(object):
         return self.x0 + self.patch.shape[1]
 
     def __str__(self):
-        s = 'Patch: '
-        name = getattr(self, 'name', '')
+        s = "Patch: "
+        name = getattr(self, "name", "")
         if len(name):
-            s += name + ' '
-        s += 'origin (%i,%i) ' % (self.x0, self.y0)
+            s += name + " "
+        s += "origin (%i,%i) " % (self.x0, self.y0)
         if self.patch is not None:
-            (H, W) = self.patch.shape
-            s += 'size (%i x %i)' % (W, H)
+            H, W = self.patch.shape
+            s += "size (%i x %i)" % (W, H)
         else:
-            s += '(no image)'
+            s += "(no image)"
         return s
 
     def set(self, other):
@@ -168,8 +172,8 @@ class Patch(object):
 
     def overlapsBbox(self, bbox):
         ext = self.getExtent()
-        (x0, x1, y0, y1) = ext
-        (ox0, ox1, oy0, oy1) = bbox
+        x0, x1, y0, y1 = ext
+        ox0, ox1, oy0, oy1 = bbox
         if x0 >= ox1 or ox0 >= x1 or y0 >= oy1 or oy0 >= y1:
             return False
         return True
@@ -180,23 +184,24 @@ class Patch(object):
 
     def hasNonzeroOverlapWith(self, other):
         from astrometry.util.miscutils import get_overlapping_region
+
         if not self.hasBboxOverlapWith(other):
             return False
         ext = self.getExtent()
-        (x0, x1, y0, y1) = ext
+        x0, x1, y0, y1 = ext
         oext = other.getExtent()
-        (ox0, ox1, oy0, oy1) = oext
+        ox0, ox1, oy0, oy1 = oext
         ix, ox = get_overlapping_region(ox0, ox1 - 1, x0, x1 - 1)
         iy, oy = get_overlapping_region(oy0, oy1 - 1, y0, y1 - 1)
         ix = slice(ix.start - x0, ix.stop - x0)
         iy = slice(iy.start - y0, iy.stop - y0)
         sub = self.patch[iy, ix]
         osub = other.patch[oy, ox]
-        assert(sub.shape == osub.shape)
-        return np.sum(sub * osub) > 0.
+        assert sub.shape == osub.shape
+        return np.sum(sub * osub) > 0.0
 
     def getNonZeroMask(self):
-        nz = (self.patch != 0)
+        nz = self.patch != 0
         return Patch(self.x0, self.y0, nz)
 
     def __repr__(self):
@@ -214,7 +219,7 @@ class Patch(object):
         return Patch(self.x0, self.y0, self.patch.copy())
 
     def getExtent(self, margin=0):
-        '''Return the extent of the region covered by this patch.
+        """Return the extent of the region covered by this patch.
 
         Parameters
         ----------
@@ -226,20 +231,24 @@ class Patch(object):
         tuple of int
             ``(x0, x1, y0, y1)`` of the region covered by this patch;
             NON-inclusive upper bounds, ie, ``[x0, x1)``, ``[y0, y1)``.
-        '''
-        (h, w) = self.shape
-        return (self.x0 - margin, self.x0 + w + margin,
-                self.y0 - margin, self.y0 + h + margin)
+        """
+        h, w = self.shape
+        return (
+            self.x0 - margin,
+            self.x0 + w + margin,
+            self.y0 - margin,
+            self.y0 + h + margin,
+        )
 
     @property
     def extent(self):
-        (h, w) = self.shape
+        h, w = self.shape
         return (self.x0, self.x0 + w, self.y0, self.y0 + h)
 
     @property
     def shape(self):
         if self.patch is None:
-            return 0,0
+            return 0, 0
         return self.patch.shape
 
     def getOrigin(self):
@@ -249,6 +258,7 @@ class Patch(object):
         if use_gpu:
             if self.patch_gpu is None:
                 import cupy as cp
+
                 self.patch_gpu = cp.asarray(self.patch)
             return self.patch_gpu
         return self.patch
@@ -257,6 +267,7 @@ class Patch(object):
         if use_gpu:
             if self.patch_gpu is None:
                 import cupy as cp
+
                 self.patch_gpu = cp.asarray(self.patch)
             return self.patch_gpu
         return self.patch
@@ -269,6 +280,7 @@ class Patch(object):
 
     def clipTo(self, W, H, use_gpu=False):
         from tractor_jax.miscutils import get_overlapping_region
+
         if self.patch is None:
             return False
         if self.x0 >= W:
@@ -279,16 +291,16 @@ class Patch(object):
             self.patch = None
             return False
         # debug
-        #o0 = (self.x0, self.y0, self.patch.shape)
+        # o0 = (self.x0, self.y0, self.patch.shape)
         if self.x0 < 0:
-            self.patch = self.patch[:, -self.x0:]
+            self.patch = self.patch[:, -self.x0 :]
             if use_gpu:
-                self.patch_gpu = self.patch_gpu[:, -self.x0:]
+                self.patch_gpu = self.patch_gpu[:, -self.x0 :]
             self.x0 = 0
         if self.y0 < 0:
-            self.patch = self.patch[-self.y0:, :]
+            self.patch = self.patch[-self.y0 :, :]
             if use_gpu:
-                self.patch_gpu = self.patch_gpu[-self.y0:, :]
+                self.patch_gpu = self.patch_gpu[-self.y0 :, :]
             self.y0 = 0
         # debug
         # S = self.patch.shape
@@ -297,59 +309,59 @@ class Patch(object):
         #     print 'original offset and patch shape:', o0
         #     print 'current offset and patch shape:', self.x0, self.y0, self.patch.shape
 
-        (h, w) = self.patch.shape
+        h, w = self.patch.shape
         if (self.x0 + w) > W:
-            self.patch = self.patch[:, :(W - self.x0)]
+            self.patch = self.patch[:, : (W - self.x0)]
             if use_gpu:
-                self.patch_gpu = self.patch_gpu[:, :(W - self.x0)]
+                self.patch_gpu = self.patch_gpu[:, : (W - self.x0)]
         if (self.y0 + h) > H:
-            self.patch = self.patch[:(H - self.y0), :]
+            self.patch = self.patch[: (H - self.y0), :]
             if use_gpu:
-                self.patch_gpu = self.patch_gpu[:(H - self.y0), :]
+                self.patch_gpu = self.patch_gpu[: (H - self.y0), :]
 
-        assert(self.x0 >= 0)
-        assert(self.y0 >= 0)
-        (h, w) = self.shape
-        assert(w <= W)
-        assert(h <= H)
-        assert(self.shape == self.patch.shape)
+        assert self.x0 >= 0
+        assert self.y0 >= 0
+        h, w = self.shape
+        assert w <= W
+        assert h <= H
+        assert self.shape == self.patch.shape
         return True
 
     def clipToRoi(self, x0, x1, y0, y1):
         if self.patch is None:
             return False
-        if ((self.x0 >= x1) or (self.x1 <= x0) or
-                (self.y0 >= y1) or (self.y1 <= y0)):
+        if (self.x0 >= x1) or (self.x1 <= x0) or (self.y0 >= y1) or (self.y1 <= y0):
             # empty
             self.patch = None
             return False
 
         if self.x0 < x0:
-            self.patch = self.patch[:, x0 - self.x0:]
+            self.patch = self.patch[:, x0 - self.x0 :]
             self.x0 = x0
         if self.y0 < y0:
-            self.patch = self.patch[(y0 - self.y0):, :]
+            self.patch = self.patch[(y0 - self.y0) :, :]
             self.y0 = y0
-        (h, w) = self.shape
+        h, w = self.shape
         if (self.x0 + w) > x1:
-            self.patch = self.patch[:, :(x1 - self.x0)]
+            self.patch = self.patch[:, : (x1 - self.x0)]
         if (self.y0 + h) > y1:
-            self.patch = self.patch[:(y1 - self.y0), :]
+            self.patch = self.patch[: (y1 - self.y0), :]
         return True
 
     def getSlice(self, parent=None):
         if self.patch is None:
             return ([], [])
-        (ph, pw) = self.patch.shape
+        ph, pw = self.patch.shape
         if parent is not None:
-            (H, W) = parent.shape
-            return (slice(np.clip(self.y0, 0, H), np.clip(self.y0 + ph, 0, H)),
-                    slice(np.clip(self.x0, 0, W), np.clip(self.x0 + pw, 0, W)))
-        return (slice(self.y0, self.y0 + ph),
-                slice(self.x0, self.x0 + pw))
+            H, W = parent.shape
+            return (
+                slice(np.clip(self.y0, 0, H), np.clip(self.y0 + ph, 0, H)),
+                slice(np.clip(self.x0, 0, W), np.clip(self.x0 + pw, 0, W)),
+            )
+        return (slice(self.y0, self.y0 + ph), slice(self.x0, self.x0 + pw))
 
     def getSlices(self, shape):
-        '''Return slices yielding the overlapping regions of this Patch
+        """Return slices yielding the overlapping regions of this Patch
         and an image of the given shape.
 
         Parameters
@@ -363,57 +375,63 @@ class Patch(object):
             Slices into this Patch.
         sparent : tuple of slice
             Slices into the given image.
-        '''
+        """
         from tractor_jax.miscutils import get_overlapping_region
-        (ph, pw) = self.shape
-        (ih, iw) = shape
-        (outx, inx) = get_overlapping_region(
-            self.x0, self.x0 + pw - 1, 0, iw - 1)
-        (outy, iny) = get_overlapping_region(
-            self.y0, self.y0 + ph - 1, 0, ih - 1)
+
+        ph, pw = self.shape
+        ih, iw = shape
+        outx, inx = get_overlapping_region(self.x0, self.x0 + pw - 1, 0, iw - 1)
+        outy, iny = get_overlapping_region(self.y0, self.y0 + ph - 1, 0, ih - 1)
         if inx == [] or iny == []:
             return (slice(0, 0), slice(0, 0)), (slice(0, 0), slice(0, 0))
         return (iny, inx), (outy, outx)
 
     def getPixelIndicesGPU(self, parent, dtype=np.int32):
         import jax.numpy as jnp
+
         return jnp.asarray(self.getPixelIndices(parent, dtype))
 
     def getPixelIndices(self, parent, dtype=np.int32, use_gpu=False):
         if use_gpu:
             import jax.numpy as jnp
+
             if self.patch is None:
                 return jnp.array([], dtype)
-            (h, w) = self.shape
-            (H, W) = parent.shape
-            return ( (jnp.arange(w, dtype=dtype) + dtype(self.x0))[jnp.newaxis, :] +
-                ((jnp.arange(h, dtype=dtype) + dtype(self.y0)) * dtype(W))[:, jnp.newaxis]).ravel()
+            h, w = self.shape
+            H, W = parent.shape
+            return (
+                (jnp.arange(w, dtype=dtype) + dtype(self.x0))[jnp.newaxis, :]
+                + ((jnp.arange(h, dtype=dtype) + dtype(self.y0)) * dtype(W))[
+                    :, jnp.newaxis
+                ]
+            ).ravel()
         if self.patch is None:
             return np.array([], dtype)
-        (h, w) = self.shape
-        (H, W) = parent.shape
-        return ( (np.arange(w, dtype=dtype) + dtype(self.x0))[np.newaxis, :] +
-                ((np.arange(h, dtype=dtype) + dtype(self.y0)) * dtype(W))[:, np.newaxis]).ravel()
+        h, w = self.shape
+        H, W = parent.shape
+        return (
+            (np.arange(w, dtype=dtype) + dtype(self.x0))[np.newaxis, :]
+            + ((np.arange(h, dtype=dtype) + dtype(self.y0)) * dtype(W))[:, np.newaxis]
+        ).ravel()
 
     plotnum = 0
 
-    def addTo(self, img, scale=1.):
+    def addTo(self, img, scale=1.0):
         from tractor_jax.miscutils import get_overlapping_region
+
         if self.patch is None:
             return img
-        (ih, iw) = img.shape
-        (ph, pw) = self.shape
-        (outx, inx) = get_overlapping_region(
-            self.x0, self.x0 + pw - 1, 0, iw - 1)
-        (outy, iny) = get_overlapping_region(
-            self.y0, self.y0 + ph - 1, 0, ih - 1)
+        ih, iw = img.shape
+        ph, pw = self.shape
+        outx, inx = get_overlapping_region(self.x0, self.x0 + pw - 1, 0, iw - 1)
+        outy, iny = get_overlapping_region(self.y0, self.y0 + ph - 1, 0, ih - 1)
         if inx == [] or iny == []:
             return img
         p = self.patch[iny, inx]
 
         # JAX-compatible update
         # Check if img is a JAX array
-        if hasattr(img, 'at'):
+        if hasattr(img, "at"):
             return img.at[outy, outx].add(p * scale)
         else:
             # Fallback for numpy arrays (legacy support)
@@ -464,21 +482,24 @@ class Patch(object):
         return Patch(self.x0, self.y0, self.patch / f)
 
     def performArithmetic(self, other, opname, otype=float):
-        assert(isinstance(other, Patch))
-        if (self.x0 == other.getX0() and self.y0 == other.getY0() and
-                self.shape == other.shape):
-            assert(self.x0 == other.getX0())
-            assert(self.y0 == other.getY0())
-            assert(self.shape == other.shape)
+        assert isinstance(other, Patch)
+        if (
+            self.x0 == other.getX0()
+            and self.y0 == other.getY0()
+            and self.shape == other.shape
+        ):
+            assert self.x0 == other.getX0()
+            assert self.y0 == other.getY0()
+            assert self.shape == other.shape
             if self.patch is None or other.patch is None:
                 return Patch(self.x0, self.y0, None)
             pcopy = self.patch.copy()
             op = getattr(pcopy, opname)
             return Patch(self.x0, self.y0, op(other.patch))
 
-        (ph, pw) = self.patch.shape
-        (ox0, oy0) = other.getX0(), other.getY0()
-        (oh, ow) = other.shape
+        ph, pw = self.patch.shape
+        ox0, oy0 = other.getX0(), other.getY0()
+        oh, ow = other.shape
 
         # Find the union of the regions.
         ux0 = min(ox0, self.x0)
@@ -488,19 +509,19 @@ class Patch(object):
 
         # Set the "self" portion of the union
         p = np.zeros((uy1 - uy0, ux1 - ux0), dtype=otype)
-        p[self.y0 - uy0: self.y0 - uy0 + ph,
-          self.x0 - ux0: self.x0 - ux0 + pw] = self.patch
+        p[self.y0 - uy0 : self.y0 - uy0 + ph, self.x0 - ux0 : self.x0 - ux0 + pw] = (
+            self.patch
+        )
 
         # Get a slice for the "other"'s portion of the union
-        psub = p[oy0 - uy0: oy0 - uy0 + oh,
-                 ox0 - ux0: ox0 - ux0 + ow]
+        psub = p[oy0 - uy0 : oy0 - uy0 + oh, ox0 - ux0 : ox0 - ux0 + ow]
         # Perform the in-place += or -= operation on "psub"
         op = getattr(psub, opname)
         op(other.getImage())
         return Patch(ux0, uy0, p)
 
     def __add__(self, other):
-        return self.performArithmetic(other, '__iadd__')
+        return self.performArithmetic(other, "__iadd__")
 
     def __sub__(self, other):
-        return self.performArithmetic(other, '__isub__')
+        return self.performArithmetic(other, "__isub__")

@@ -10,9 +10,18 @@ source — no error, no warning. The quickstart's own PSF hit this.
 import numpy as np
 import pytest
 
-from tractor_jax import (Catalog, Flux, GaussianMixturePSF,
-                         HybridPixelizedPSF, Image, NCircularGaussianPSF,
-                         PixelizedPSF, PixPos, PointSource, Tractor)
+from tractor_jax import (
+    Catalog,
+    Flux,
+    GaussianMixturePSF,
+    HybridPixelizedPSF,
+    Image,
+    NCircularGaussianPSF,
+    PixelizedPSF,
+    PixPos,
+    PointSource,
+    Tractor,
+)
 from tractor_jax.jax.optimizer import optimize_fluxes, psf_kind
 
 H = W = 50
@@ -22,38 +31,41 @@ TRUTH = [(24.0, 27.0, 100.0), (31.0, 18.0, 40.0)]
 
 
 def _mog_psf():
-    return GaussianMixturePSF(np.array([1.0]), np.zeros((1, 2)),
-                              np.array([[[SIGMA ** 2, 0.0], [0.0, SIGMA ** 2]]]))
+    return GaussianMixturePSF(
+        np.array([1.0]),
+        np.zeros((1, 2)),
+        np.array([[[SIGMA**2, 0.0], [0.0, SIGMA**2]]]),
+    )
 
 
 def _pixelized_psf(n=21):
     c = (n - 1) / 2.0
     yy, xx = np.mgrid[0:n, 0:n]
-    g = np.exp(-((xx - c) ** 2 + (yy - c) ** 2) / (2 * SIGMA ** 2))
+    g = np.exp(-((xx - c) ** 2 + (yy - c) ** 2) / (2 * SIGMA**2))
     return PixelizedPSF((g / g.sum()).astype(np.float32))
 
 
 def _fit(psf):
     catalog = Catalog(*[PointSource(PixPos(x, y), Flux(f)) for x, y, f in TRUTH])
-    image = Image(data=np.zeros((H, W)), inverr=np.full((H, W), 1.0 / NOISE),
-                  psf=psf)
+    image = Image(data=np.zeros((H, W)), inverr=np.full((H, W), 1.0 / NOISE), psf=psf)
     tractor = Tractor([image], catalog)
     clean = np.asarray(tractor.getModelImage(0))
     rng = np.random.default_rng(0)
     tractor.images[0].data = clean + rng.normal(0.0, NOISE, (H, W))
-    fluxes, variances = optimize_fluxes(tractor, solver="eigfloor",
-                                        return_variances=True,
-                                        use_sharding=False)[0]
+    fluxes, variances = optimize_fluxes(
+        tractor, solver="eigfloor", return_variances=True, use_sharding=False
+    )[0]
     return np.asarray(fluxes), np.asarray(variances)
 
 
 @pytest.mark.parametrize("name", ["ncircular", "mog", "pixelized", "hybrid"])
 def test_every_psf_type_is_fitted(name):
-    psf = {"ncircular": lambda: NCircularGaussianPSF([SIGMA], [1.0]),
-           "mog": _mog_psf,
-           "pixelized": _pixelized_psf,
-           "hybrid": lambda: HybridPixelizedPSF(_pixelized_psf(),
-                                                gauss=_mog_psf())}[name]()
+    psf = {
+        "ncircular": lambda: NCircularGaussianPSF([SIGMA], [1.0]),
+        "mog": _mog_psf,
+        "pixelized": _pixelized_psf,
+        "hybrid": lambda: HybridPixelizedPSF(_pixelized_psf(), gauss=_mog_psf()),
+    }[name]()
     fluxes, variances = _fit(psf)
     truth = np.array([f for _, _, f in TRUTH])
 
@@ -72,8 +84,10 @@ def test_psf_types_agree_with_each_other():
 
 def test_psf_kind_classifies():
     assert psf_kind(_pixelized_psf())[0] == "pixelized"
-    assert psf_kind(HybridPixelizedPSF(_pixelized_psf(),
-                                       gauss=_mog_psf()))[0] == "pixelized"
+    assert (
+        psf_kind(HybridPixelizedPSF(_pixelized_psf(), gauss=_mog_psf()))[0]
+        == "pixelized"
+    )
     for psf in (_mog_psf(), NCircularGaussianPSF([SIGMA], [1.0])):
         kind, mog = psf_kind(psf)
         assert kind == "mog" and hasattr(mog, "amp")

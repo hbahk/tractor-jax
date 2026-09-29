@@ -63,7 +63,11 @@ html_theme_options = {
     "nav_links": [
         {"title": "Quickstart", "url": "quickstart"},
         {"title": "API", "url": "api"},
-        {"title": "SPHEREx layer", "url": "https://tractorjax-spherex.readthedocs.io/", "external": True},
+        {
+            "title": "SPHEREx layer",
+            "url": "https://tractorjax-spherex.readthedocs.io/",
+            "external": True,
+        },
     ],
 }
 html_favicon = "_static/favicon.svg"

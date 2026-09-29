@@ -17,22 +17,39 @@ from tractor_jax.utils import MultiParams
 from tractor_jax import mixture_profiles as mp
 
 from tractor_jax.tractortime import TAITime
-from tractor_jax.psf import (PixelizedPSF, GaussianMixturePSF,
-                         GaussianMixtureEllipsePSF, NCircularGaussianPSF)
-from tractor_jax.wcs import (NullWCS, PixPos, RaDecPos)
+from tractor_jax.psf import (
+    PixelizedPSF,
+    GaussianMixturePSF,
+    GaussianMixtureEllipsePSF,
+    NCircularGaussianPSF,
+)
+from tractor_jax.wcs import NullWCS, PixPos, RaDecPos
 from tractor_jax.sky import NullSky, ConstantSky
-from tractor_jax.brightness import (Mag, Flux, Mags, Fluxes, NanoMaggies,
-                                FluxesPhotoCal, MagsPhotoCal, NullPhotoCal,
-                                LinearPhotoCal)
+from tractor_jax.brightness import (
+    Mag,
+    Flux,
+    Mags,
+    Fluxes,
+    NanoMaggies,
+    FluxesPhotoCal,
+    MagsPhotoCal,
+    NullPhotoCal,
+    LinearPhotoCal,
+)
 from tractor_jax.pointsource import BasicSource, SingleProfileSource, PointSource
-from tractor_jax.shifted import (ParamsWrapper, ShiftedPsf, ScaledPhotoCal,
-                             ScaledWcs, ShiftedWcs)
+from tractor_jax.shifted import (
+    ParamsWrapper,
+    ShiftedPsf,
+    ScaledPhotoCal,
+    ScaledWcs,
+    ShiftedWcs,
+)
 
 
 class TractorWCSWrapper(object):
-    '''Wraps a Tractor WCS object to look like an
+    """Wraps a Tractor WCS object to look like an
     astrometry.util.util.Tan/Sip object.
-    '''
+    """
 
     def __init__(self, wcs, w, h, x0=0, y0=0):
         self.wcs = wcs
@@ -48,13 +65,13 @@ class TractorWCSWrapper(object):
 
     def radec2pixelxy(self, ra, dec):
         # Vectorized?
-        if hasattr(ra, '__len__') or hasattr(dec, '__len__'):
+        if hasattr(ra, "__len__") or hasattr(dec, "__len__"):
             try:
                 b = np.broadcast(ra, dec)
                 ok = np.ones(b.shape, bool)
                 x = np.zeros(b.shape)
                 y = np.zeros(b.shape)
-                rd = RaDecPos(0., 0.)
+                rd = RaDecPos(0.0, 0.0)
                 for i, (r, d) in enumerate(b):
                     rd.ra = r
                     rd.dec = d

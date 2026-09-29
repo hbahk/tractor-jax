@@ -1,5 +1,6 @@
 import time
 
+
 class TAITime(object):
     def __init__(self, t=None):
         if t is None:

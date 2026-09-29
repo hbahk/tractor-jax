@@ -1,7 +1,9 @@
 from __future__ import print_function
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     import matplotlib
-    matplotlib.use('Agg')
+
+    matplotlib.use("Agg")
     import pylab as plt
     from astrometry.util.plotutils import *
     from tractor_jax.galaxy import *
@@ -13,7 +15,7 @@ from tractor_jax.utils import ParamList
 
 
 class EllipseE(ParamList):
-    '''Ellipse parameterization with r, e1, e2.
+    """Ellipse parameterization with r, e1, e2.
 
     The parameters are the effective radius ``re`` (arcsec) and the
     two ellipticity components ``e1``, ``e2`` (dimensionless).
@@ -32,7 +34,8 @@ class EllipseE(ParamList):
         angle = deg2rad(-2 * phi)
         e1 = e * cos(angle)
         e2 = e * sin(angle)
-    '''
+    """
+
     @staticmethod
     def getName():
         return "EllipseE"
@@ -48,24 +51,24 @@ class EllipseE(ParamList):
         super(EllipseE, self).__init__(*args, **kwargs)
         self.stepsizes = [0.01] * 3
         # Parameter limits
-        self.lowers = [0., -1., -1.]
-        self.uppers = [None, 1., 1.]
-        self.maxstep = [1., 0.1, 0.1]
+        self.lowers = [0.0, -1.0, -1.0]
+        self.uppers = [None, 1.0, 1.0]
+        self.maxstep = [1.0, 0.1, 0.1]
 
     @staticmethod
     def fromEllipseESoft(esoft, maxe=0.999999):
         re = esoft.re
         e = min(maxe, esoft.e)
         theta = esoft.theta
-        e1 = e * math.cos(2. * theta)
-        e2 = e * math.sin(2. * theta)
+        e1 = e * math.cos(2.0 * theta)
+        e2 = e * math.sin(2.0 * theta)
         return EllipseE(re, e1, e2)
 
     @staticmethod
     def fromRAbPhi(r, ba, phi):
-        ab = 1. / ba
+        ab = 1.0 / ba
         e = (ab - 1) / (ab + 1)
-        angle = math.radians(2. * (-phi))
+        angle = math.radians(2.0 * (-phi))
         e1 = e * math.cos(angle)
         e2 = e * math.sin(angle)
         return EllipseE(r, e1, e2)
@@ -84,49 +87,47 @@ class EllipseE(ParamList):
 
     @property
     def theta(self):
-        '''Position angle in *radians*.
+        """Position angle in *radians*.
 
         Returns
         -------
         float
             The position angle, in radians.
-        '''
-        return math.atan2(self.e2, self.e1) / 2.
+        """
+        return math.atan2(self.e2, self.e1) / 2.0
 
     @property
     def ab(self):
-        '''Minor/major axis ratio.
+        """Minor/major axis ratio.
 
         Returns
         -------
         float
             The minor/major axis ratio.
-        '''
+        """
         e = self.e
-        return (1. - e) / (1. + e)
+        return (1.0 - e) / (1.0 + e)
 
     def __repr__(self):
-        return 're=%g, e1=%g, e2=%g' % (self.re, self.e1, self.e2)
+        return "re=%g, e1=%g, e2=%g" % (self.re, self.e1, self.e2)
 
     def __str__(self):
-        return self.getName() + ': ' + repr(self)
+        return self.getName() + ": " + repr(self)
 
     def getAllStepSizes(self, *args, **kwargs):
         # re
         # e1,e2: step toward e=0
-        ss = [0.01,
-              0.01 if self.e1 <= 0 else -0.01,
-              0.01 if self.e2 <= 0 else -0.01]
+        ss = [0.01, 0.01 if self.e1 <= 0 else -0.01, 0.01 if self.e2 <= 0 else -0.01]
         return ss
 
     def isLegal(self):
-        return ((self.e1**2 + self.e2**2) < 1.) and (self.re >= 0.)
+        return ((self.e1**2 + self.e2**2) < 1.0) and (self.re >= 0.0)
 
     def toEllipseE(self, **kwargs):
         return self.copy()
 
     def getCovariance(self):
-        '''Return a covariance matrix corresponding to this ellipse.
+        """Return a covariance matrix corresponding to this ellipse.
 
         Returns
         -------
@@ -134,14 +135,14 @@ class EllipseE(ParamList):
             A covariance matrix that when, eg, used in a Gaussian
             results in iso-density contours that lie on this ellipse.
             The units are arcsec**2.
-        '''
+        """
         G = self.getRaDecBasis()
-        G *= 3600.
+        G *= 3600.0
         GGT = np.dot(G, G.T)
         return GGT
 
     def getRaDecBasis(self):
-        '''Return a transformation matrix that takes vectors in ``r_e``
+        """Return a transformation matrix that takes vectors in ``r_e``
         to delta-RA, delta-Dec vectors.
 
         Returns
@@ -149,7 +150,7 @@ class EllipseE(ParamList):
         numpy.ndarray
             A ``(2, 2)`` matrix taking unit vectors (in ``r_e``) to
             degrees (~intermediate world coords).
-        '''
+        """
         theta = self.theta
         ct = math.cos(theta)
         st = math.sin(theta)
@@ -165,16 +166,15 @@ class EllipseE(ParamList):
         #     return costheta, sintheta
 
         e = self.e
-        maxab = 1000.
-        if e >= 1.:
+        maxab = 1000.0
+        if e >= 1.0:
             ab = maxab
         else:
-            ab = min(maxab, (1. + e) / (1. - e))
-        r_deg = self.re / 3600.
+            ab = min(maxab, (1.0 + e) / (1.0 - e))
+        r_deg = self.re / 3600.0
 
         # G takes unit vectors (in r_e) to degrees (~intermediate world coords)
-        G = r_deg * np.array([[ct / ab, st],
-                              [-st / ab, ct]])
+        G = r_deg * np.array([[ct / ab, st], [-st / ab, ct]])
         return G
 
     def getTensor(self, cd):
@@ -185,8 +185,9 @@ class EllipseE(ParamList):
         T = np.dot(np.linalg.inv(G), cd)
         return T
 
+
 class EllipseESoft(EllipseE):
-    '''An alternate implementation of the ellipse describing a galaxy
+    """An alternate implementation of the ellipse describing a galaxy
     shape.
 
     Can be used as a drop-in replacement of the "GalaxyShape" class
@@ -202,7 +203,8 @@ class EllipseESoft(EllipseE):
     In this class, we use "ee" to indicate the "softened" parameters
     (before they have gone through the sigmoid to bring them into
     ``|e| < 1``), and "e" to indicate the usual, unsoftened versions.
-    '''
+    """
+
     @staticmethod
     def getName():
         return "EllipseESoft"
@@ -226,9 +228,9 @@ class EllipseESoft(EllipseE):
         e = ell.e
         e = min(e, maxe)
         if e == 0:
-            e1 = e2 = 0.
+            e1 = e2 = 0.0
         else:
-            esoft = -math.log(1. - e)
+            esoft = -math.log(1.0 - e)
             e1 = ell.e1 / e * esoft
             e2 = ell.e2 / e * esoft
         return EllipseESoft(math.log(ell.re), e1, e2)
@@ -244,10 +246,10 @@ class EllipseESoft(EllipseE):
 
     @staticmethod
     def rAbPhiToESoft(r, ba, phi):
-        ab = 1. / ba
+        ab = 1.0 / ba
         e = (ab - 1) / (ab + 1)
         ee = -math.log(1 - e)
-        angle = math.radians(2. * (-phi))
+        angle = math.radians(2.0 * (-phi))
         ee1 = ee * math.cos(angle)
         ee2 = ee * math.sin(angle)
         return (math.log(r), ee1, ee2)
@@ -256,7 +258,7 @@ class EllipseESoft(EllipseE):
     #    return [0.01] * 3
 
     def __repr__(self):
-        return 'log r_e=%g, ee1=%g, ee2=%g' % (self.logre, self.ee1, self.ee2)
+        return "log r_e=%g, ee1=%g, ee2=%g" % (self.logre, self.ee1, self.ee2)
 
     @property
     def re(self):
@@ -264,37 +266,37 @@ class EllipseESoft(EllipseE):
 
     @property
     def e(self):
-        '''The "usual" ellipticity ``e`` in [0, 1].
+        """The "usual" ellipticity ``e`` in [0, 1].
 
         Returns
         -------
         float
             The unsoftened ellipticity.
-        '''
+        """
         ee = math.hypot(self.ee1, self.ee2)
-        return 1. - math.exp(-ee)
+        return 1.0 - math.exp(-ee)
 
     @property
     def softe(self):
-        '''The "softened" ellipticity ``ee`` in [0, inf].
+        """The "softened" ellipticity ``ee`` in [0, inf].
 
         Returns
         -------
         float
             The softened ellipticity.
-        '''
+        """
         return math.hypot(self.ee1, self.ee2)
 
     @property
     def theta(self):
-        '''Position angle in *radians*.
+        """Position angle in *radians*.
 
         Returns
         -------
         float
             The position angle, in radians.
-        '''
-        return math.atan2(self.ee2, self.ee1) / 2.
+        """
+        return math.atan2(self.ee2, self.ee1) / 2.0
 
     # Have to override this because all parameter values are legal,
     # unlike the superclass.
@@ -305,79 +307,79 @@ class EllipseESoft(EllipseE):
         return EllipseESoft.fromEllipseESoft(self, maxe=maxe)
 
 
-if __name__ == '__main__':
-    ps = PlotSequence('ell')
+if __name__ == "__main__":
+    ps = PlotSequence("ell")
 
-    #r,ab,phi = 1., 0.5, 55.
-    for r, ab, phi in [(1., 1.0, 0.),
-                       (1., 0.5, 0.),
-                       (2., 0.25, 0.),
-                       (2., 0.5, 90.),
-                       (2., 0.5, 180.),
-                       (2., 0.5, 45.),
-                       (2., 0.5, 30.),
-                       (2., 0.1, -30.),
-                       ]:
+    # r,ab,phi = 1., 0.5, 55.
+    for r, ab, phi in [
+        (1.0, 1.0, 0.0),
+        (1.0, 0.5, 0.0),
+        (2.0, 0.25, 0.0),
+        (2.0, 0.5, 90.0),
+        (2.0, 0.5, 180.0),
+        (2.0, 0.5, 45.0),
+        (2.0, 0.5, 30.0),
+        (2.0, 0.1, -30.0),
+    ]:
         ell = GalaxyShape(r, ab, phi)
-        print('ell:', ell)
+        print("ell:", ell)
         ebasis = ell.getRaDecBasis()
-        print('basis:', ebasis)
+        print("basis:", ebasis)
 
         esoft = EllipseESoft.fromRAbPhi(r, ab, phi)
-        print('soft:', esoft)
+        print("soft:", esoft)
         sbasis = esoft.getRaDecBasis()
-        print('basis:', sbasis)
+        print("basis:", sbasis)
 
         enorm = EllipseE.fromRAbPhi(r, ab, phi)
-        print('e normal:', enorm)
+        print("e normal:", enorm)
         nbasis = enorm.getRaDecBasis()
-        print('basis:', nbasis)
+        print("basis:", nbasis)
 
-        angle = np.linspace(0., 2. * np.pi, 100)
+        angle = np.linspace(0.0, 2.0 * np.pi, 100)
         xx, yy = np.sin(angle), np.cos(angle)
-        xy = np.vstack((xx, yy)) * 3600.
+        xy = np.vstack((xx, yy)) * 3600.0
 
         plt.clf()
         txy = np.dot(ebasis, xy)
-        plt.plot(txy[0, :], txy[1, :], 'r-', alpha=0.25, lw=4)
+        plt.plot(txy[0, :], txy[1, :], "r-", alpha=0.25, lw=4)
         txy = np.dot(sbasis, xy)
-        plt.plot(txy[0, :], txy[1, :], 'b-', alpha=0.5, lw=2)
+        plt.plot(txy[0, :], txy[1, :], "b-", alpha=0.5, lw=2)
         txy = np.dot(nbasis, xy)
-        plt.plot(txy[0, :], txy[1, :], 'g-', alpha=0.8)
-        plt.axis('equal')
+        plt.plot(txy[0, :], txy[1, :], "g-", alpha=0.8)
+        plt.axis("equal")
         ps.savefig()
 
-    angle = np.linspace(0., 2. * np.pi, 20)
+    angle = np.linspace(0.0, 2.0 * np.pi, 20)
     xx, yy = np.sin(angle), np.cos(angle)
     xy = np.vstack((xx, yy))
     # print 'xy', xy.shape
 
     n1, n2 = 7, 7
-    E1, E2 = np.meshgrid(np.linspace(-1.2, 1.2, n2),
-                         np.linspace(-1.2, 1.2, n2))
+    E1, E2 = np.meshgrid(np.linspace(-1.2, 1.2, n2), np.linspace(-1.2, 1.2, n2))
 
     plt.clf()
-    for logre, cc in zip([4, 5, 6], 'rgb'):
+    for logre, cc in zip([4, 5, 6], "rgb"):
         for e1, e2 in zip(E1.ravel(), E2.ravel()):
             e = EllipseESoft(logre, e1, e2)
             print(e)
 
-            #ec = e.copy()
+            # ec = e.copy()
             # print 'Copy:', ec
 
             T = e.getRaDecBasis()
             # print 'T', T
             txy = np.dot(T, xy)
             # print 'txy', txy.shape
-            plt.plot(e1 + txy[0, :], e2 + txy[1, :], '-', color=cc, alpha=0.5)
-    plt.xlabel('ee1')
-    plt.ylabel('ee2')
-    plt.axis('scaled')
-    plt.title('EllipseESoft')
+            plt.plot(e1 + txy[0, :], e2 + txy[1, :], "-", color=cc, alpha=0.5)
+    plt.xlabel("ee1")
+    plt.ylabel("ee2")
+    plt.axis("scaled")
+    plt.title("EllipseESoft")
     ps.savefig()
 
     plt.clf()
-    for re, cc in zip([np.exp(4.), np.exp(5.), np.exp(6.)], 'rgb'):
+    for re, cc in zip([np.exp(4.0), np.exp(5.0), np.exp(6.0)], "rgb"):
         for e1, e2 in zip(E1.ravel(), E2.ravel()):
             e = EllipseE(re, e1, e2)
             print(e)
@@ -385,39 +387,53 @@ if __name__ == '__main__':
             # print 'T', T
             txy = np.dot(T, xy)
             # print 'txy', txy.shape
-            plt.plot(e1 + txy[0, :], e2 + txy[1, :], '-', color=cc, alpha=0.5)
-    plt.xlabel('e1')
-    plt.ylabel('e2')
-    plt.axis('scaled')
-    plt.title('EllipseE')
+            plt.plot(e1 + txy[0, :], e2 + txy[1, :], "-", color=cc, alpha=0.5)
+    plt.xlabel("e1")
+    plt.ylabel("e2")
+    plt.axis("scaled")
+    plt.title("EllipseE")
     ps.savefig()
 
     from tractor_jax.psf import NCircularGaussianPSF
-    from tractor_jax import Image, NullWCS, ConstantSky, LinearPhotoCal, PixPos, Flux, Tractor
+    from tractor_jax import (
+        Image,
+        NullWCS,
+        ConstantSky,
+        LinearPhotoCal,
+        PixPos,
+        Flux,
+        Tractor,
+    )
+
     W, H = 500, 500
     img = np.zeros((H, W), np.float32)
-    sig1 = 1.
-    pixscale = 1.
-    psf = NCircularGaussianPSF([1.5], [1.])
-    tim = Image(data=img, inverr=np.zeros_like(img) + (1. / sig1),
-                psf=psf, wcs=NullWCS(pixscale=pixscale), sky=ConstantSky(0.),
-                photocal=LinearPhotoCal(1.),
-                domask=False, zr=[-2. * sig1, 3. * sig1])
+    sig1 = 1.0
+    pixscale = 1.0
+    psf = NCircularGaussianPSF([1.5], [1.0])
+    tim = Image(
+        data=img,
+        inverr=np.zeros_like(img) + (1.0 / sig1),
+        psf=psf,
+        wcs=NullWCS(pixscale=pixscale),
+        sky=ConstantSky(0.0),
+        photocal=LinearPhotoCal(1.0),
+        domask=False,
+        zr=[-2.0 * sig1, 3.0 * sig1],
+    )
 
     cat = []
-    logre = 3.
+    logre = 3.0
     x = np.linspace(0, W, n1, endpoint=False)
-    x += (x[1] - x[0]) / 2.
+    x += (x[1] - x[0]) / 2.0
     y = np.linspace(0, H, n2, endpoint=False)
-    y += (y[1] - y[0]) / 2.
+    y += (y[1] - y[0]) / 2.0
     xx, yy = np.meshgrid(x, y)
     for e1, e2, x, y in zip(E1.ravel(), E2.ravel(), xx.ravel(), yy.ravel()):
         e = EllipseESoft(logre, e1, e2)
-        gal = ExpGalaxy(PixPos(x, y), Flux(500. * sig1), e)
+        gal = ExpGalaxy(PixPos(x, y), Flux(500.0 * sig1), e)
         # FIXME -- if 'halfsize' is not set, checks e.ab, e.re, etc.
-        gal.halfsize = int(
-            np.ceil(gal.nre * np.exp(logre) / (pixscale / 3600.)))
-        print('Galaxy', gal)
+        gal.halfsize = int(np.ceil(gal.nre * np.exp(logre) / (pixscale / 3600.0)))
+        print("Galaxy", gal)
         cat.append(gal)
 
         # theta = math.atan2(e2, e1) / 2.
@@ -432,8 +448,13 @@ if __name__ == '__main__':
         # px,py = tim.wcs.positionToPixel(gal.pos)
         # print 'px,py', px,py
 
-    ima = dict(interpolation='nearest', origin='lower', cmap='gray',
-               vmin=-1 * sig1, vmax=3 * sig1)
+    ima = dict(
+        interpolation="nearest",
+        origin="lower",
+        cmap="gray",
+        vmin=-1 * sig1,
+        vmax=3 * sig1,
+    )
 
     tractor = Tractor([tim], cat)
     mod = tractor.getModelImage(0)

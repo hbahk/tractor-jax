@@ -8,6 +8,7 @@ from tractor_jax.wcs import PixPos
 from tractor_jax.psf import PixelizedPSF
 from tractor_jax.jax.optimizer import optimize_fluxes
 
+
 class TestJaxSharding(unittest.TestCase):
     def test_sharding_execution(self):
         """
@@ -16,16 +17,16 @@ class TestJaxSharding(unittest.TestCase):
         print("\nTesting JAX optimization with sharding...")
 
         # 1. Setup Scene with Multiple Images
-        N_img = 4 # Enough to shard if we had devices, or just batch on 1 device
+        N_img = 4  # Enough to shard if we had devices, or just batch on 1 device
         H, W = 20, 20
 
         # Simple Gaussian PSF
         psf_h, psf_w = 11, 11
         y, x = np.indices((psf_h, psf_w))
         sigma = 2.0
-        psf_img = np.exp(-((x - 5)**2 + (y - 5)**2) / (2 * sigma**2))
+        psf_img = np.exp(-((x - 5) ** 2 + (y - 5) ** 2) / (2 * sigma**2))
         psf_img /= psf_img.sum()
-        psf = PixelizedPSF(psf_img, sampling=1.0) # Simple sampling
+        psf = PixelizedPSF(psf_img, sampling=1.0)  # Simple sampling
 
         # Source
         src_pos = PixPos(10.0, 10.0)
@@ -63,7 +64,7 @@ class TestJaxSharding(unittest.TestCase):
 
             tim = Image(
                 data=data,
-                inverr=np.ones((H, W)), # Sigma=1
+                inverr=np.ones((H, W)),  # Sigma=1
                 psf=psf,
                 wcs=NullWCS(),
                 sky=ConstantSky(0.0),
@@ -73,7 +74,7 @@ class TestJaxSharding(unittest.TestCase):
         tractor = Tractor(images, [src])
 
         # Perturb initial flux
-        src.brightness.setParams([500.0]) # Start far from 1000
+        src.brightness.setParams([500.0])  # Start far from 1000
 
         # 2. Run Optimization with Sharding
         # This calls prepare_sharded_inputs internally
@@ -86,7 +87,7 @@ class TestJaxSharding(unittest.TestCase):
             fit_background=False,
             update_catalog=True,
             vmap_images=True,
-            use_sharding=True
+            use_sharding=True,
         )
 
         # 3. Verify Results
@@ -96,7 +97,9 @@ class TestJaxSharding(unittest.TestCase):
             # Flux should be close to 1000. Variance should be roughly 1/sum(psf^2) ?
             # sum(psf^2) is roughly 1/(4*pi*sigma^2) approx 1/50.
             # var approx 50?
-            self.assertTrue(abs(flux[0] - true_flux) < 50.0, f"Flux failed to converge: {flux[0]}")
+            self.assertTrue(
+                abs(flux[0] - true_flux) < 50.0, f"Flux failed to converge: {flux[0]}"
+            )
 
         # Check if catalog was updated (Should NOT be for multiple images)
         curr_flux = src.brightness.getParams()[0]
@@ -107,14 +110,12 @@ class TestJaxSharding(unittest.TestCase):
         tractor1 = Tractor([images[0]], [src])
         src.brightness.setParams([500.0])
         optimize_fluxes(
-            tractor1,
-            update_catalog=True,
-            vmap_images=True,
-            use_sharding=True
+            tractor1, update_catalog=True, vmap_images=True, use_sharding=True
         )
         curr_flux_1 = src.brightness.getParams()[0]
         print(f"Catalog Flux (should be updated): {curr_flux_1:.2f}")
         self.assertTrue(abs(curr_flux_1 - true_flux) < 50.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,7 +5,8 @@ from tractor_jax.utils import MultiParams
 from tractor_jax.patch import ModelMask
 from tractor_jax import ducks
 
-ct1 = np.zeros(2,dtype=np.int32)
+ct1 = np.zeros(2, dtype=np.int32)
+
 
 class BasicSource(ducks.Source):
     def getPosition(self):
@@ -16,12 +17,12 @@ class BasicSource(ducks.Source):
 
 
 class SingleProfileSource(BasicSource):
-    '''A mix-in class for Source objects that have a single profile.
+    """A mix-in class for Source objects that have a single profile.
 
     Examples include PointSources, Dev, Exp, and Sersic galaxies, and
     also FixedCompositeGalaxy (surprising but true) but not
     CompositeGalaxy.
-    '''
+    """
 
     def getBrightness(self):
         return self.brightness
@@ -37,7 +38,7 @@ class SingleProfileSource(BasicSource):
 
     def getModelPatch(self, img, minsb=None, modelMask=None, **kwargs):
         ct1[0] += 1
-        #print ("CT1:", ct1)
+        # print ("CT1:", ct1)
         counts = img.getPhotoCal().brightnessToCounts(self.brightness)
         if counts == 0:
             return None
@@ -47,30 +48,31 @@ class SingleProfileSource(BasicSource):
         if minsb is None:
             minsb = img.modelMinval
         minval = minsb / counts
-        upatch = self.getUnitFluxModelPatch(img, minval=minval,
-                                            modelMask=modelMask, **kwargs)
+        upatch = self.getUnitFluxModelPatch(
+            img, minval=minval, modelMask=modelMask, **kwargs
+        )
 
         if upatch is None:
             return None
         if upatch.patch is not None:
-            assert(np.all(np.isfinite(upatch.patch)))
+            assert np.all(np.isfinite(upatch.patch))
 
         # print('getModelPatch: unit-patch sum', np.sum(upatch.patch), 'counts', counts,
         #      'scaled sum:', np.sum(upatch.patch * counts))
 
         p = upatch * counts
         if p.patch is not None:
-            assert(np.all(np.isfinite(p.patch)))
+            assert np.all(np.isfinite(p.patch))
         return p
 
 
 class PointSource(MultiParams, SingleProfileSource):
-    '''An implementation of a point source, characterized by its
+    """An implementation of a point source, characterized by its
     position and brightness.
-    '''
+    """
 
     def __init__(self, pos, br):
-        '''Create a PointSource.
+        """Create a PointSource.
 
         Parameters
         ----------
@@ -78,7 +80,7 @@ class PointSource(MultiParams, SingleProfileSource):
             The position of the source.
         br : Brightness
             The brightness of the source.
-        '''
+        """
         super(PointSource, self).__init__(pos, br)
         # if not None, fixedRadius determines the size of unit-flux
         # model Patches produced for this PointSource.
@@ -98,57 +100,72 @@ class PointSource(MultiParams, SingleProfileSource):
         return dict(pos=0, brightness=1)
 
     def getSourceType(self):
-        return 'PointSource'
+        return "PointSource"
 
     def __str__(self):
-        return (self.getSourceType() + ' at ' + str(self.pos) +
-                ' with ' + str(self.brightness))
+        return (
+            self.getSourceType()
+            + " at "
+            + str(self.pos)
+            + " with "
+            + str(self.brightness)
+        )
 
     def __repr__(self):
-        return (self.getSourceType() + '(' + repr(self.pos) + ', ' +
-                repr(self.brightness) + ')')
+        return (
+            self.getSourceType()
+            + "("
+            + repr(self.pos)
+            + ", "
+            + repr(self.brightness)
+            + ")"
+        )
 
-    def getUnitFluxModelPatch(self, img, minval=0., derivs=False,
-                              modelMask=None, **kwargs):
+    def getUnitFluxModelPatch(
+        self, img, minval=0.0, derivs=False, modelMask=None, **kwargs
+    ):
         ct1[1] += 1
-        #print ("CT1:", ct1)
-        (px, py) = img.getWcs().positionToPixel(self.getPosition(), self)
+        # print ("CT1:", ct1)
+        px, py = img.getWcs().positionToPixel(self.getPosition(), self)
         H, W = img.shape
         psf = self._getPsf(img)
         # quit early if the requested position is way outside the image bounds
         r = self.fixedRadius
-        #print ("R1", r)
+        # print ("R1", r)
         if r is None:
             r = psf.getRadius()
-            #print ("R2", r)
-        #print ("PSFR", psf.getRadius())
-        #print ("PX", px, py, r)
-        #print (px+r, px-r, py+r, py-r)
+            # print ("R2", r)
+        # print ("PSFR", psf.getRadius())
+        # print ("PX", px, py, r)
+        # print (px+r, px-r, py+r, py-r)
         if px + r < 0 or px - r > W or py + r < 0 or py - r > H:
             return None
 
         clipExtent = None
-        #print ("MM", modelMask)
+        # print ("MM", modelMask)
         if modelMask is None:
             # max extent
             clipExtent = [0, W, 0, H]
 
-        #print ("PSF", type(psf), psf)
-        #print (psf.getPointSourcePatch)
-        patch = psf.getPointSourcePatch(px, py, minval=minval,
-                                        radius=self.fixedRadius,
-                                        derivs=derivs,
-                                        minradius=self.minRadius,
-                                        modelMask=modelMask,
-                                        clipExtent=clipExtent)
+        # print ("PSF", type(psf), psf)
+        # print (psf.getPointSourcePatch)
+        patch = psf.getPointSourcePatch(
+            px,
+            py,
+            minval=minval,
+            radius=self.fixedRadius,
+            derivs=derivs,
+            minradius=self.minRadius,
+            modelMask=modelMask,
+            clipExtent=clipExtent,
+        )
         return patch
 
     def _getPsf(self, img):
         return img.getPsf()
 
-    def getParamDerivatives(self, img, fastPosDerivs=True, modelMask=None,
-                            **kwargs):
-        '''Return the derivatives of this source in the given image.
+    def getParamDerivatives(self, img, fastPosDerivs=True, modelMask=None, **kwargs):
+        """Return the derivatives of this source in the given image.
 
         Parameters
         ----------
@@ -164,28 +181,28 @@ class PointSource(MultiParams, SingleProfileSource):
         -------
         list of Patch
             ``[ Patch, Patch, ... ]`` of length ``numberOfParams()``.
-        '''
+        """
         # Short-cut the case where we're only fitting fluxes, and the
         # band of the image is not being fit.
 
-        pos_frozen = self.isParamFrozen('pos')
-        bright_frozen = self.isParamFrozen('brightness')
+        pos_frozen = self.isParamFrozen("pos")
+        bright_frozen = self.isParamFrozen("brightness")
 
         counts0 = img.getPhotoCal().brightnessToCounts(self.brightness)
         if pos_frozen and not bright_frozen:
             bsteps = self.brightness.getStepSizes(img)
             bvals = self.brightness.getParams()
             allzero = True
-            #print (f'{bsteps=} {bvals=}')
-            #print (type(bsteps), type(bvals))
+            # print (f'{bsteps=} {bvals=}')
+            # print (type(bsteps), type(bvals))
             for i, bstep in enumerate(bsteps):
                 oldval = self.brightness.setParam(i, bvals[i] + bstep)
                 countsi = img.getPhotoCal().brightnessToCounts(self.brightness)
                 self.brightness.setParam(i, oldval)
-                #print (f'{oldval=} {counts0=} {countsi=}')
+                # print (f'{oldval=} {counts0=} {countsi=}')
                 if countsi != counts0:
                     allzero = False
-                    #print ("NONZERO")
+                    # print ("NONZERO")
                     break
             if allzero:
                 return [None] * self.numberOfParams()
@@ -201,48 +218,50 @@ class PointSource(MultiParams, SingleProfileSource):
 
         derivs = (not pos_frozen) and fastPosDerivs
         patchdx, patchdy = None, None
-        #print ("PARAM DERIVS", minsb, minval, derivs)
-        #import traceback
-        #traceback.print_stack()
+        # print ("PARAM DERIVS", minsb, minval, derivs)
+        # import traceback
+        # traceback.print_stack()
 
         if derivs:
-            #print("A1")
-            patches = self.getUnitFluxModelPatch(img, minval=minval,
-                                                 derivs=True,
-                                                 modelMask=modelMask,
-                                                 **kwargs)
+            # print("A1")
+            patches = self.getUnitFluxModelPatch(
+                img, minval=minval, derivs=True, modelMask=modelMask, **kwargs
+            )
             if patches is None:
-                #print("A2")
+                # print("A2")
                 return [None] * self.numberOfParams()
             if not isinstance(patches, tuple):
-                #print("A3")
+                # print("A3")
                 patch0 = patches
             else:
-                #print("A4")
+                # print("A4")
                 patch0, patchdx, patchdy = patches
         else:
-            #print("A5")
-            patch0 = self.getUnitFluxModelPatch(img, minval=minval,
-                                                modelMask=modelMask,
-                                                **kwargs)
+            # print("A5")
+            patch0 = self.getUnitFluxModelPatch(
+                img, minval=minval, modelMask=modelMask, **kwargs
+            )
 
         if patch0 is None:
-            #print("A6")
+            # print("A6")
             return [None] * self.numberOfParams()
         # check for intersection of patch0 with img
         H, W = img.shape
         if not patch0.overlapsBbox((0, W, 0, H)):
-            #print("A7")
+            # print("A7")
             return [None] * self.numberOfParams()
 
         derivs = []
 
         # Position
         if not pos_frozen:
-            #print ("NOT FROZEN")
+            # print ("NOT FROZEN")
             if patchdx is not None and patchdy is not None:
-                derivs.extend(wcs.pixelDerivsToPositionDerivs(pos, self, counts0, patch0,
-                                                              patchdx, patchdy))
+                derivs.extend(
+                    wcs.pixelDerivsToPositionDerivs(
+                        pos, self, counts0, patch0, patchdx, patchdy
+                    )
+                )
             elif counts0 == 0:
                 derivs.extend([None] * pos.numberOfParams())
             else:
@@ -253,14 +272,14 @@ class PointSource(MultiParams, SingleProfileSource):
                     pdiff = pstep
                     p0 = patch0
                     oldval = pos.setParam(i, pvals[i] + pstep)
-                    patchx = self.getUnitFluxModelPatch(img, minval=minval,
-                                                        modelMask=modelMask,
-                                                        **kwargs)
-                    if getattr(pos, 'symmetric_derivs', False):
+                    patchx = self.getUnitFluxModelPatch(
+                        img, minval=minval, modelMask=modelMask, **kwargs
+                    )
+                    if getattr(pos, "symmetric_derivs", False):
                         pos.setParam(i, pvals[i] - pstep)
-                        patchmx = self.getUnitFluxModelPatch(img, minval=minval,
-                                                             modelMask=modelMask,
-                                                             **kwargs)
+                        patchmx = self.getUnitFluxModelPatch(
+                            img, minval=minval, modelMask=modelMask, **kwargs
+                        )
                         p0 = patchmx
                         pdiff = pstep * 2
 
@@ -269,12 +288,12 @@ class PointSource(MultiParams, SingleProfileSource):
                         dx = patch0 * (-1 * counts0 / pstep)
                     else:
                         dx = (patchx - p0) * (counts0 / pdiff)
-                    dx.setName('d(ptsrc)/d(pos%i)' % i)
+                    dx.setName("d(ptsrc)/d(pos%i)" % i)
                     derivs.append(dx)
 
         # Brightness
         if not bright_frozen:
-            #print ("BF")
+            # print ("BF")
             bsteps = self.brightness.getStepSizes(img)
             bvals = self.brightness.getParams()
             for i, bstep in enumerate(bsteps):
@@ -282,6 +301,6 @@ class PointSource(MultiParams, SingleProfileSource):
                 countsi = img.getPhotoCal().brightnessToCounts(self.brightness)
                 self.brightness.setParam(i, oldval)
                 df = patch0 * ((countsi - counts0) / bstep)
-                df.setName('d(ptsrc)/d(bright%i)' % i)
+                df.setName("d(ptsrc)/d(bright%i)" % i)
                 derivs.append(df)
         return derivs
