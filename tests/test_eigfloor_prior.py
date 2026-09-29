@@ -21,15 +21,16 @@ normalized Gram. Contracts checked here:
 Run in the `spherex` conda env (CPU is fine):
     JAX_PLATFORMS=cpu pytest tests/test_eigfloor_prior.py -q
 """
+
 import numpy as np
 import pytest
 
 import jax
+
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
-from tractor_jax import (Tractor, Image, PointSource, Catalog, NullWCS,
-                         ConstantSky)
+from tractor_jax import Tractor, Image, PointSource, Catalog, NullWCS, ConstantSky
 from tractor_jax.brightness import Flux
 from tractor_jax.wcs import PixPos
 from tractor_jax.psf import GaussianMixturePSF
@@ -52,11 +53,13 @@ from tractor_jax.jax.batching import (
 # --------------------------------------------------------------------------- #
 # helpers (mirrors tests/test_solver_factory.py batched_scene)
 # --------------------------------------------------------------------------- #
-def batched_scene(n_img=3, H=24, W=24, noise_sigma=0.05, seed=3,
-                  positions=None, true_fluxes=None):
+def batched_scene(
+    n_img=3, H=24, W=24, noise_sigma=0.05, seed=3, positions=None, true_fluxes=None
+):
     rng = np.random.default_rng(seed)
-    psf = GaussianMixturePSF(np.array([1.0]), np.zeros((1, 2)),
-                             np.array([[[2.5, 0.0], [0.0, 2.5]]]))
+    psf = GaussianMixturePSF(
+        np.array([1.0]), np.zeros((1, 2)), np.array([[[2.5, 0.0], [0.0, 2.5]]])
+    )
     if positions is None:
         positions = [(6.3, 6.8), (8.1, 7.4), (16.6, 15.2), (18.9, 18.1)]
     if true_fluxes is None:
@@ -67,19 +70,26 @@ def batched_scene(n_img=3, H=24, W=24, noise_sigma=0.05, seed=3,
     cat = Catalog(*srcs)
     imgs = []
     for i in range(n_img):
-        img = Image(data=np.zeros((H, W)), inverr=np.ones((H, W)) / noise_sigma,
-                    psf=psf, wcs=NullWCS(pixscale=1.0), sky=ConstantSky(0.0))
+        img = Image(
+            data=np.zeros((H, W)),
+            inverr=np.ones((H, W)) / noise_sigma,
+            psf=psf,
+            wcs=NullWCS(pixscale=1.0),
+            sky=ConstantSky(0.0),
+        )
         img.name = f"toy{i}"
         imgs.append(img)
     tr = Tractor(imgs, cat)
     images_data, batches, init_flux = extract_model_data(tr)
     for i, img in enumerate(imgs):
         single = jax.tree_util.tree_map(lambda x: x[i], images_data)
-        sb = {"PointSource": {
-            "flux_idx": batches["PointSource"]["flux_idx"][i],
-            "pos_pix": batches["PointSource"]["pos_pix"][i],
-            "mask": batches["PointSource"]["mask"][i],
-        }}
+        sb = {
+            "PointSource": {
+                "flux_idx": batches["PointSource"]["flux_idx"][i],
+                "pos_pix": batches["PointSource"]["pos_pix"][i],
+                "mask": batches["PointSource"]["mask"][i],
+            }
+        }
         model = np.array(render_image(jnp.array(true_fluxes), single, sb))[:H, :W]
         img.data += model + rng.normal(size=(H, W)) * noise_sigma
     images_data, batches, init_flux = extract_model_data(tr)
@@ -113,6 +123,7 @@ def cast_f32(tree):
         if jnp.issubdtype(x.dtype, jnp.floating):
             return x.astype(jnp.float32)
         return x
+
     return jax.tree_util.tree_map(c, tree)
 
 
@@ -140,8 +151,7 @@ def assert_allclose_normwise(got, ref, rtol):
     Folding the same rtol into an absolute term keeps the check exactly as
     strict in the norm sense without that dependence.
     """
-    np.testing.assert_allclose(got, ref, rtol=rtol,
-                               atol=rtol * np.max(np.abs(ref)))
+    np.testing.assert_allclose(got, ref, rtol=rtol, atol=rtol * np.max(np.abs(ref)))
 
 
 @pytest.fixture(scope="module")
@@ -161,31 +171,34 @@ def _fresh_cache():
 # --------------------------------------------------------------------------- #
 def test_lambda_zero_matches_eigfloor_fp64(scene):
     init, single, sb = single_image(scene)
-    f0, v0 = solve_fluxes_eigfloor(init, single, sb, return_variances=True,
-                                   floor=1e-4)
-    f1, v1 = solve_fluxes_eigfloor_prior(init, single, sb,
-                                         return_variances=True, floor=1e-4)
-    np.testing.assert_allclose(np.asarray(f1), np.asarray(f0),
-                               rtol=1e-14, atol=0)
-    np.testing.assert_allclose(np.asarray(v1), np.asarray(v0),
-                               rtol=1e-14, atol=0)
+    f0, v0 = solve_fluxes_eigfloor(init, single, sb, return_variances=True, floor=1e-4)
+    f1, v1 = solve_fluxes_eigfloor_prior(
+        init, single, sb, return_variances=True, floor=1e-4
+    )
+    np.testing.assert_allclose(np.asarray(f1), np.asarray(f0), rtol=1e-14, atol=0)
+    np.testing.assert_allclose(np.asarray(v1), np.asarray(v0), rtol=1e-14, atol=0)
 
 
 def test_lambda_zero_matches_eigfloor_float32(scene):
     """Production dtype: float32-cast scene, explicit zero prior arrays."""
     init, single, sb = single_image(scene)
     init32, single32, sb32 = cast_f32(init), cast_f32(single), cast_f32(sb)
-    f0, v0 = solve_fluxes_eigfloor(init32, single32, sb32,
-                                   return_variances=True, floor=1e-4)
+    f0, v0 = solve_fluxes_eigfloor(
+        init32, single32, sb32, return_variances=True, floor=1e-4
+    )
     lam = jnp.zeros_like(init32)
     fp = jnp.zeros_like(init32)
-    f1, v1 = solve_fluxes_eigfloor_prior(init32, single32, sb32,
-                                         lambda_diag=lam, f_prior=fp,
-                                         return_variances=True, floor=1e-4)
-    np.testing.assert_allclose(np.asarray(f1), np.asarray(f0),
-                               rtol=1e-6, atol=0)
-    np.testing.assert_allclose(np.asarray(v1), np.asarray(v0),
-                               rtol=1e-6, atol=0)
+    f1, v1 = solve_fluxes_eigfloor_prior(
+        init32,
+        single32,
+        sb32,
+        lambda_diag=lam,
+        f_prior=fp,
+        return_variances=True,
+        floor=1e-4,
+    )
+    np.testing.assert_allclose(np.asarray(f1), np.asarray(f0), rtol=1e-6, atol=0)
+    np.testing.assert_allclose(np.asarray(v1), np.asarray(v0), rtol=1e-6, atol=0)
 
 
 def test_lambda_zero_core_random_systems():
@@ -196,8 +209,7 @@ def test_lambda_zero_core_random_systems():
             G = jnp.asarray(AtWA, dtype=dt)
             b = jnp.asarray(AtWd, dtype=dt)
             z = jnp.zeros(6, dtype=dt)
-            f1, v1 = _eigfloor_prior_core(G, b, z, z, floor=1e-4,
-                                          return_variances=True)
+            f1, v1 = _eigfloor_prior_core(G, b, z, z, floor=1e-4, return_variances=True)
             # reference: the eigfloor math (unit test of the shared identity)
             D = np.sqrt(np.diag(AtWA))
             Ghat = AtWA / np.outer(D, D)
@@ -217,30 +229,37 @@ def test_lambda_zero_core_random_systems():
 # --------------------------------------------------------------------------- #
 def test_analytic_ridge_single_source():
     """1-source scene: f_hat = (AtWd + lam*f_prior) / (AtWA + lam)."""
-    sc = batched_scene(n_img=1, positions=[(11.5, 12.2)],
-                       true_fluxes=np.array([20.0]), seed=7)
+    sc = batched_scene(
+        n_img=1, positions=[(11.5, 12.2)], true_fluxes=np.array([20.0]), seed=7
+    )
     init, single, sb = single_image(sc)
     AtWA, AtWd = normal_equations(init, single, sb)
     g, b = AtWA[0, 0], AtWd[0]
 
-    lam, fp = 0.5 * g, 35.0     # prior precision comparable to the data's
+    lam, fp = 0.5 * g, 35.0  # prior precision comparable to the data's
     f, v = solve_fluxes_eigfloor_prior(
-        init, single, sb, lambda_diag=jnp.array([lam]),
-        f_prior=jnp.array([fp]), return_variances=True, floor=1e-4)
+        init,
+        single,
+        sb,
+        lambda_diag=jnp.array([lam]),
+        f_prior=jnp.array([fp]),
+        return_variances=True,
+        floor=1e-4,
+    )
     f_expect = (b + lam * fp) / (g + lam)
     np.testing.assert_allclose(float(f[0]), f_expect, rtol=1e-12)
     np.testing.assert_allclose(float(v[0]), 1.0 / (g + lam), rtol=1e-12)
     # equivalently: convex combination of OLS and the prior mean
     f_ols = b / g
     w = g / (g + lam)
-    np.testing.assert_allclose(float(f[0]), w * f_ols + (1 - w) * fp,
-                               rtol=1e-12)
+    np.testing.assert_allclose(float(f[0]), w * f_ols + (1 - w) * fp, rtol=1e-12)
 
 
 def test_sigma_limits_single_source():
     """sigma_prior -> 0 pins f -> f_prior; sigma -> inf recovers OLS."""
-    sc = batched_scene(n_img=1, positions=[(11.5, 12.2)],
-                       true_fluxes=np.array([20.0]), seed=11)
+    sc = batched_scene(
+        n_img=1, positions=[(11.5, 12.2)], true_fluxes=np.array([20.0]), seed=11
+    )
     init, single, sb = single_image(sc)
     AtWA, AtWd = normal_equations(init, single, sb)
     f_ols = AtWd[0] / AtWA[0, 0]
@@ -252,14 +271,24 @@ def test_sigma_limits_single_source():
     # so the pin lands on f_prior to ~|f_ols - f_prior|/f_prior / 1e6.
     lam_pin = 1e12 * AtWA[0, 0]
     f_pin = solve_fluxes_eigfloor_prior(
-        init, single, sb, lambda_diag=jnp.array([lam_pin]),
-        f_prior=jnp.array([fp]), floor=1e-4)
+        init,
+        single,
+        sb,
+        lambda_diag=jnp.array([lam_pin]),
+        f_prior=jnp.array([fp]),
+        floor=1e-4,
+    )
     np.testing.assert_allclose(float(f_pin[0]), fp, rtol=1e-5)
 
     # sigma -> inf: lambda -> 0, exact OLS/eigfloor.
     f_free = solve_fluxes_eigfloor_prior(
-        init, single, sb, lambda_diag=jnp.array([0.0]),
-        f_prior=jnp.array([fp]), floor=1e-4)
+        init,
+        single,
+        sb,
+        lambda_diag=jnp.array([0.0]),
+        f_prior=jnp.array([fp]),
+        floor=1e-4,
+    )
     np.testing.assert_allclose(float(f_free[0]), f_ols, rtol=1e-12)
 
 
@@ -270,10 +299,10 @@ def test_sigma_limits_multi_source_core():
     fp = np.array([1.0, -2.0, 3.0, 0.5, 4.0])
 
     # all sigma -> inf (lam = 0), tiny floor: plain OLS
-    f = _eigfloor_prior_core(jnp.asarray(AtWA), jnp.asarray(AtWd),
-                             jnp.zeros(5), jnp.asarray(fp), floor=1e-15)
-    np.testing.assert_allclose(np.asarray(f), np.linalg.solve(AtWA, AtWd),
-                               rtol=1e-10)
+    f = _eigfloor_prior_core(
+        jnp.asarray(AtWA), jnp.asarray(AtWd), jnp.zeros(5), jnp.asarray(fp), floor=1e-15
+    )
+    np.testing.assert_allclose(np.asarray(f), np.linalg.solve(AtWA, AtWd), rtol=1e-10)
 
     # pin coordinate 2 hard (sigma -> 0); floor tiny so the inflated
     # lambda_max does not damp the free coordinates. The eigh-based solve
@@ -281,8 +310,13 @@ def test_sigma_limits_multi_source_core():
     # so the pin strength and tolerances are matched (1e8 -> ~1e-8 abs).
     lam = np.zeros(5)
     lam[2] = 1e8 * AtWA[2, 2]
-    f = _eigfloor_prior_core(jnp.asarray(AtWA), jnp.asarray(AtWd),
-                             jnp.asarray(lam), jnp.asarray(fp), floor=1e-15)
+    f = _eigfloor_prior_core(
+        jnp.asarray(AtWA),
+        jnp.asarray(AtWd),
+        jnp.asarray(lam),
+        jnp.asarray(fp),
+        floor=1e-15,
+    )
     np.testing.assert_allclose(float(f[2]), fp[2], rtol=1e-6)
     f_ref = np.linalg.solve(AtWA + np.diag(lam), AtWd + lam * fp)
     np.testing.assert_allclose(np.asarray(f), f_ref, rtol=1e-5, atol=1e-7)
@@ -294,25 +328,33 @@ def test_sigma_limits_multi_source_core():
 def test_variance_matches_numpy_inverse():
     for seed in range(4):
         AtWA, AtWd, lam, fp = random_system(6, seed, lam_scale=3.0)
-        lam[0] = 0.0     # one protected coordinate
-        f, v = _eigfloor_prior_core(jnp.asarray(AtWA), jnp.asarray(AtWd),
-                                    jnp.asarray(lam), jnp.asarray(fp),
-                                    floor=1e-15, return_variances=True)
+        lam[0] = 0.0  # one protected coordinate
+        f, v = _eigfloor_prior_core(
+            jnp.asarray(AtWA),
+            jnp.asarray(AtWd),
+            jnp.asarray(lam),
+            jnp.asarray(fp),
+            floor=1e-15,
+            return_variances=True,
+        )
         cov = np.linalg.inv(AtWA + np.diag(lam))
         np.testing.assert_allclose(np.asarray(v), np.diag(cov), rtol=1e-10)
-        np.testing.assert_allclose(np.asarray(f),
-                                   cov @ (AtWd + lam * fp), rtol=1e-10)
+        np.testing.assert_allclose(np.asarray(f), cov @ (AtWd + lam * fp), rtol=1e-10)
 
 
 def test_prior_tightens_variance(scene):
     """Adding a prior can only reduce the marginal variances."""
     init, single, sb = single_image(scene)
-    _, v0 = solve_fluxes_eigfloor_prior(init, single, sb,
-                                        return_variances=True)
+    _, v0 = solve_fluxes_eigfloor_prior(init, single, sb, return_variances=True)
     lam = jnp.zeros_like(init).at[1].set(1.0)
-    _, v1 = solve_fluxes_eigfloor_prior(init, single, sb, lambda_diag=lam,
-                                        f_prior=jnp.zeros_like(init),
-                                        return_variances=True)
+    _, v1 = solve_fluxes_eigfloor_prior(
+        init,
+        single,
+        sb,
+        lambda_diag=lam,
+        f_prior=jnp.zeros_like(init),
+        return_variances=True,
+    )
     assert float(v1[1]) < float(v0[1])
 
 
@@ -329,22 +371,30 @@ def test_dead_slot_core_no_nan_no_crosstalk():
     G[:4, :4] = AtWA
     b = np.zeros(n)
     b[:4] = AtWd
-    lam5 = np.append(lam, 3.0)      # prior on the dead slot
+    lam5 = np.append(lam, 3.0)  # prior on the dead slot
     fp5 = np.append(fp, 7.0)
 
-    f5, v5 = _eigfloor_prior_core(jnp.asarray(G), jnp.asarray(b),
-                                  jnp.asarray(lam5), jnp.asarray(fp5),
-                                  floor=1e-4, return_variances=True)
-    f4, v4 = _eigfloor_prior_core(jnp.asarray(AtWA), jnp.asarray(AtWd),
-                                  jnp.asarray(lam), jnp.asarray(fp),
-                                  floor=1e-4, return_variances=True)
+    f5, v5 = _eigfloor_prior_core(
+        jnp.asarray(G),
+        jnp.asarray(b),
+        jnp.asarray(lam5),
+        jnp.asarray(fp5),
+        floor=1e-4,
+        return_variances=True,
+    )
+    f4, v4 = _eigfloor_prior_core(
+        jnp.asarray(AtWA),
+        jnp.asarray(AtWd),
+        jnp.asarray(lam),
+        jnp.asarray(fp),
+        floor=1e-4,
+        return_variances=True,
+    )
     assert np.all(np.isfinite(np.asarray(f5)))
     assert float(f5[4]) == 0.0
     assert np.isposinf(float(v5[4]))
-    np.testing.assert_allclose(np.asarray(f5)[:4], np.asarray(f4),
-                               rtol=1e-12)
-    np.testing.assert_allclose(np.asarray(v5)[:4], np.asarray(v4),
-                               rtol=1e-12)
+    np.testing.assert_allclose(np.asarray(f5)[:4], np.asarray(f4), rtol=1e-12)
+    np.testing.assert_allclose(np.asarray(v5)[:4], np.asarray(v4), rtol=1e-12)
 
 
 def test_masked_source_scene_pinned(scene):
@@ -356,9 +406,9 @@ def test_masked_source_scene_pinned(scene):
     sb_dead["PointSource"]["mask"] = sb["PointSource"]["mask"].at[3].set(0.0)
     lam = jnp.zeros_like(init).at[3].set(1e4)
     fp = jnp.zeros_like(init).at[3].set(123.0)
-    f, v = solve_fluxes_eigfloor_prior(init, single, sb_dead,
-                                       lambda_diag=lam, f_prior=fp,
-                                       return_variances=True)
+    f, v = solve_fluxes_eigfloor_prior(
+        init, single, sb_dead, lambda_diag=lam, f_prior=fp, return_variances=True
+    )
     assert np.all(np.isfinite(np.asarray(f)))
     assert float(f[3]) == 0.0
     assert np.isposinf(float(v[3]))
@@ -374,11 +424,9 @@ def test_factory_default_matches_eigfloor(scene):
     fn_ref = make_batched_solver("eigfloor", in_axes=bia, floor=1e-2)
     fn = make_batched_solver("eigfloor_prior", in_axes=bia, floor=1e-2)
     rf, rv = fn_ref(init, images_data, batches)
-    f, v = fn(init, images_data, batches)          # None -> zero priors
-    np.testing.assert_allclose(np.asarray(f), np.asarray(rf),
-                               rtol=1e-14, atol=0)
-    np.testing.assert_allclose(np.asarray(v), np.asarray(rv),
-                               rtol=1e-14, atol=0)
+    f, v = fn(init, images_data, batches)  # None -> zero priors
+    np.testing.assert_allclose(np.asarray(f), np.asarray(rf), rtol=1e-14, atol=0)
+    np.testing.assert_allclose(np.asarray(v), np.asarray(rv), rtol=1e-14, atol=0)
 
 
 def test_factory_single_trace_across_prior_values(scene):
@@ -390,8 +438,8 @@ def test_factory_single_trace_across_prior_values(scene):
     n_img, n_flux = np.asarray(init).shape
     lam1 = jnp.zeros((n_img, n_flux))
     fp1 = jnp.zeros((n_img, n_flux))
-    lam2 = lam1.at[:, 1].set(1e9)      # pin source 1 hard...
-    fp2 = fp1.at[:, 1].set(42.0)       # ...to 42
+    lam2 = lam1.at[:, 1].set(1e9)  # pin source 1 hard...
+    fp2 = fp1.at[:, 1].set(42.0)  # ...to 42
     f1, _ = fn(init, images_data, batches, lam1, fp1)
     f2, _ = fn(init, images_data, batches, lam2, fp2)
     jax.block_until_ready(f2)
@@ -411,15 +459,17 @@ def test_factory_matches_sequential(scene):
     f, v = fn(init, images_data, batches, lam, fp)
     for i in range(n_img):
         init_i, single, sb = single_image(scene, i)
-        fi, vi = solve_fluxes_eigfloor_prior(init_i, single, sb,
-                                             lambda_diag=lam[i],
-                                             f_prior=fp[i],
-                                             return_variances=True,
-                                             floor=1e-4)
-        np.testing.assert_allclose(np.asarray(f[i]), np.asarray(fi),
-                                   rtol=1e-10)
-        np.testing.assert_allclose(np.asarray(v[i]), np.asarray(vi),
-                                   rtol=1e-10)
+        fi, vi = solve_fluxes_eigfloor_prior(
+            init_i,
+            single,
+            sb,
+            lambda_diag=lam[i],
+            f_prior=fp[i],
+            return_variances=True,
+            floor=1e-4,
+        )
+        np.testing.assert_allclose(np.asarray(f[i]), np.asarray(fi), rtol=1e-10)
+        np.testing.assert_allclose(np.asarray(v[i]), np.asarray(vi), rtol=1e-10)
 
 
 def test_prior_arrays_from_slots():
@@ -428,8 +478,7 @@ def test_prior_arrays_from_slots():
     slots = [{0: 0, 2: 1, 4: 3}, {1: 0, 3: 2}]
     f_prior = np.array([10.0, 20.0, 30.0, np.nan, 50.0])
     sigma = np.array([2.0, 4.0, 0.0, 1.0, np.inf])
-    lam, fp = prior_arrays_from_slots(slots, 2, 5, f_prior, sigma,
-                                      protected=[0])
+    lam, fp = prior_arrays_from_slots(slots, 2, 5, f_prior, sigma, protected=[0])
     lam = np.asarray(lam)
     fp = np.asarray(fp)
     assert lam.shape == fp.shape == (2, 5)
@@ -449,7 +498,6 @@ def test_prior_arrays_from_slots():
     assert lam[0, 2] == 0.0 and lam[0, 4] == 0.0 and lam[1, 4] == 0.0
     # boolean-mask form of `protected` behaves identically
     mask = np.array([True, False, False, False, False])
-    lam_b, fp_b = prior_arrays_from_slots(slots, 2, 5, f_prior, sigma,
-                                          protected=mask)
+    lam_b, fp_b = prior_arrays_from_slots(slots, 2, 5, f_prior, sigma, protected=mask)
     np.testing.assert_array_equal(np.asarray(lam_b), lam)
     np.testing.assert_array_equal(np.asarray(fp_b), fp)

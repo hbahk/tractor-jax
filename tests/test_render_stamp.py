@@ -17,6 +17,7 @@ the large galaxies on the full padded tile grid.  These tests pin down
 * that the jitted vmapped solver accepts the stamp bundle and recovers the
   same fluxes as the full bundle on a noiseless image.
 """
+
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -26,13 +27,14 @@ from tractor_jax.jax import batching as tjb
 from tractor_jax.jax.optimizer import _render_source_templates
 
 PIXSCALE_ARCSEC = 6.15
-CD_INV = np.eye(2) * (3600.0 / PIXSCALE_ARCSEC)        # px per degree
+CD_INV = np.eye(2) * (3600.0 / PIXSCALE_ARCSEC)  # px per degree
 H = W = 21
 S_STAMP = 80
 
 
 class _Cat(dict):
     """Minimal catalog: column access by name, row count via len()."""
+
     def __len__(self):
         return len(self["shape_r"])
 
@@ -40,7 +42,7 @@ class _Cat(dict):
 def _gaussian_psf(n=51, sigma_hr=4.0):
     yy, xx = np.indices((n, n))
     c = (n - 1) / 2
-    k = np.exp(-0.5 * ((yy - c) ** 2 + (xx - c) ** 2) / sigma_hr ** 2)
+    k = np.exp(-0.5 * ((yy - c) ** 2 + (xx - c) ** 2) / sigma_hr**2)
     return k / k.sum()
 
 
@@ -55,8 +57,7 @@ def _catalog():
     # different sub-pixel phases and some stamps clip a tile edge there
     sx = np.array([12.3, 16.6, 20.4, 13.2, 18.9, 12.7, 16.0])
     sy = np.array([4.1, 9.2, 3.6, 15.5, 20.4, 18.8, 12.5])
-    cat = _Cat(shape_r=shape_r, sersic=sersic, shape_ab=shape_ab,
-               shape_phi=shape_phi)
+    cat = _Cat(shape_r=shape_r, sersic=sersic, shape_ab=shape_ab, shape_phi=shape_phi)
     return cat, sx, sy
 
 
@@ -65,13 +66,15 @@ def _views(psf, n_views=2):
     out = []
     origins = [(0.0, 0.0), (12.0, 3.0)]
     for i in range(n_views):
-        out.append({
-            "data": rng.normal(size=(H, W)).astype(np.float32),
-            "invvar": np.ones((H, W), np.float32),
-            "psf": psf,
-            "src_indices": list(range(7)),
-            "origin": origins[i],
-        })
+        out.append(
+            {
+                "data": rng.normal(size=(H, W)).astype(np.float32),
+                "invvar": np.ones((H, W), np.float32),
+                "psf": psf,
+                "src_indices": list(range(7)),
+                "origin": origins[i],
+            }
+        )
     return out
 
 
@@ -79,8 +82,17 @@ def _build(render_stamp=None, **kw):
     psf = _gaussian_psf()
     cat, sx, sy = _catalog()
     return tjb.build_padded_batches(
-        _views(psf), cat, sx, sy, psf_sampling=0.2, fixed_max_factor=5.0,
-        fit_background=True, cd_inv=CD_INV, render_stamp=render_stamp, **kw)
+        _views(psf),
+        cat,
+        sx,
+        sy,
+        psf_sampling=0.2,
+        fixed_max_factor=5.0,
+        fit_background=True,
+        cd_inv=CD_INV,
+        render_stamp=render_stamp,
+        **kw,
+    )
 
 
 def _single(bundle, i):
@@ -89,16 +101,19 @@ def _single(bundle, i):
     for key, val in bundle.batches.items():
         axes = bundle.in_axes[key]
         bat[key] = jax.tree_util.tree_map(
-            lambda a, ax: a[i] if ax == 0 else a, val, axes)
+            lambda a, ax: a[i] if ax == 0 else a, val, axes
+        )
     return imgd, bat
 
 
 def _templates(bundle, i, sampling_factor=5.0, **kw):
     imgd, bat = _single(bundle, i)
     n_flux = bundle.initial_fluxes.shape[1]
-    return np.asarray(_render_source_templates(imgd, bat, n_flux,
-                                               sampling_factor=sampling_factor,
-                                               **kw))
+    return np.asarray(
+        _render_source_templates(
+            imgd, bat, n_flux, sampling_factor=sampling_factor, **kw
+        )
+    )
 
 
 def test_stamp_engages_without_an_explicit_sampling_factor():
@@ -121,8 +136,10 @@ def test_stamp_engages_without_an_explicit_sampling_factor():
             assert diff < 1e-5, f"slot {slot}: {diff}"
     # and the stamp path really ran: the clipped low-edge source differs from
     # the full grid in the zero-weight padding (see the docstring above)
-    assert not np.array_equal(_templates(b_stamp, 1, sampling_factor=None),
-                              _templates(b_full, 1, sampling_factor=None))
+    assert not np.array_equal(
+        _templates(b_stamp, 1, sampling_factor=None),
+        _templates(b_full, 1, sampling_factor=None),
+    )
 
 
 def test_default_bundle_has_no_stamp_keys():
@@ -137,7 +154,11 @@ def test_default_bundle_has_no_stamp_keys():
 def test_stamp_bundle_structure_and_split():
     b = _build(render_stamp=S_STAMP)
     n_views = len(_views(_gaussian_psf()))
-    assert b.images_data["psf"]["fft_stamp"].shape == (n_views, S_STAMP, S_STAMP // 2 + 1)
+    assert b.images_data["psf"]["fft_stamp"].shape == (
+        n_views,
+        S_STAMP,
+        S_STAMP // 2 + 1,
+    )
     gal = b.batches["Galaxy"]
     for key in tjb._OPTIONAL_GALAXY_KEYS:
         assert key in gal and b.in_axes["Galaxy"][key] == 0
@@ -152,7 +173,7 @@ def test_stamp_bundle_structure_and_split():
         assert stamp_mask[v, 3] == 0.0
         assert large_mask[v, 0] == 1.0 and large_idx[v, 0] == 3
         assert large_mask[v, 1:].sum() == 0.0
-    assert b.meta["n_large_max"] == 8          # one bucket
+    assert b.meta["n_large_max"] == 8  # one bucket
 
 
 def test_render_mode_full_on_stamp_bundle_is_bit_identical():
@@ -174,12 +195,12 @@ def test_stamp_matches_full_grid_for_every_source():
     gal_large_slot = b_full.meta["max_ps"] + 3
     for i in range(2):
         t_full = _templates(b_full, i)
-        t_stamp = _templates(b_stamp, i)           # render_mode="auto" -> stamp
+        t_stamp = _templates(b_stamp, i)  # render_mode="auto" -> stamp
         assert t_full.shape == t_stamp.shape
-        tile = (slice(0, H), slice(0, W))          # the weighted region
+        tile = (slice(0, H), slice(0, W))  # the weighted region
         for slot in range(t_full.shape[0]):
             peak = np.abs(t_full[slot]).max()
-            if peak == 0.0:                          # padding slot
+            if peak == 0.0:  # padding slot
                 assert np.abs(t_stamp[slot]).max() == 0.0
                 continue
             diff = np.abs(t_stamp[slot][tile] - t_full[slot][tile]).max() / peak
@@ -199,11 +220,21 @@ def test_render_mode_stamp_requires_the_stamp_transform():
     b_full = _build()
     imgd, bat = _single(b_full, 0)
     with pytest.raises(ValueError):
-        _render_source_templates(imgd, bat, b_full.initial_fluxes.shape[1],
-                                 sampling_factor=5.0, render_mode="stamp")
+        _render_source_templates(
+            imgd,
+            bat,
+            b_full.initial_fluxes.shape[1],
+            sampling_factor=5.0,
+            render_mode="stamp",
+        )
     with pytest.raises(ValueError):
-        _render_source_templates(imgd, bat, b_full.initial_fluxes.shape[1],
-                                 sampling_factor=5.0, render_mode="bogus")
+        _render_source_templates(
+            imgd,
+            bat,
+            b_full.initial_fluxes.shape[1],
+            sampling_factor=5.0,
+            render_mode="bogus",
+        )
 
 
 def test_static_fft_dispatch_equals_where_path():
@@ -216,9 +247,9 @@ def test_static_fft_dispatch_equals_where_path():
 
 def test_stamp_too_small_or_misaligned_raises():
     with pytest.raises(ValueError):
-        _build(render_stamp=40)            # kernel is 51 high-res px
+        _build(render_stamp=40)  # kernel is 51 high-res px
     with pytest.raises(ValueError):
-        _build(render_stamp=82)            # not a multiple of the sampling 5
+        _build(render_stamp=82)  # not a multiple of the sampling 5
 
 
 def test_batched_solver_recovers_fluxes_on_stamp_bundle():
@@ -226,8 +257,8 @@ def test_batched_solver_recovers_fluxes_on_stamp_bundle():
     b_stamp = _build(render_stamp=S_STAMP)
     n_flux = b_full.initial_fluxes.shape[1]
     truth = np.zeros(n_flux, np.float32)
-    truth[:b_full.meta["max_ps"]] = [3.0, 5.0, 2.0]
-    truth[b_full.meta["max_ps"]:b_full.meta["max_ps"] + 4] = [4.0, 6.0, 1.5, 8.0]
+    truth[: b_full.meta["max_ps"]] = [3.0, 5.0, 2.0]
+    truth[b_full.meta["max_ps"] : b_full.meta["max_ps"] + 4] = [4.0, 6.0, 1.5, 8.0]
     truth[b_full.meta["bg_idx"]] = 0.2
     # noiseless model images from the FULL-grid templates
     imgs = []
@@ -242,8 +273,9 @@ def test_batched_solver_recovers_fluxes_on_stamp_bundle():
     def solve(bundle):
         imgd = dict(bundle.images_data)
         imgd["data"] = jnp.asarray(data_pad)
-        fn = tjb.make_batched_solver("linear", in_axes=bundle.in_axes,
-                                     rcond=1e-12, cache=False)
+        fn = tjb.make_batched_solver(
+            "linear", in_axes=bundle.in_axes, rcond=1e-12, cache=False
+        )
         f, v = fn(bundle.initial_fluxes, imgd, bundle.batches)
         return np.asarray(f)
 

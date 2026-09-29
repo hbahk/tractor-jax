@@ -33,6 +33,7 @@ with ``psf_shift`` / ``psf_basis_shifts`` (see
 :func:`build_padded_batches`); absent, the transform is bit-identical to the
 pre-ramp behavior.
 """
+
 import math
 import warnings
 from functools import partial
@@ -80,9 +81,14 @@ _SOLVER_FNS = {
 # slot index (identical across images), so it is not vmapped.
 _IN_AXES_TEMPLATES = {
     "PointSource": {"flux_idx": 0, "pos_pix": 0, "mask": 0},
-    "Galaxy": {"flux_idx": 0, "pos_pix": 0, "wcs_cd_inv": 0,
-               "shapes": 0, "mask": 0,
-               "profile": {"amp": 0, "mean": 0, "var": 0}},
+    "Galaxy": {
+        "flux_idx": 0,
+        "pos_pix": 0,
+        "wcs_cd_inv": 0,
+        "shapes": 0,
+        "mask": 0,
+        "profile": {"amp": 0, "mean": 0, "var": 0},
+    },
     "Background": {"flux_idx": None},
 }
 # Optional per-view Galaxy keys emitted only by ``build_padded_batches(...,
@@ -112,8 +118,7 @@ def batches_in_axes(batches):
     return out
 
 
-def penalty_weights_from_slots(src_slot_per_image, n_images, n_flux,
-                               protected):
+def penalty_weights_from_slots(src_slot_per_image, n_images, n_flux, protected):
     """(n_images, n_flux) lasso penalty multipliers: 0 for protected catalog
     sources, 1 elsewhere.
 
@@ -133,9 +138,14 @@ def penalty_weights_from_slots(src_slot_per_image, n_images, n_flux,
     return jnp.asarray(pw)
 
 
-def prior_arrays_from_slots(src_slot_per_image, n_images, n_flux,
-                            f_prior_per_source, sigma_prior_per_source,
-                            protected=None):
+def prior_arrays_from_slots(
+    src_slot_per_image,
+    n_images,
+    n_flux,
+    f_prior_per_source,
+    sigma_prior_per_source,
+    protected=None,
+):
     """Build the runtime prior arrays for the eigfloor_prior solver.
 
     Returns ``(lambda_diag, f_prior)``, each of shape (n_images, n_flux).
@@ -216,8 +226,15 @@ def clear_solver_cache():
     _solver_cache.clear()
 
 
-def make_batched_solver(solver="linear", *, in_axes, return_variances=True,
-                        return_diagnostics=False, cache=True, **solver_kwargs):
+def make_batched_solver(
+    solver="linear",
+    *,
+    in_axes,
+    return_variances=True,
+    return_diagnostics=False,
+    cache=True,
+    **solver_kwargs,
+):
     """Return a jitted vmapped flux solver.
 
     Parameters
@@ -270,62 +287,78 @@ def make_batched_solver(solver="linear", *, in_axes, return_variances=True,
         varying their values reuses one compiled executable.
     """
     if solver not in _SOLVER_FNS:
-        raise ValueError(f"unknown solver {solver!r}; "
-                         f"expected one of {sorted(_SOLVER_FNS)}")
+        raise ValueError(
+            f"unknown solver {solver!r}; " f"expected one of {sorted(_SOLVER_FNS)}"
+        )
     if return_diagnostics and solver == "lasso":
         raise ValueError("return_diagnostics is not supported for solver='lasso'")
     if return_diagnostics:
         solver_kwargs = dict(solver_kwargs, return_diagnostics=True)
     key = None
     if cache:
-        key = (solver, bool(return_variances), _freeze(solver_kwargs),
-               _freeze(in_axes))
+        key = (solver, bool(return_variances), _freeze(solver_kwargs), _freeze(in_axes))
         try:
             hit = _solver_cache.get(key)
         except TypeError as exc:
             raise TypeError(
                 "make_batched_solver kwargs must be hashable when cache=True; "
-                "pass cache=False for array-valued options") from exc
+                "pass cache=False for array-valued options"
+            ) from exc
         if hit is not None:
             return hit
 
     base = _SOLVER_FNS[solver]
     if solver == "lasso":
+
         def _solve(init, imgd, bat, pw):
-            return base(init, imgd, bat, penalty_weights=pw,
-                        return_variances=return_variances, **solver_kwargs)
+            return base(
+                init,
+                imgd,
+                bat,
+                penalty_weights=pw,
+                return_variances=return_variances,
+                **solver_kwargs,
+            )
+
         jfn = jax.jit(jax.vmap(_solve, in_axes=(0, 0, in_axes, 0)))
 
         def fn(initial_fluxes, images_data, batches, penalty_weights=None):
             if penalty_weights is None:
                 penalty_weights = jnp.ones_like(initial_fluxes)
             return jfn(initial_fluxes, images_data, batches, penalty_weights)
+
     elif solver == "eigfloor_prior":
+
         def _solve(init, imgd, bat, lam, fp):
-            return base(init, imgd, bat, lambda_diag=lam, f_prior=fp,
-                        return_variances=return_variances, **solver_kwargs)
+            return base(
+                init,
+                imgd,
+                bat,
+                lambda_diag=lam,
+                f_prior=fp,
+                return_variances=return_variances,
+                **solver_kwargs,
+            )
+
         jfn = jax.jit(jax.vmap(_solve, in_axes=(0, 0, in_axes, 0, 0)))
 
-        def fn(initial_fluxes, images_data, batches, lambda_diag=None,
-               f_prior=None):
+        def fn(initial_fluxes, images_data, batches, lambda_diag=None, f_prior=None):
             if lambda_diag is None:
                 lambda_diag = jnp.zeros_like(initial_fluxes)
             if f_prior is None:
                 f_prior = jnp.zeros_like(initial_fluxes)
-            return jfn(initial_fluxes, images_data, batches,
-                       lambda_diag, f_prior)
+            return jfn(initial_fluxes, images_data, batches, lambda_diag, f_prior)
+
     else:
-        vfn = partial(base, return_variances=return_variances,
-                      **solver_kwargs)
+        vfn = partial(base, return_variances=return_variances, **solver_kwargs)
         jfn = jax.jit(jax.vmap(vfn, in_axes=(0, 0, in_axes)))
 
         def fn(initial_fluxes, images_data, batches, penalty_weights=None):
             if penalty_weights is not None:
-                raise ValueError(
-                    f"penalty_weights is lasso-only (solver={solver!r})")
+                raise ValueError(f"penalty_weights is lasso-only (solver={solver!r})")
             return jfn(initial_fluxes, images_data, batches)
 
-    fn._jitted = jfn   # exposed for cache/trace-count introspection in tests
+    fn._jitted = jfn  # exposed for cache/trace-count introspection in tests
     if cache:
         _solver_cache[key] = fn
     return fn
@@ -345,13 +378,19 @@ def estimate_solve_bytes_per_view(n_flux, target_shape, dtype_bytes=4):
     """
     t_h, t_w = target_shape
     n_flux = int(n_flux)
-    return int(dtype_bytes * (n_flux * t_h * t_w + 2 * n_flux * n_flux
-                              + 4 * t_h * t_w))
+    return int(dtype_bytes * (n_flux * t_h * t_w + 2 * n_flux * n_flux + 4 * t_h * t_w))
 
 
-def autotune_batch_size(run_batch, *, start=1, max_batch=1024, min_gain=0.10,
-                        repeats=3, per_item_bytes=None,
-                        mem_budget_bytes=None):
+def autotune_batch_size(
+    run_batch,
+    *,
+    start=1,
+    max_batch=1024,
+    min_gain=0.10,
+    repeats=3,
+    per_item_bytes=None,
+    mem_budget_bytes=None,
+):
     """Pick the smallest vmap batch size at the throughput knee.
 
     Small views (few sources, small stamps) under-utilize the device, so
@@ -408,7 +447,7 @@ def autotune_batch_size(run_batch, *, start=1, max_batch=1024, min_gain=0.10,
     prev_tp = None
     b = start
     while b <= max_batch and (mem_cap is None or b <= mem_cap):
-        run_batch(b)                    # warmup: compile, untimed
+        run_batch(b)  # warmup: compile, untimed
         best_t = float("inf")
         for _ in range(repeats):
             t0 = _time.perf_counter()
@@ -449,8 +488,9 @@ def pad_normal_eq(G, b, lam, free=None, *, bucket=128):
     bp[:n] = b
     lamp = np.zeros(n_pad, dtype=np.asarray(lam).dtype)
     lamp[:n] = lam
-    freep = np.zeros(n_pad, dtype=(np.asarray(free).dtype if free is not None
-                                   else np.float64))
+    freep = np.zeros(
+        n_pad, dtype=(np.asarray(free).dtype if free is not None else np.float64)
+    )
     if free is not None:
         freep[:n] = free
     return Gp, bp, lamp, freep, n
@@ -466,6 +506,7 @@ class BatchBundle(NamedTuple):
     ``bg_idx``, ``src_slot`` (per view: dict catalog index -> flux slot),
     ``counts`` (per view: ``(n_ps, n_gal)`` real, unpadded source counts).
     """
+
     images_data: dict
     batches: dict
     initial_fluxes: jnp.ndarray
@@ -569,7 +610,7 @@ _EVEN_PARITY_MODES = ("raise", "warn", "fix", "allow")
 
 
 def _even_parity_message(ph, pw, target_sampling):
-    """Message naming the exact mis-centring an even-sized kernel causes."""
+    """Message naming the exact mis-centering an even-sized kernel causes."""
     axes = []
     if ph % 2 == 0:
         axes.append(f"axis 0 (height {ph})")
@@ -665,8 +706,15 @@ def _kernel_enclosed_radius(psf_img, frac):
     return float(r[order][min(i, r.size - 1)])
 
 
-def psf_to_fft(psf_img, *, psf_sampling, target_shape, target_sampling,
-               shift_hr=None, even_parity="raise"):
+def psf_to_fft(
+    psf_img,
+    *,
+    psf_sampling,
+    target_shape,
+    target_sampling,
+    shift_hr=None,
+    even_parity="raise",
+):
     """rfft2 of a PSF resampled to ``target_sampling``, center-padded to
     ``target_shape`` and ``ifftshift``-ed — the layout ``images_data['psf']
     ['fft']`` expects. Resampling (lanczos3, flux-renormalized) only happens
@@ -705,8 +753,9 @@ def psf_to_fft(psf_img, *, psf_sampling, target_shape, target_sampling,
         Odd sizes take exactly the legacy code path in every mode.
     """
     if even_parity not in _EVEN_PARITY_MODES:
-        raise ValueError(f"even_parity must be one of {_EVEN_PARITY_MODES}, "
-                         f"got {even_parity!r}")
+        raise ValueError(
+            f"even_parity must be one of {_EVEN_PARITY_MODES}, " f"got {even_parity!r}"
+        )
     target_h, target_w = target_shape
     psf = np.asarray(psf_img, dtype=np.float64)
     ph, pw = psf.shape
@@ -744,7 +793,7 @@ def psf_to_fft(psf_img, *, psf_sampling, target_shape, target_sampling,
     cy, cx = target_h // 2, target_w // 2
     y0 = cy - ph // 2
     x0 = cx - pw // 2
-    pad_psf[y0:y0 + ph, x0:x0 + pw] = psf
+    pad_psf[y0 : y0 + ph, x0 : x0 + pw] = psf
     pad_psf = np.fft.ifftshift(pad_psf)
     out = jfft.rfft2(jnp.asarray(pad_psf))
     if shift_hr is not None or fix_y or fix_x:
@@ -761,7 +810,7 @@ def slice_fluxes(fluxes, meta):
     out = []
     for c, (n_ps, n_gal) in enumerate(meta["counts"]):
         fc = np.asarray(fluxes[c])
-        out.append(np.concatenate([fc[:n_ps], fc[max_ps:max_ps + n_gal]]))
+        out.append(np.concatenate([fc[:n_ps], fc[max_ps : max_ps + n_gal]]))
     return out
 
 
@@ -842,7 +891,7 @@ def build_padded_batches(
         grid whatever kind it is: an *optical* PSF, which the solvers
         integrate over each native pixel (``pixel_integration="window"``,
         the default), or an *effective* PSF that already contains the pixel
-        response and is sampled at the pixel centres instead
+        response and is sampled at the pixel centers instead
         (``pixel_integration="point"`` on the solver; the SPHEREx R7 ePSF
         product is delivered in exactly this normalization). The bundle
         itself is the same for both; the kind is a static solver option.
@@ -923,17 +972,22 @@ def build_padded_batches(
     n_shift = sum(v.get("psf_shift") is not None for v in views)
     n_bshift = sum(v.get("psf_basis_shifts") is not None for v in views)
     if n_shift and n_shift != n_views:
-        raise ValueError("build_padded_batches: psf_shift must be given for "
-                         "every view or for none")
+        raise ValueError(
+            "build_padded_batches: psf_shift must be given for "
+            "every view or for none"
+        )
     if n_bshift and n_bshift != n_views:
-        raise ValueError("build_padded_batches: psf_basis_shifts must be given "
-                         "for every view or for none")
+        raise ValueError(
+            "build_padded_batches: psf_basis_shifts must be given "
+            "for every view or for none"
+        )
     if n_shift and n_bshift:
-        raise ValueError("build_padded_batches: psf_shift and "
-                         "psf_basis_shifts are mutually exclusive")
+        raise ValueError(
+            "build_padded_batches: psf_shift and "
+            "psf_basis_shifts are mutually exclusive"
+        )
     if n_bshift and not use_basis:
-        raise ValueError("build_padded_batches: psf_basis_shifts requires "
-                         "psf_basis")
+        raise ValueError("build_padded_batches: psf_basis_shifts requires " "psf_basis")
 
     def _psf_shapes(v):
         b = v.get("psf_basis")
@@ -977,12 +1031,16 @@ def build_padded_batches(
         max_ps = max(max_ps, len(ps_idx))
         max_gal = max(max_gal, len(gal_idx))
 
-    all_gal_ci = (np.concatenate([g for _, g in classification])
-                  if max_gal else np.zeros(0, np.intp))
+    all_gal_ci = (
+        np.concatenate([g for _, g in classification])
+        if max_gal
+        else np.zeros(0, np.intp)
+    )
     if all_gal_ci.size:
         sersic_arr = np.asarray(catalog["sersic"], dtype=np.float64)
-        uniq_sersic, gal_prof_inv = np.unique(sersic_arr[all_gal_ci],
-                                              return_inverse=True)
+        uniq_sersic, gal_prof_inv = np.unique(
+            sersic_arr[all_gal_ci], return_inverse=True
+        )
         uniq_profs = [profile_lookup_fn(float(s)) for s in uniq_sersic]
         max_mog_k = max((len(p.amp) for p in uniq_profs), default=1)
     else:
@@ -999,18 +1057,15 @@ def build_padded_batches(
     # shape across every batch built with the same caps.
     if max_ps_cap is not None:
         if max_ps > max_ps_cap:
-            raise ValueError(
-                f"max_ps={max_ps} exceeds cap {max_ps_cap}")
+            raise ValueError(f"max_ps={max_ps} exceeds cap {max_ps_cap}")
         max_ps = max_ps_cap
     if max_gal_cap is not None:
         if max_gal > max_gal_cap:
-            raise ValueError(
-                f"max_gal={max_gal} exceeds cap {max_gal_cap}")
+            raise ValueError(f"max_gal={max_gal} exceeds cap {max_gal_cap}")
         max_gal = max_gal_cap
     if max_mog_k_cap is not None:
         if max_mog_k > max_mog_k_cap:
-            raise ValueError(
-                f"max_mog_K={max_mog_k} exceeds cap {max_mog_k_cap}")
+            raise ValueError(f"max_mog_K={max_mog_k} exceeds cap {max_mog_k_cap}")
         max_mog_k = max_mog_k_cap
 
     # Per-view flux layout: [point sources... | galaxies... | (background)]
@@ -1019,8 +1074,7 @@ def build_padded_batches(
 
     base_dtype = views[0]["data"].dtype
     data_arr = np.zeros((n_views, base_h, base_w), dtype=base_dtype)
-    iv_arr = np.zeros((n_views, base_h, base_w),
-                      dtype=views[0]["invvar"].dtype)
+    iv_arr = np.zeros((n_views, base_h, base_w), dtype=views[0]["invvar"].dtype)
     for vi, view in enumerate(views):
         data_arr[vi] = view["data"]
         iv_arr[vi] = view["invvar"]
@@ -1030,7 +1084,7 @@ def build_padded_batches(
     iv_pad[:, :base_h, :base_w] = iv_arr
 
     # Source POSITIONS are geometry, not pixel data: they are built in float64
-    # and left there. Storing them at `dtype` (float32 by default) quantised
+    # and left there. Storing them at `dtype` (float32 by default) quantized
     # every requested position to ~1e-7 relative — e.g. x=10.2 became
     # 10.19999980926514 — a 2e-7..1.6e-6 native-px registration error over a
     # 40..100 px stamp, which is pure loss and of the same kind as (though far
@@ -1053,12 +1107,12 @@ def build_padded_batches(
     gal_shape = np.zeros((n_views, max_gal, 3), dtype=dtype)
     gal_amp = np.zeros((n_views, max_gal, max_mog_k), dtype=dtype)
     gal_mean = np.zeros((n_views, max_gal, max_mog_k, 2), dtype=dtype)
-    gal_var = np.tile(np.eye(2, dtype=dtype),
-                      (n_views, max_gal, max_mog_k, 1, 1))
+    gal_var = np.tile(np.eye(2, dtype=dtype), (n_views, max_gal, max_mog_k, 1, 1))
     init_flux = np.zeros((n_views, n_flux), dtype=dtype)
 
-    cd_inv = (np.eye(2, dtype=dtype) if cd_inv is None
-              else np.asarray(cd_inv, dtype=dtype))
+    cd_inv = (
+        np.eye(2, dtype=dtype) if cd_inv is None else np.asarray(cd_inv, dtype=dtype)
+    )
 
     sx_arr = np.asarray(sx, dtype=np.float64)
     sy_arr = np.asarray(sy, dtype=np.float64)
@@ -1069,12 +1123,11 @@ def build_padded_batches(
     def _flat(idx_lists):
         if not any(len(x) for x in idx_lists):
             return (np.zeros(0, np.intp),) * 3
-        vids = np.concatenate([np.full(len(x), vi, np.intp)
-                               for vi, x in enumerate(idx_lists)])
-        ks = np.concatenate([np.arange(len(x), dtype=np.intp)
-                             for x in idx_lists])
-        cis = np.concatenate([np.asarray(x, dtype=np.intp)
-                              for x in idx_lists])
+        vids = np.concatenate(
+            [np.full(len(x), vi, np.intp) for vi, x in enumerate(idx_lists)]
+        )
+        ks = np.concatenate([np.arange(len(x), dtype=np.intp) for x in idx_lists])
+        cis = np.concatenate([np.asarray(x, dtype=np.intp) for x in idx_lists])
         return vids, ks, cis
 
     ps_v, ps_k, ps_ci = _flat([c[0] for c in classification])
@@ -1107,20 +1160,19 @@ def build_padded_batches(
         gal_mask[gal_v, gal_k] = 1.0
         gal_cd[gal_v, gal_k] = cd_inv
         gal_shape[gal_v, gal_k, 0] = shape_r_arr[gal_ci]
-        gal_shape[gal_v, gal_k, 1] = np.asarray(catalog["shape_ab"],
-                                                dtype=np.float64)[gal_ci]
-        gal_shape[gal_v, gal_k, 2] = np.asarray(catalog["shape_phi"],
-                                                dtype=np.float64)[gal_ci]
+        gal_shape[gal_v, gal_k, 1] = np.asarray(catalog["shape_ab"], dtype=np.float64)[
+            gal_ci
+        ]
+        gal_shape[gal_v, gal_k, 2] = np.asarray(catalog["shape_phi"], dtype=np.float64)[
+            gal_ci
+        ]
         # profiles: one scatter per DISTINCT sersic value
         for u_i, prof in enumerate(uniq_profs):
             sel = gal_prof_inv == u_i
             K = len(prof.amp)
-            gal_amp[gal_v[sel], gal_k[sel], :K] = np.asarray(prof.amp,
-                                                             dtype=dtype)
-            gal_mean[gal_v[sel], gal_k[sel], :K] = np.asarray(prof.mean,
-                                                              dtype=dtype)
-            gal_var[gal_v[sel], gal_k[sel], :K] = np.asarray(prof.var,
-                                                             dtype=dtype)
+            gal_amp[gal_v[sel], gal_k[sel], :K] = np.asarray(prof.amp, dtype=dtype)
+            gal_mean[gal_v[sel], gal_k[sel], :K] = np.asarray(prof.mean, dtype=dtype)
+            gal_var[gal_v[sel], gal_k[sel], :K] = np.asarray(prof.var, dtype=dtype)
 
     src_slot_per_view = []
     counts = []
@@ -1141,8 +1193,10 @@ def build_padded_batches(
             return None
         s = np.asarray(shift_native, dtype=np.float64).reshape(-1)
         if s.size != 2:
-            raise ValueError("psf shift must be a (dy, dx) pair, got shape "
-                             f"{np.shape(shift_native)}")
+            raise ValueError(
+                "psf shift must be a (dy, dx) pair, got shape "
+                f"{np.shape(shift_native)}"
+            )
         return (float(s[0]) * target_sampling, float(s[1]) * target_sampling)
 
     def _shift_key(shift_hr):
@@ -1154,16 +1208,27 @@ def build_padded_batches(
     # across calls.
     def _fft_for(psf_arr, shift_hr=None, th=target_h, tw=target_w):
         if psf_fft_cache is not None:
-            key = (id(psf_arr), psf_arr.shape, th, tw,
-                   round(target_sampling, 9), round(psf_sampling, 9),
-                   _shift_key(shift_hr), even_parity)
+            key = (
+                id(psf_arr),
+                psf_arr.shape,
+                th,
+                tw,
+                round(target_sampling, 9),
+                round(psf_sampling, 9),
+                _shift_key(shift_hr),
+                even_parity,
+            )
             hit = psf_fft_cache.get(key)
             if hit is not None:
                 return hit
-        fft = psf_to_fft(psf_arr, psf_sampling=psf_sampling,
-                         target_shape=(th, tw),
-                         target_sampling=target_sampling,
-                         shift_hr=shift_hr, even_parity=even_parity)
+        fft = psf_to_fft(
+            psf_arr,
+            psf_sampling=psf_sampling,
+            target_shape=(th, tw),
+            target_sampling=target_sampling,
+            shift_hr=shift_hr,
+            even_parity=even_parity,
+        )
         if psf_fft_cache is not None:
             psf_fft_cache[key] = fft
         return fft
@@ -1206,8 +1271,8 @@ def build_padded_batches(
         hit = ramp_cache.get(key)
         if hit is None:
             hit = jnp.asarray(
-                psf_fft_phase_ramp((th, tw // 2 + 1), shift_hr),
-                dtype=dtype)
+                psf_fft_phase_ramp((th, tw // 2 + 1), shift_hr), dtype=dtype
+            )
             ramp_cache[key] = hit
         return hit
 
@@ -1227,7 +1292,8 @@ def build_padded_batches(
             if sh.shape != (n_basis, 2):
                 raise ValueError(
                     "psf_basis_shifts must have shape (K, 2) matching "
-                    f"psf_basis; got {sh.shape} for K={n_basis}")
+                    f"psf_basis; got {sh.shape} for K={n_basis}"
+                )
             hit = tuple(_shift_key(_shift_hr(s)) for s in sh)
             shift_keys_cache[cid] = hit
         return hit
@@ -1240,13 +1306,29 @@ def build_padded_batches(
         ``(dy, dx)``. ``(th, tw)`` selects the transform grid (the padded
         tile grid by default, the compact stamp grid for ``render_stamp``).
         """
-        key = ("basis", id(basis), shift_keys, th, tw,
-               round(target_sampling, 9), round(psf_sampling, 9), even_parity)
+        key = (
+            "basis",
+            id(basis),
+            shift_keys,
+            th,
+            tw,
+            round(target_sampling, 9),
+            round(psf_sampling, 9),
+            even_parity,
+        )
         hit = basis_fft_cache.get(key)
         if hit is not None:
             return hit
-        base_key = ("basis", id(basis), None, th, tw,
-                    round(target_sampling, 9), round(psf_sampling, 9), even_parity)
+        base_key = (
+            "basis",
+            id(basis),
+            None,
+            th,
+            tw,
+            round(target_sampling, 9),
+            round(psf_sampling, 9),
+            even_parity,
+        )
         base = basis_fft_cache.get(base_key)
         if base is None:
             base = jnp.stack([_fft_for(k, th=th, tw=tw) for k in basis])
@@ -1256,14 +1338,15 @@ def build_padded_batches(
         elif len(shift_keys) == 1:
             hit = base * _ramp(shift_keys[0], base.dtype, th, tw)
         else:
-            hit = base * jnp.stack([_ramp(s, base.dtype, th, tw)
-                                    for s in shift_keys])
+            hit = base * jnp.stack([_ramp(s, base.dtype, th, tw) for s in shift_keys])
         basis_fft_cache[key] = hit
         return hit
 
     if use_basis and not all(v.get("psf_basis") is not None for v in views):
-        raise ValueError("build_padded_batches: psf_basis must be given "
-                         "for every view or for none")
+        raise ValueError(
+            "build_padded_batches: psf_basis must be given "
+            "for every view or for none"
+        )
 
     def _psf_stack(th, tw):
         """(n_views, th, tw//2+1) per-view PSF transforms on a (th, tw) grid."""
@@ -1276,7 +1359,7 @@ def build_padded_batches(
             # eager per-tile launches on the CPU-bound build stage's critical
             # path (measured +21.6 ms/cutout at K=9-12; see proj research note
             # 2026-07-28-node-comparison, §PSF).
-            groups = {}                   # gkey -> [bf, [view idx], [weights]]
+            groups = {}  # gkey -> [bf, [view idx], [weights]]
             gorder = []
             for i, v in enumerate(views):
                 basis = v["psf_basis"]
@@ -1294,8 +1377,11 @@ def build_padded_batches(
                 gkey = (id(basis), shift_keys)
                 g = groups.get(gkey)
                 if g is None:
-                    bf = (_basis_fft(basis, th=th, tw=tw) if shift_keys is None
-                          else _basis_fft(basis, shift_keys, th=th, tw=tw))
+                    bf = (
+                        _basis_fft(basis, th=th, tw=tw)
+                        if shift_keys is None
+                        else _basis_fft(basis, shift_keys, th=th, tw=tw)
+                    )
                     g = groups[gkey] = [bf, [], []]
                     gorder.append(gkey)
                 g[1].append(i)
@@ -1306,15 +1392,15 @@ def build_padded_batches(
             # per-view path was a matvec and never hit TF32, so pin full fp32.
             if len(groups) == 1:
                 bf, _, ws = groups[gorder[0]]
-                wmat = jnp.asarray(np.stack(ws), dtype=bf.real.dtype)   # (T, K)
-                return jnp.tensordot(wmat, bf, axes=(1, 0),
-                                     precision="highest")
+                wmat = jnp.asarray(np.stack(ws), dtype=bf.real.dtype)  # (T, K)
+                return jnp.tensordot(wmat, bf, axes=(1, 0), precision="highest")
             blended, idx = [], []
             for gkey in gorder:
                 bf, idxs, ws = groups[gkey]
                 wmat = jnp.asarray(np.stack(ws), dtype=bf.real.dtype)
-                blended.append(jnp.tensordot(wmat, bf, axes=(1, 0),
-                                              precision="highest"))
+                blended.append(
+                    jnp.tensordot(wmat, bf, axes=(1, 0), precision="highest")
+                )
                 idx.extend(idxs)
             # invert the group-major ordering back to view order
             perm = np.argsort(np.asarray(idx))
@@ -1323,16 +1409,18 @@ def build_padded_batches(
         for v in views:
             key = (id(v["psf"]), _shift_key(_shift_hr(v.get("psf_shift"))))
             if key not in unique_fft:
-                unique_fft[key] = _fft_for(v["psf"],
-                                           _shift_hr(v.get("psf_shift")),
-                                           th=th, tw=tw)
+                unique_fft[key] = _fft_for(
+                    v["psf"], _shift_hr(v.get("psf_shift")), th=th, tw=tw
+                )
         if len(unique_fft) == 1:
             one = next(iter(unique_fft.values()))
             return jnp.broadcast_to(one[None], (n_views,) + one.shape)
-        return jnp.stack([
-            unique_fft[(id(v["psf"]),
-                        _shift_key(_shift_hr(v.get("psf_shift"))))]
-            for v in views])
+        return jnp.stack(
+            [
+                unique_fft[(id(v["psf"]), _shift_key(_shift_hr(v.get("psf_shift"))))]
+                for v in views
+            ]
+        )
 
     psf_fft_stack = _psf_stack(target_h, target_w)
 
@@ -1343,31 +1431,40 @@ def build_padded_batches(
         S = int(render_stamp)
         k_hr = int(round(target_sampling))
         if abs(target_sampling - k_hr) > 1e-9:
-            raise ValueError("render_stamp requires an integer target "
-                             f"sampling factor, got {target_sampling}")
+            raise ValueError(
+                "render_stamp requires an integer target "
+                f"sampling factor, got {target_sampling}"
+            )
         if S % 2 or S % k_hr:
-            raise ValueError(f"render_stamp={S} must be even and a multiple "
-                             f"of the sampling factor {k_hr}")
+            raise ValueError(
+                f"render_stamp={S} must be even and a multiple "
+                f"of the sampling factor {k_hr}"
+            )
         local_factor = 1.0 / psf_sampling if psf_sampling < 1.0 else 1.0
         ratio = target_sampling / local_factor
         ph_hr = int(round(max_psf_h * ratio))
         pw_hr = int(round(max_psf_w * ratio))
         if max(ph_hr, pw_hr) + 2 > S:
-            raise ValueError(f"render_stamp={S} is too small for a "
-                             f"{ph_hr}x{pw_hr} high-res kernel (+2)")
+            raise ValueError(
+                f"render_stamp={S} is too small for a "
+                f"{ph_hr}x{pw_hr} high-res kernel (+2)"
+            )
         stamp_stack = _psf_stack(S, S)
         # Kernel extent for the galaxy compact/large split: the enclosed-flux
         # radius of every distinct kernel in the batch, in high-res pixels of
         # the target grid (the kernels are at 1/psf_sampling; scale by ratio).
         kern_ids, psf_r_hr = set(), 0.0
         for v in views:
-            for kern in (v["psf_basis"] if v.get("psf_basis") is not None
-                         else [v["psf"]]):
+            for kern in (
+                v["psf_basis"] if v.get("psf_basis") is not None else [v["psf"]]
+            ):
                 if id(kern) in kern_ids:
                     continue
                 kern_ids.add(id(kern))
-                psf_r_hr = max(psf_r_hr, ratio * _kernel_enclosed_radius_cached(
-                    kern, stamp_flux_frac))
+                psf_r_hr = max(
+                    psf_r_hr,
+                    ratio * _kernel_enclosed_radius_cached(kern, stamp_flux_frac),
+                )
         stamp_meta = {"S": S, "k": k_hr, "psf_r_hr": float(psf_r_hr)}
 
     psf_dict = {
@@ -1420,16 +1517,19 @@ def build_padded_batches(
             stamp_mask = gal_mask.copy()
             large_rows = [[] for _ in range(n_views)]
             if gal_ci.size:
-                cd_norm = float(np.linalg.norm(
-                    np.asarray(cd_inv, dtype=np.float64), 2))
-                r_prof = np.asarray([
-                    _mog_enclosed_radius_cached(round(float(s), 9), p.amp, p.var,
-                                                stamp_flux_frac)
-                    for s, p in zip(uniq_sersic, uniq_profs)],
-                    dtype=np.float64)                           # units of r_e
+                cd_norm = float(np.linalg.norm(np.asarray(cd_inv, dtype=np.float64), 2))
+                r_prof = np.asarray(
+                    [
+                        _mog_enclosed_radius_cached(
+                            round(float(s), 9), p.amp, p.var, stamp_flux_frac
+                        )
+                        for s, p in zip(uniq_sersic, uniq_profs)
+                    ],
+                    dtype=np.float64,
+                )  # units of r_e
                 re_deg = np.maximum(1.0 / 30.0, shape_r_arr[gal_ci]) / 3600.0
                 r_gal_native = r_prof[gal_prof_inv] * re_deg * cd_norm
-                radius_hr = (r_gal_native * k_hr + stamp_meta["psf_r_hr"] + 1.0)
+                radius_hr = r_gal_native * k_hr + stamp_meta["psf_r_hr"] + 1.0
                 is_large = radius_hr > (0.5 * S - 1.0)
                 stamp_mask[gal_v[is_large], gal_k[is_large]] = 0.0
                 for vi, kk in zip(gal_v[is_large], gal_k[is_large]):
@@ -1441,8 +1541,8 @@ def build_padded_batches(
             large_mask = np.zeros((n_views, n_large_max), dtype=dtype)
             for vi, rows in enumerate(large_rows):
                 if rows:
-                    large_idx[vi, :len(rows)] = rows
-                    large_mask[vi, :len(rows)] = 1.0
+                    large_idx[vi, : len(rows)] = rows
+                    large_mask[vi, : len(rows)] = 1.0
             batches["Galaxy"]["stamp_mask"] = stamp_mask
             batches["Galaxy"]["large_idx"] = large_idx
             batches["Galaxy"]["large_mask"] = large_mask
@@ -1451,17 +1551,25 @@ def build_padded_batches(
 
     # One transfer for every host array (dtype canonicalization as jnp.asarray)
     host_images, batches, initial_fluxes = jax.device_put(
-        (host_images, batches, np.asarray(init_flux, dtype=dtype)))
+        (host_images, batches, np.asarray(init_flux, dtype=dtype))
+    )
     images_data = {
         "data": host_images["data"],
         "invvar": host_images["invvar"],
         "psf": psf_dict,
     }
 
-    meta = {"max_ps": max_ps, "max_gal": max_gal, "max_mog_k": max_mog_k,
-            "n_flux": n_flux, "bg_idx": bg_idx,
-            "src_slot": src_slot_per_view, "counts": counts,
-            "render_stamp": (None if stamp_meta is None else stamp_meta["S"]),
-            "n_large_max": n_large_max}
-    return BatchBundle(images_data, batches, initial_fluxes,
-                       batches_in_axes(batches), meta)
+    meta = {
+        "max_ps": max_ps,
+        "max_gal": max_gal,
+        "max_mog_k": max_mog_k,
+        "n_flux": n_flux,
+        "bg_idx": bg_idx,
+        "src_slot": src_slot_per_view,
+        "counts": counts,
+        "render_stamp": (None if stamp_meta is None else stamp_meta["S"]),
+        "n_large_max": n_large_max,
+    }
+    return BatchBundle(
+        images_data, batches, initial_fluxes, batches_in_axes(batches), meta
+    )

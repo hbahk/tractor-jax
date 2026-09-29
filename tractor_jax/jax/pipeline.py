@@ -20,6 +20,7 @@ The engine owns overlap-correctness and backpressure only; everything inside
 ``build_fn`` and the ``items`` descriptors (FITS IO, WCS, catalog slicing,
 tile geometry) stays user code.
 """
+
 import itertools
 import os
 from collections import deque
@@ -79,14 +80,13 @@ def prefetch_pipeline(items, build_fn, *, depth=2, executor="thread"):
             yield build_fn(item)
         return
     if executor == "thread":
-        pool = ThreadPoolExecutor(max_workers=1,
-                                  thread_name_prefix="tj-prefetch")
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tj-prefetch")
     elif executor == "process":
-        pool = ProcessPoolExecutor(max_workers=depth,
-                                   initializer=_process_worker_init)
+        pool = ProcessPoolExecutor(max_workers=depth, initializer=_process_worker_init)
     else:
-        raise ValueError(f"unknown executor {executor!r}; expected "
-                         "'thread', 'process' or 'sync'")
+        raise ValueError(
+            f"unknown executor {executor!r}; expected " "'thread', 'process' or 'sync'"
+        )
 
     it = iter(items)
     window = deque()
@@ -94,7 +94,7 @@ def prefetch_pipeline(items, build_fn, *, depth=2, executor="thread"):
         for item in itertools.islice(it, depth):
             window.append(pool.submit(build_fn, item))
         while window:
-            result = window.popleft().result()   # re-raises build errors
+            result = window.popleft().result()  # re-raises build errors
             # Top up BEFORE yielding so the worker builds while the
             # consumer processes `result`.
             for item in itertools.islice(it, 1):

@@ -6,7 +6,13 @@ public API may still change between minor releases.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- American spelling throughout (center, neighbor, normalize, ...) in
+  comments, docstrings, docs and messages; only private and test names
+  changed, no public ones.
+- The code is formatted with black (`[tool.black]` in `pyproject.toml`);
+  `.git-blame-ignore-revs` lists the formatting commit.
 
 ## [0.3.1] — 2026-09-25
 
@@ -20,7 +26,7 @@ Nothing yet.
   — and `mask_frac`, the fraction of the source's template on masked pixels.
   They cost three matrix-vector products of the design matrix the solve
   already built, and flag what a flux error cannot: an unflagged bad pixel, a
-  cosmic ray or unmodelled structure under the source (a SPHEREx visit with a
+  cosmic ray or unmodeled structure under the source (a SPHEREx visit with a
   cold pixel beside the target came out at 200x the source's median `chi2`).
   Off by default; `lasso` rejects it. Eager calls return identical fluxes;
   under `jit` the extra outputs change XLA's fusion of the shared graph, so the
@@ -36,7 +42,7 @@ Nothing yet.
   the batch renderers take a static `pixel_integration` option:
   `"window"` (default, unchanged) integrates the high-res render over each
   native pixel, the right thing for an *optical* PSF; `"point"` samples it at
-  the native pixel centres (`rendering.decimate_int_point`, the block-centre
+  the native pixel centers (`rendering.decimate_int_point`, the block-center
   sample times `k^2`), the right thing for an *effective* PSF that already
   contains the pixel response, such as the SPHEREx R7 ePSF (5x, unit sum on
   the oversampled grid). Integrating an effective PSF again applies the pixel
@@ -169,7 +175,7 @@ package.
 
 ### Fixed
 
-- **Unrecognised PSFs silently returned zero fluxes.** `extract_model_data`
+- **Unrecognized PSFs silently returned zero fluxes.** `extract_model_data`
   dispatched only on `PixelizedPSF` and `GaussianMixturePSF` with a silent
   fall-through, so an `NCircularGaussianPSF` or a `HybridPixelizedPSF` rendered
   as an all-zero template and every source came back with flux 0 and infinite

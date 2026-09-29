@@ -4,33 +4,35 @@ from tractor_jax import ducks
 
 
 class Mag(ScalarParam):
-    '''An implementation of `Brightness` that stores a single magnitude.'''
+    """An implementation of `Brightness` that stores a single magnitude."""
+
     stepsize = -0.01
-    strformat = '%.3f'
+    strformat = "%.3f"
 
 
 class Flux(ScalarParam):
-    '''A `Brightness` implementation that stores raw counts.'''
+    """A `Brightness` implementation that stores raw counts."""
 
     def __mul__(self, factor):
         new = self.copy()
         new.val *= factor
         return new
+
     __rmul__ = __mul__
 
 
 class MultiBandBrightness(ParamList, ducks.Brightness):
-    '''An implementation of `Brightness` that stores an independent
+    """An implementation of `Brightness` that stores an independent
     brightness in a set of named bands.
 
     The PhotoCal for an image must know its band, and then it can
     retrieve the appropriate brightness for the image in question.
 
     This is the base class for Mags and Fluxes.
-    '''
+    """
 
     def __init__(self, **kwargs):
-        '''Create a MultiBandBrightness from per-band keyword arguments.
+        """Create a MultiBandBrightness from per-band keyword arguments.
 
         Parameters
         ----------
@@ -40,13 +42,13 @@ class MultiBandBrightness(ParamList, ducks.Brightness):
             The ``order`` keyword is optional; it determines the
             ordering of the bands in the parameter vector (eg,
             ``getParams()``).
-        '''
-        keys = kwargs.pop('order', None)
+        """
+        keys = kwargs.pop("order", None)
         if keys is None:
             keys = list(kwargs.keys())
             keys.sort()
-        assert(len(kwargs) == len(keys))
-        assert(set(kwargs.keys()) == set(keys))
+        assert len(kwargs) == len(keys)
+        assert set(kwargs.keys()) == set(keys)
         vals = []
         for k in keys:
             vals.append(kwargs[k])
@@ -55,19 +57,18 @@ class MultiBandBrightness(ParamList, ducks.Brightness):
         self.addNamedParams(**dict((k, i) for i, k in enumerate(keys)))
 
     def __setstate__(self, state):
-        '''Restore state from pickling.
+        """Restore state from pickling.
 
         Parameters
         ----------
         state : dict
             The pickled instance ``__dict__``.
-        '''
+        """
         self.__dict__ = state
-        self.addNamedParams(**dict((k, i)
-                                   for i, k in enumerate(self.order)))
+        self.addNamedParams(**dict((k, i) for i, k in enumerate(self.order)))
 
     def copy(self):
-        return self * 1.
+        return self * 1.0
 
     def getBand(self, band):
         return getattr(self, band)
@@ -77,14 +78,14 @@ class MultiBandBrightness(ParamList, ducks.Brightness):
 
 
 class Mags(MultiBandBrightness):
-    '''An implementation of `Brightness` that stores magnitudes in
+    """An implementation of `Brightness` that stores magnitudes in
     multiple bands.
 
     Works with MagsPhotoCal.
-    '''
+    """
 
     def __init__(self, **kwargs):
-        '''Create a Mags object from per-band keyword arguments.
+        """Create a Mags object from per-band keyword arguments.
 
         Parameters
         ----------
@@ -93,12 +94,12 @@ class Mags(MultiBandBrightness):
             ``Mags(r=14.3, g=15.6, order=['r','g'])``.  The ``order``
             keyword is optional; it determines the ordering of the
             bands in the parameter vector (eg, ``getParams()``).
-        '''
+        """
         super(Mags, self).__init__(**kwargs)
         self.stepsizes = [-0.01] * self.numberOfParams()
 
     def getMag(self, bandname):
-        '''Return the magnitude in the given band.
+        """Return the magnitude in the given band.
 
         Parameters
         ----------
@@ -109,7 +110,7 @@ class Mags(MultiBandBrightness):
         -------
         float
             Magnitude in the given band.
-        '''
+        """
         return self.getBand(bandname)
 
     def setMag(self, bandname, mag):
@@ -129,7 +130,7 @@ class Mags(MultiBandBrightness):
         for band in self.order:
             m1 = self.getMag(band)
             m2 = other.getMag(band)
-            msum = -2.5 * np.log10(10.**(-m1 / 2.5) + 10.**(-m2 / 2.5))
+            msum = -2.5 * np.log10(10.0 ** (-m1 / 2.5) + 10.0 ** (-m2 / 2.5))
             kwargs[band] = msum
         return Mags(order=self.order, **kwargs)
 
@@ -151,9 +152,9 @@ class Mags(MultiBandBrightness):
 
 
 class Fluxes(MultiBandBrightness):
-    '''An implementation of `Brightness` that stores fluxes in multiple
+    """An implementation of `Brightness` that stores fluxes in multiple
     bands.
-    '''
+    """
 
     def __add__(self, other):
         kwargs = {}
@@ -178,29 +179,29 @@ class Fluxes(MultiBandBrightness):
 
 
 class NanoMaggies(Fluxes):
-    '''A `Brightness` implementation that stores nano-maggies (ie,
+    """A `Brightness` implementation that stores nano-maggies (ie,
     calibrated flux units), which have the advantage of being linear
     and easily convertible to mags.
-    '''
+    """
 
     def __repr__(self):
         return str(self)
 
     def __str__(self):
-        s = getClassName(self) + ': '
+        s = getClassName(self) + ": "
         ss = []
         for b in self.order:
             f = self.getFlux(b)
             if f <= 0:
-                ss.append('%s=(flux %.3g)' % (b, f))
+                ss.append("%s=(flux %.3g)" % (b, f))
             else:
                 m = self.getMag(b)
-                ss.append('%s=%.3g' % (b, m))
-        s += ', '.join(ss)
+                ss.append("%s=%.3g" % (b, m))
+        s += ", ".join(ss)
         return s
 
     def getMag(self, band):
-        '''Convert to mag.
+        """Convert to mag.
 
         Parameters
         ----------
@@ -211,7 +212,7 @@ class NanoMaggies(Fluxes):
         -------
         float
             Magnitude corresponding to the flux in the given band.
-        '''
+        """
         flux = self.getFlux(band)
         mag = NanoMaggies.nanomaggiesToMag(flux)
         return mag
@@ -221,12 +222,12 @@ class NanoMaggies(Fluxes):
         order = mag.order
         return NanoMaggies(
             order=order,
-            **dict([(k, NanoMaggies.magToNanomaggies(mag.getMag(k)))
-                    for k in order]))
+            **dict([(k, NanoMaggies.magToNanomaggies(mag.getMag(k))) for k in order]),
+        )
 
     @staticmethod
     def magToNanomaggies(mag):
-        nmgy = 10. ** ((mag - 22.5) / -2.5)
+        nmgy = 10.0 ** ((mag - 22.5) / -2.5)
         return nmgy
 
     @staticmethod
@@ -236,7 +237,7 @@ class NanoMaggies(Fluxes):
 
     @staticmethod
     def zeropointToScale(zp):
-        '''Convert a traditional magnitude zeropoint to a scale factor.
+        """Convert a traditional magnitude zeropoint to a scale factor.
 
         Parameters
         ----------
@@ -248,12 +249,12 @@ class NanoMaggies(Fluxes):
         float
             The scale factor by which nanomaggies should be multiplied
             to produce image counts.
-        '''
-        return 10.**((zp - 22.5) / 2.5)
+        """
+        return 10.0 ** ((zp - 22.5) / 2.5)
 
     @staticmethod
     def scaleToZeropoint(zpscale):
-        '''Convert a scale factor into a traditional magnitude zeropoint.
+        """Convert a scale factor into a traditional magnitude zeropoint.
 
         Parameters
         ----------
@@ -265,7 +266,7 @@ class NanoMaggies(Fluxes):
         -------
         float
             The traditional magnitude zeropoint.
-        '''
+        """
         return 22.5 + 2.5 * np.log10(zpscale)
 
     @staticmethod
@@ -273,14 +274,14 @@ class NanoMaggies(Fluxes):
         flux = np.atleast_1d(flux)
         flux_invvar = np.atleast_1d(flux_invvar)
         dflux = np.zeros(len(flux))
-        okiv = (flux_invvar > 0)
-        dflux[okiv] = (1. / np.sqrt(flux_invvar[okiv]))
-        okflux = (flux > 0)
+        okiv = flux_invvar > 0
+        dflux[okiv] = 1.0 / np.sqrt(flux_invvar[okiv])
+        okflux = flux > 0
         mag = np.zeros(len(flux))
-        mag[okflux] = (NanoMaggies.nanomaggiesToMag(flux[okflux]))
+        mag[okflux] = NanoMaggies.nanomaggiesToMag(flux[okflux])
         dmag = np.zeros(len(flux))
-        ok = (okiv * okflux)
-        dmag[ok] = (np.abs((-2.5 / np.log(10.)) * dflux[ok] / flux[ok]))
+        ok = okiv * okflux
+        dmag[ok] = np.abs((-2.5 / np.log(10.0)) * dflux[ok] / flux[ok])
         mag[np.logical_not(okflux)] = np.nan
         dmag[np.logical_not(ok)] = np.nan
         return mag.astype(np.float32), dmag.astype(np.float32)
@@ -299,16 +300,16 @@ class FluxesPhotoCal(BaseParams, ducks.ImageCalibration):
         return flux
 
     def __str__(self):
-        return 'FluxesPhotoCal(band=%s)' % (self.band)
+        return "FluxesPhotoCal(band=%s)" % (self.band)
 
 
 class MagsPhotoCal(ParamList, ducks.ImageCalibration):
-    '''A `PhotoCal` implementation to be used with zeropoint-calibrated
+    """A `PhotoCal` implementation to be used with zeropoint-calibrated
     `Mags`.
-    '''
+    """
 
     def __init__(self, band, zeropoint):
-        '''Create a new ``MagsPhotoCal`` object with a zeropoint in a
+        """Create a new ``MagsPhotoCal`` object with a zeropoint in a
         band.
 
         Parameters
@@ -318,10 +319,10 @@ class MagsPhotoCal(ParamList, ducks.ImageCalibration):
             `band` as one of their available bands.
         zeropoint : float
             Magnitude zeropoint in that band.
-        '''
+        """
         self.band = band
         # MAGIC
-        self.maxmag = 50.
+        self.maxmag = 50.0
         ParamList.__init__(self, zeropoint)
 
     def copy(self):
@@ -337,35 +338,35 @@ class MagsPhotoCal(ParamList, ducks.ImageCalibration):
     def brightnessToCounts(self, brightness):
         mag = brightness.getMag(self.band)
         if not np.isfinite(mag):
-            return 0.
+            return 0.0
         if mag > self.maxmag:
-            return 0.
-        return 10.**(0.4 * (self.zp - mag))
+            return 0.0
+        return 10.0 ** (0.4 * (self.zp - mag))
 
     def countsToMag(self, counts):
         return self.zp - 2.5 * np.log10(counts)
 
     def __str__(self):
-        return 'MagsPhotoCal(band=%s, zp=%.3f)' % (self.band, self.zp)
+        return "MagsPhotoCal(band=%s, zp=%.3f)" % (self.band, self.zp)
 
 
 class NullPhotoCal(BaseParams, ducks.ImageCalibration):
-    '''The "identity" `PhotoCal`, to be used with `Flux` -- the
+    """The "identity" `PhotoCal`, to be used with `Flux` -- the
     `Brightness` objects are in units of `Image` counts.
-    '''
+    """
 
     def brightnessToCounts(self, brightness):
         return brightness.getValue()
 
 
 class LinearPhotoCal(ScalarParam, ducks.ImageCalibration):
-    '''A `PhotoCal`, to be used with `Flux` or `Fluxes` brightnesses,
+    """A `PhotoCal`, to be used with `Flux` or `Fluxes` brightnesses,
     that simply scales the flux by a fixed factor; the brightness
     units are proportional to image counts.
-    '''
+    """
 
     def __init__(self, scale, band=None):
-        '''Create a new LinearPhotoCal object that scales the Fluxes by
+        """Create a new LinearPhotoCal object that scales the Fluxes by
         the given factor to produce image counts.
 
         Parameters
@@ -376,7 +377,7 @@ class LinearPhotoCal(ScalarParam, ducks.ImageCalibration):
         band : str, optional
             If not None, will retrieve that band from a `Fluxes`
             object.
-        '''
+        """
         super(LinearPhotoCal, self).__init__(scale)
         self.band = band
 
@@ -395,6 +396,9 @@ class LinearPhotoCal(ScalarParam, ducks.ImageCalibration):
 
     def toStandardFitsHeader(self, hdr):
         hdr.add_record(
-            dict(name='MAGZP',
-                 value=NanoMaggies.scaleToZeropoint(self.getScale()),
-                 comment='Zeropoint magnitude'))
+            dict(
+                name="MAGZP",
+                value=NanoMaggies.scaleToZeropoint(self.getScale()),
+                comment="Zeropoint magnitude",
+            )
+        )

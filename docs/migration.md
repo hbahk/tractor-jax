@@ -4,7 +4,7 @@ TractorJAX mirrors [The Tractor](https://github.com/dstndstn/tractor)'s model
 API deliberately: `Image`, `Catalog`, `PointSource`, `PixPos`, `Flux`,
 `GalaxyShape`, `PixelizedPSF` and friends keep their names and constructor
 signatures, so scene-building code usually ports with an import change. What
-differs is how you *fit*, and a few behavioural details worth knowing before you
+differs is how you *fit*, and a few behavioral details worth knowing before you
 compare numbers.
 
 ## What ports unchanged

@@ -19,21 +19,26 @@ def _oversampled_gaussian_psf(n=51, oversamp=5, fwhm_native=2.5):
     sigma = fwhm_native / 2.3548200450309493 * oversamp
     c = (n - 1) / 2.0
     yy, xx = np.mgrid[0:n, 0:n]
-    p = np.exp(-((xx - c) ** 2 + (yy - c) ** 2) / (2.0 * sigma ** 2))
+    p = np.exp(-((xx - c) ** 2 + (yy - c) ** 2) / (2.0 * sigma**2))
     return (p / p.sum()).astype(np.float32)
 
 
 def _image(psf):
-    return Image(data=np.zeros((40, 40), np.float32),
-                 inverr=np.ones((40, 40), np.float32),
-                 psf=psf, wcs=NullWCS(pixscale=6.15), sky=ConstantSky(0.0))
+    return Image(
+        data=np.zeros((40, 40), np.float32),
+        inverr=np.ones((40, 40), np.float32),
+        psf=psf,
+        wcs=NullWCS(pixscale=6.15),
+        sky=ConstantSky(0.0),
+    )
 
 
 def test_galaxy_ft_render_carries_unit_flux():
     psf = PixelizedPSF(_oversampled_gaussian_psf(), sampling=0.2)
     tim = _image(psf)
-    gal = SersicGalaxy(PixPos(18.0, 30.0), Flux(1.0),
-                       GalaxyShape(1.5, 0.8, 30.0), SersicIndex(1.0))
+    gal = SersicGalaxy(
+        PixPos(18.0, 30.0), Flux(1.0), GalaxyShape(1.5, 0.8, 30.0), SersicIndex(1.0)
+    )
     total = float(np.asarray(Tractor([tim], [gal]).getModelImage(0)).sum())
     assert total == pytest.approx(1.0, abs=0.02)
 
@@ -51,24 +56,46 @@ def test_galaxy_ft_psf_is_pixel_integrated():
     tim = _image(psf)
     pos = PixPos(18.3, 20.15)
     ps = np.asarray(Tractor([tim], [PointSource(pos, Flux(1.0))]).getModelImage(0))
-    gal = np.asarray(Tractor(
-        [tim], [SersicGalaxy(pos, Flux(1.0), GalaxyShape(0.02, 1.0, 0.0),
-                             SersicIndex(1.0))]).getModelImage(0))
+    gal = np.asarray(
+        Tractor(
+            [tim],
+            [
+                SersicGalaxy(
+                    pos, Flux(1.0), GalaxyShape(0.02, 1.0, 0.0), SersicIndex(1.0)
+                )
+            ],
+        ).getModelImage(0)
+    )
     assert np.abs(gal - ps).max() / ps.max() < 0.01
-    assert np.sqrt((gal ** 2).sum()) == pytest.approx(
-        float(np.sqrt((ps ** 2).sum())), rel=0.01)
+    assert np.sqrt((gal**2).sum()) == pytest.approx(
+        float(np.sqrt((ps**2).sum())), rel=0.01
+    )
 
 
 def test_galaxy_matches_point_source_flux_scale():
     psf = PixelizedPSF(_oversampled_gaussian_psf(), sampling=0.2)
     tim = _image(psf)
-    ps_total = float(np.asarray(
-        Tractor([tim], [PointSource(PixPos(12.0, 14.0), Flux(1.0))])
-        .getModelImage(0)).sum())
-    gal_total = float(np.asarray(
-        Tractor([tim], [SersicGalaxy(PixPos(18.0, 30.0), Flux(1.0),
-                                     GalaxyShape(1.5, 0.8, 30.0),
-                                     SersicIndex(1.0))])
-        .getModelImage(0)).sum())
+    ps_total = float(
+        np.asarray(
+            Tractor([tim], [PointSource(PixPos(12.0, 14.0), Flux(1.0))]).getModelImage(
+                0
+            )
+        ).sum()
+    )
+    gal_total = float(
+        np.asarray(
+            Tractor(
+                [tim],
+                [
+                    SersicGalaxy(
+                        PixPos(18.0, 30.0),
+                        Flux(1.0),
+                        GalaxyShape(1.5, 0.8, 30.0),
+                        SersicIndex(1.0),
+                    )
+                ],
+            ).getModelImage(0)
+        ).sum()
+    )
     # both unit-flux sources must render with the same total (no 25x mismatch)
     assert gal_total == pytest.approx(ps_total, rel=0.02)

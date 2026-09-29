@@ -1,6 +1,6 @@
-
 import numpy as np
 import jax
+
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from tractor_jax import Tractor, Image, PointSource, Catalog, NullWCS, ConstantSky
@@ -8,6 +8,7 @@ from tractor_jax.brightness import Flux
 from tractor_jax.wcs import PixPos
 from tractor_jax.jax.optimizer import JaxOptimizer, extract_model_data, render_image
 from tractor_jax.psf import PixelizedPSF
+
 
 def test_jax_optimizer_accuracy():
     # Setup
@@ -44,27 +45,33 @@ def test_jax_optimizer_accuracy():
     # Generate Synthetic Data using JAX to ensure consistency
     # (Since CPU generation is slightly flawed in this env)
 
-    images_data, batches, initial_fluxes = extract_model_data(tractor, oversample_rendering=True)
+    images_data, batches, initial_fluxes = extract_model_data(
+        tractor, oversample_rendering=True
+    )
 
     # Check PSF FFT
-    psf_fft = images_data['psf']['fft']
+    psf_fft = images_data["psf"]["fft"]
     print("PSF FFT shape:", psf_fft.shape)
     print("PSF FFT sum:", jnp.sum(jnp.abs(psf_fft)))
 
     # Slice for render
     single_image_data = jax.tree_util.tree_map(lambda x: x[0], images_data)
     single_batches = {}
-    if 'PointSource' in batches:
-        single_batches['PointSource'] = {
-            'flux_idx': batches['PointSource']['flux_idx'][0],
-            'pos_pix': batches['PointSource']['pos_pix'][0],
-            'mask': batches['PointSource']['mask'][0] if 'mask' in batches['PointSource'] else None
+    if "PointSource" in batches:
+        single_batches["PointSource"] = {
+            "flux_idx": batches["PointSource"]["flux_idx"][0],
+            "pos_pix": batches["PointSource"]["pos_pix"][0],
+            "mask": (
+                batches["PointSource"]["mask"][0]
+                if "mask" in batches["PointSource"]
+                else None
+            ),
         }
 
     # Debug render
     fluxes = initial_fluxes[0]
     print("Fluxes:", fluxes)
-    pos = single_batches['PointSource']['pos_pix']
+    pos = single_batches["PointSource"]["pos_pix"]
     print("Positions:", pos)
 
     true_model = render_image(initial_fluxes[0], single_image_data, single_batches)
@@ -110,6 +117,7 @@ def test_jax_optimizer_accuracy():
         print("PASS: JAX Optimizer recovered fluxes accurately.")
     else:
         print("FAIL: JAX Optimizer failed to recover fluxes.")
+
 
 if __name__ == "__main__":
     test_jax_optimizer_accuracy()

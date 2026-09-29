@@ -18,10 +18,12 @@ factors.
 
 Run in the `spherex` conda env:  pytest tests/test_registration_noninteger.py -q
 """
+
 import numpy as np
 import pytest
 
 import jax
+
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
@@ -30,11 +32,12 @@ from tractor_jax.brightness import Flux
 from tractor_jax.wcs import PixPos
 from tractor_jax.psf import PixelizedPSF
 from tractor_jax.jax.optimizer import (
-    extract_model_data, _render_source_templates,
+    extract_model_data,
+    _render_source_templates,
 )
 
-RATIO = 4.46371          # PIXSIZE / PSFSCALE of the SPHEREx field sim
-H = W = 40               # native tile size
+RATIO = 4.46371  # PIXSIZE / PSFSCALE of the SPHEREx field sim
+H = W = 40  # native tile size
 
 
 def make_kernel(n=65, sig=4.0):
@@ -42,21 +45,24 @@ def make_kernel(n=65, sig=4.0):
     registration errors show up in the centroid)."""
     yy, xx = np.mgrid[:n, :n] - (n - 1) / 2.0
     k = np.exp(-(xx**2 + yy**2) / (2 * sig**2))
-    k += 0.35 * np.exp(-((xx - 3.1)**2 + (yy + 2.2)**2) / (2 * (1.7 * sig)**2))
+    k += 0.35 * np.exp(-((xx - 3.1) ** 2 + (yy + 2.2) ** 2) / (2 * (1.7 * sig) ** 2))
     return k / k.sum()
 
 
 def engine_template(kernel, x, y):
     """Unit-flux template via the real driver chain (PixelizedPSF at the
     non-integer sampling, oversample_rendering, boxcar downsample)."""
-    img = Image(data=np.zeros((H, W)), inverr=np.ones((H, W)),
-                psf=PixelizedPSF(kernel, sampling=1.0 / RATIO),
-                wcs=NullWCS(pixscale=1.0), sky=ConstantSky(0.0))
+    img = Image(
+        data=np.zeros((H, W)),
+        inverr=np.ones((H, W)),
+        psf=PixelizedPSF(kernel, sampling=1.0 / RATIO),
+        wcs=NullWCS(pixscale=1.0),
+        sky=ConstantSky(0.0),
+    )
     tr = Tractor([img], Catalog(PointSource(PixPos(x, y), Flux(1.0))))
     images_data, batches, _ = extract_model_data(tr, oversample_rendering=True)
     single = jax.tree_util.tree_map(lambda a: a[0], images_data)
-    sb = {"PointSource": jax.tree_util.tree_map(lambda a: a[0],
-                                                batches["PointSource"])}
+    sb = {"PointSource": jax.tree_util.tree_map(lambda a: a[0], batches["PointSource"])}
     t = np.array(_render_source_templates(single, sb, 1))[0]
     return t[:H, :W]
 
@@ -95,7 +101,7 @@ def numpy_reference(kernel, x, y, hr_shape):
 
 
 def centroid(t):
-    yy, xx = np.mgrid[:t.shape[0], :t.shape[1]]
+    yy, xx = np.mgrid[: t.shape[0], : t.shape[1]]
     w = np.clip(t, 0, None)
     return np.sum(xx * w) / w.sum(), np.sum(yy * w) / w.sum()
 
@@ -107,9 +113,13 @@ def kernel():
 
 def test_even_hr_width(kernel):
     """The HR grid width must come out even (rfft round-trip unambiguous)."""
-    img = Image(data=np.zeros((H, W)), inverr=np.ones((H, W)),
-                psf=PixelizedPSF(kernel, sampling=1.0 / RATIO),
-                wcs=NullWCS(pixscale=1.0), sky=ConstantSky(0.0))
+    img = Image(
+        data=np.zeros((H, W)),
+        inverr=np.ones((H, W)),
+        psf=PixelizedPSF(kernel, sampling=1.0 / RATIO),
+        wcs=NullWCS(pixscale=1.0),
+        sky=ConstantSky(0.0),
+    )
     tr = Tractor([img], Catalog(PointSource(PixPos(20.0, 20.0), Flux(1.0))))
     images_data, _, _ = extract_model_data(tr, oversample_rendering=True)
     rfft_w = images_data["psf"]["fft"].shape[-1]
@@ -138,9 +148,13 @@ def test_matched_filter_amplitude_vs_reference(kernel):
     independent numpy oracle: |a-1| small and phase swing tight (the old
     code swung +-6..10%)."""
     # discover the HR grid the engine actually used
-    img = Image(data=np.zeros((H, W)), inverr=np.ones((H, W)),
-                psf=PixelizedPSF(kernel, sampling=1.0 / RATIO),
-                wcs=NullWCS(pixscale=1.0), sky=ConstantSky(0.0))
+    img = Image(
+        data=np.zeros((H, W)),
+        inverr=np.ones((H, W)),
+        psf=PixelizedPSF(kernel, sampling=1.0 / RATIO),
+        wcs=NullWCS(pixscale=1.0),
+        sky=ConstantSky(0.0),
+    )
     tr = Tractor([img], Catalog(PointSource(PixPos(20.0, 20.0), Flux(1.0))))
     images_data, _, _ = extract_model_data(tr, oversample_rendering=True)
     H_hr = images_data["psf"]["fft"].shape[-2]

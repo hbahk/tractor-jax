@@ -2,16 +2,18 @@ import jax.numpy as jnp
 from jax import jit
 import numpy as np
 
+
 def get_overlapping_region(xlo, xhi, xmin, xmax):
     if xlo > xmax or xhi < xmin or xlo > xhi or xmin > xmax:
         return ([], [])
-    assert(xlo <= xhi)
-    assert(xmin <= xmax)
+    assert xlo <= xhi
+    assert xmin <= xmax
     xloclamp = max(xlo, xmin)
     Xlo = xloclamp - xlo
     xhiclamp = min(xhi, xmax)
     Xhi = Xlo + (xhiclamp - xloclamp)
-    return (slice(xloclamp, xhiclamp+1), slice(Xlo, Xhi+1))
+    return (slice(xloclamp, xhiclamp + 1), slice(Xlo, Xhi + 1))
+
 
 @jit
 def lanczos_filter(order, x):
@@ -25,10 +27,12 @@ def lanczos_filter(order, x):
     val = jnp.where(jnp.abs(x) >= order, 0.0, val)
     return val
 
+
 from functools import partial
 
-@partial(jit, static_argnames=['axis', 'mode'])
-def batch_correlate1d(a, b, axis=1, mode='constant'):
+
+@partial(jit, static_argnames=["axis", "mode"])
+def batch_correlate1d(a, b, axis=1, mode="constant"):
     # a: (z, m, n)
     # b: (y, x)
     # axis: 1 or 2
@@ -66,9 +70,9 @@ def batch_correlate1d(a, b, axis=1, mode='constant'):
     pad_width = []
     if npad > 0:
         if npad % 2 == 0:
-            pad_width = ((0, 0), (0, npad//2))
+            pad_width = ((0, 0), (0, npad // 2))
         else:
-            pad_width = ((0, 0), (npad//2+1, npad//2))
+            pad_width = ((0, 0), (npad // 2 + 1, npad // 2))
         padded_b = jnp.pad(b, pad_width)
     else:
         padded_b = b
@@ -98,7 +102,7 @@ def batch_correlate1d(a, b, axis=1, mode='constant'):
 
     c = jnp.real(jnp.fft.fftshift(jnp.fft.ifft(f_p, axis=axis), axes=(axis)))
 
-    if mode == 'full':
+    if mode == "full":
         return c
 
     # Clipping
@@ -111,6 +115,7 @@ def batch_correlate1d(a, b, axis=1, mode='constant'):
         return c[:, start:end, :]
     else:
         return c[:, :, start:end]
+
 
 def lanczos3_interpolate_grid(xstart, xstep, ystart, ystep, out_img, in_img):
     """Interpolate an image onto a regular grid using a Lanczos-3 kernel.
@@ -167,7 +172,7 @@ def lanczos3_interpolate_grid(xstart, xstep, ystart, ystep, out_img, in_img):
         mask1 = mask & (x != 0)
         res[mask0] = 1.0
         xp = x[mask1] * np.pi
-        res[mask1] = a * np.sin(xp) * np.sin(xp/a) / (xp**2)
+        res[mask1] = a * np.sin(xp) * np.sin(xp / a) / (xp**2)
         return res
 
     def lanczos_kernel_scaled(x, scale, a=3):

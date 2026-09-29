@@ -5,33 +5,45 @@ from tractor_jax.engine import logverb, OptResult, logmsg
 
 
 class Optimizer(object):
-    def optimize(self, tractor, alphas=None, damp=0, priors=True,
-                 scale_columns=True, shared_params=True, variance=False,
-                 just_variance=False):
+    def optimize(
+        self,
+        tractor,
+        alphas=None,
+        damp=0,
+        priors=True,
+        scale_columns=True,
+        shared_params=True,
+        variance=False,
+        just_variance=False,
+    ):
         pass
 
     def optimize_loop(self, tractor, **kwargs):
         pass
 
-    def forced_photometry(self, tractor,
-                          alphas=None, damp=0, priors=False,
-                          minsb=0.,
-                          mindlnp=1.,
-                          rois=None,
-                          sky=False,
-                          minFlux=None,
-                          fitstats=False,
-                          fitstat_extras=None,
-                          justims0=False,
-                          variance=False,
-                          skyvariance=False,
-                          shared_params=True,
-                          nonneg=False,
-                          nilcounts=-1e30,
-                          wantims=True,
-                          negfluxval=None,
-                          **kwargs
-                          ):
+    def forced_photometry(
+        self,
+        tractor,
+        alphas=None,
+        damp=0,
+        priors=False,
+        minsb=0.0,
+        mindlnp=1.0,
+        rois=None,
+        sky=False,
+        minFlux=None,
+        fitstats=False,
+        fitstat_extras=None,
+        justims0=False,
+        variance=False,
+        skyvariance=False,
+        shared_params=True,
+        nonneg=False,
+        nilcounts=-1e30,
+        wantims=True,
+        negfluxval=None,
+        **kwargs,
+    ):
         from tractor_jax.basics import LinearPhotoCal, ShiftedWcs
 
         result = OptResult()
@@ -39,37 +51,39 @@ class Optimizer(object):
         scales = []
         imgs = tractor.getImages()
         for img in imgs:
-            assert(isinstance(img.getPhotoCal(), LinearPhotoCal))
+            assert isinstance(img.getPhotoCal(), LinearPhotoCal)
             scales.append(img.getPhotoCal().getScale())
 
         if rois is not None:
-            assert(len(rois) == len(imgs))
+            assert len(rois) == len(imgs)
 
         # HACK -- if sky=True, assume we are fitting the sky in ALL images.
         # We could ask which ones are thawed...
         if sky:
             for img in imgs:
                 # FIXME -- would be nice to allow multi-param linear sky models
-                assert(img.getSky().numberOfParams() == 1)
+                assert img.getSky().numberOfParams() == 1
 
         Nsourceparams = tractor.catalog.numberOfParams()
         srcs = list(tractor.catalog.getThawedSources())
 
         # Render unit-flux models for each source.
-        #t0 = Time()
-        (umodels, umodtosource, umodsforsource
-         ) = self._get_umodels(tractor, srcs, imgs, minsb, rois, **kwargs)
+        # t0 = Time()
+        umodels, umodtosource, umodsforsource = self._get_umodels(
+            tractor, srcs, imgs, minsb, rois, **kwargs
+        )
         for umods in umodels:
-            assert(len(umods) == Nsourceparams)
-        #tmods = Time() - t0
-        #print('forced phot: getting unit-flux models:', tmods)
-        #print('Number of sources:', len(srcs))
-        #print('Number of source params:', Nsourceparams)
+            assert len(umods) == Nsourceparams
+        # tmods = Time() - t0
+        # print('forced phot: getting unit-flux models:', tmods)
+        # print('Number of sources:', len(srcs))
+        # print('Number of source params:', Nsourceparams)
 
         subimgs = []
         if rois is not None:
             for i, img in enumerate(imgs):
                 from tractor_jax.image import Image
+
                 roi = rois[i]
                 y0 = roi[0].start
                 x0 = roi[1].start
@@ -81,7 +95,7 @@ class Optimizer(object):
         else:
             imlist = imgs
 
-        #t0 = Time()
+        # t0 = Time()
         fsrcs = list(tractor.catalog.getFrozenSources())
         mod0 = []
         for img in imlist:
@@ -90,14 +104,13 @@ class Optimizer(object):
             # sky models to render themselves when evaluating lnProbs,
             # rather than pre-computing the nominal value here and
             # then computing derivatives.
-            mod0.append(tractor.getModelImage(
-                img, fsrcs, minsb=minsb, sky=not sky))
-        #tmod = Time() - t0
-        #logverb('forced phot: getting frozen-source model:', tmod)
+            mod0.append(tractor.getModelImage(img, fsrcs, minsb=minsb, sky=not sky))
+        # tmod = Time() - t0
+        # logverb('forced phot: getting frozen-source model:', tmod)
 
         skyderivs = None
         if sky:
-            #t0 = Time()
+            # t0 = Time()
             # build the derivative list as required by getUpdateDirection:
             #    (param0) ->  [  (deriv, img), (deriv, img), ...   ], ... ],
             skyderivs = []
@@ -106,9 +119,9 @@ class Optimizer(object):
                 for dsky in dskys:
                     skyderivs.append([(dsky, img)])
             Nsky = len(skyderivs)
-            assert(Nsky == tractor.images.numberOfParams())
-            assert(Nsky + Nsourceparams == tractor.numberOfParams())
-            #logverb('forced phot: sky derivs', Time() - t0)
+            assert Nsky == tractor.images.numberOfParams()
+            assert Nsky + Nsourceparams == tractor.numberOfParams()
+            # logverb('forced phot: sky derivs', Time() - t0)
         else:
             Nsky = 0
 
@@ -116,32 +129,67 @@ class Optimizer(object):
         if fitstats:
             wantims1 = True
 
-        #t0 = Time()
+        # t0 = Time()
         self._optimize_forcedphot_core(
-            tractor, result, umodels, imlist, mod0, scales, skyderivs, minFlux,
-            nonneg=nonneg, wantims0=wantims0, wantims1=wantims1,
-            negfluxval=negfluxval, rois=rois, priors=priors, sky=sky,
-            justims0=justims0, subimgs=subimgs, damp=damp, alphas=alphas,
-            Nsky=Nsky, mindlnp=mindlnp, shared_params=shared_params, **kwargs)
-        #print('Optimize_forcedphot_core:', Time()-t0)
+            tractor,
+            result,
+            umodels,
+            imlist,
+            mod0,
+            scales,
+            skyderivs,
+            minFlux,
+            nonneg=nonneg,
+            wantims0=wantims0,
+            wantims1=wantims1,
+            negfluxval=negfluxval,
+            rois=rois,
+            priors=priors,
+            sky=sky,
+            justims0=justims0,
+            subimgs=subimgs,
+            damp=damp,
+            alphas=alphas,
+            Nsky=Nsky,
+            mindlnp=mindlnp,
+            shared_params=shared_params,
+            **kwargs,
+        )
+        # print('Optimize_forcedphot_core:', Time()-t0)
 
         if variance:
             # Inverse variance
-            #t0 = Time()
-            result.IV = self._get_iv(sky, skyvariance, Nsky, skyderivs, Nsourceparams,
-                                     imlist, umodels, scales)
-            #logverb('forced phot: variance:', Time() - t0)
+            # t0 = Time()
+            result.IV = self._get_iv(
+                sky,
+                skyvariance,
+                Nsky,
+                skyderivs,
+                Nsourceparams,
+                imlist,
+                umodels,
+                scales,
+            )
+            # logverb('forced phot: variance:', Time() - t0)
 
-        imsBest = getattr(result, 'ims1', None)
+        imsBest = getattr(result, "ims1", None)
         if fitstats and imsBest is None:
-            print('Warning: fit stats not computed because imsBest is None')
+            print("Warning: fit stats not computed because imsBest is None")
             result.fitstats = None
         elif fitstats:
-            #t0 = Time()
+            # t0 = Time()
             result.fitstats = self._get_fitstats(
-                tractor.catalog, imsBest, srcs, imlist, umodsforsource,
-                umodels, scales, nilcounts, extras=fitstat_extras)
-            #logverb('forced phot: fit stats:', Time() - t0)
+                tractor.catalog,
+                imsBest,
+                srcs,
+                imlist,
+                umodsforsource,
+                umodels,
+                scales,
+                nilcounts,
+                extras=fitstat_extras,
+            )
+            # logverb('forced phot: fit stats:', Time() - t0)
         return result
 
     def _get_umodels(self, tractor, srcs, imgs, minsb, rois, **kwargs):
@@ -170,8 +218,9 @@ class Optimizer(object):
             else:
                 x0 = y0 = 0
             for si, src in enumerate(srcs):
-                counts = sum([pcal.brightnessToCounts(b)
-                              for b in src.getBrightnesses()])
+                counts = sum(
+                    [pcal.brightnessToCounts(b) for b in src.getBrightnesses()]
+                )
                 if counts <= 0:
                     mv = 1e-3
                 else:
@@ -180,7 +229,8 @@ class Optimizer(object):
                     mv = minsb / counts
                 mask = tractor._getModelMaskFor(img, src)
                 ums = src.getUnitFluxModelPatches(
-                    img, minval=mv, modelMask=mask, **kwargs)
+                    img, minval=mv, modelMask=mask, **kwargs
+                )
 
                 isvalid = False
                 isallzero = False
@@ -199,9 +249,9 @@ class Optimizer(object):
                         isallzero = False
 
                     if not np.all(np.isfinite(um.patch)):
-                        print('Non-finite patch for source', src)
-                        print('In image', img)
-                        assert(False)
+                        print("Non-finite patch for source", src)
+                        print("In image", img)
+                        assert False
 
                 # first image only:
                 if i == 0:
@@ -222,17 +272,45 @@ class Optimizer(object):
         return umodels, umodtosource, umodsforsource
 
     def _optimize_forcedphot_core(
-            self, tractor,
-            result, umodels, imlist, mod0, scales, skyderivs, minFlux,
-            nonneg=None, wantims0=None, wantims1=None,
-            negfluxval=None, rois=None, priors=None, sky=None,
-            justims0=None, subimgs=None, damp=None, alphas=None,
-            Nsky=None, mindlnp=None, shared_params=None):
-        raise RuntimeError('Unimplemented')
+        self,
+        tractor,
+        result,
+        umodels,
+        imlist,
+        mod0,
+        scales,
+        skyderivs,
+        minFlux,
+        nonneg=None,
+        wantims0=None,
+        wantims1=None,
+        negfluxval=None,
+        rois=None,
+        priors=None,
+        sky=None,
+        justims0=None,
+        subimgs=None,
+        damp=None,
+        alphas=None,
+        Nsky=None,
+        mindlnp=None,
+        shared_params=None,
+    ):
+        raise RuntimeError("Unimplemented")
 
-    def _get_fitstats(self, catalog, imsBest, srcs, imlist, umodsforsource,
-                      umodels, scales, nilcounts, extras=[]):
-        '''Compute per-image and per-source fit statistics.
+    def _get_fitstats(
+        self,
+        catalog,
+        imsBest,
+        srcs,
+        imlist,
+        umodsforsource,
+        umodels,
+        scales,
+        nilcounts,
+        extras=[],
+    ):
+        """Compute per-image and per-source fit statistics.
 
         Parameters
         ----------
@@ -248,12 +326,13 @@ class Optimizer(object):
         FitStats
             Object whose attributes hold the per-image and per-source
             fit statistics.
-        '''
+        """
         if extras is None:
             extras = []
 
         class FitStats(object):
             pass
+
         fs = FitStats()
 
         # Per-image stats:
@@ -289,7 +368,7 @@ class Optimizer(object):
         # within my profile
         skies = []
         for tim, (img, mod, ie, chi, roi) in zip(imlist, imsBest):
-            tim.getSky().addTo(mod, scale=-1.)
+            tim.getSky().addTo(mod, scale=-1.0)
             skies.append(tim.getSky().val)
         fs.sky = np.array(skies)
 
@@ -305,11 +384,11 @@ class Optimizer(object):
             src = catalog[si]
             # for each image
             for imi, (umods, scale, tim, (img, mod, ie, chi, roi)) in enumerate(
-                    zip(umodels, scales, imlist, imsBest)):
+                zip(umodels, scales, imlist, imsBest)
+            ):
                 # just use 'scale'?
                 pcal = tim.getPhotoCal()
-                cc = [pcal.brightnessToCounts(b)
-                      for b in src.getBrightnesses()]
+                cc = [pcal.brightnessToCounts(b) for b in src.getBrightnesses()]
                 sourcecounts = sum(cc)
                 if sourcecounts == 0:
                     continue
@@ -348,32 +427,43 @@ class Optimizer(object):
 
                 nz = np.flatnonzero((srcmod[slc] != 0) * (ie[slc] > 0))
                 if len(nz) == 0:
-                    srcmod[slc] = 0.
+                    srcmod[slc] = 0.0
                     continue
 
-                fs.prochi2[si] += np.sum(np.abs(srcmod[slc].flat[nz])
-                                         * chi[slc].flat[nz]**2)
+                fs.prochi2[si] += np.sum(
+                    np.abs(srcmod[slc].flat[nz]) * chi[slc].flat[nz] ** 2
+                )
                 fs.pronpix[si] += np.sum(np.abs(srcmod[slc].flat[nz]))
                 fs.promasked[si] += np.sum(np.abs(srcmod[slc][ie[slc] == 0]))
                 # (mod - srcmod*sourcecounts) is the model for everybody else
-                fracflux_num[si] += (np.sum((np.abs(mod[slc] / sourcecounts - srcmod[slc]) * np.abs(srcmod[slc])).flat[nz])
-                                     / np.sum((srcmod[slc]**2).flat[nz]))
-                fracflux_den[si] += np.sum(np.abs(srcmod[slc]
-                                                  ).flat[nz] / np.abs(sourcecounts))
+                fracflux_num[si] += np.sum(
+                    (
+                        np.abs(mod[slc] / sourcecounts - srcmod[slc])
+                        * np.abs(srcmod[slc])
+                    ).flat[nz]
+                ) / np.sum((srcmod[slc] ** 2).flat[nz])
+                fracflux_den[si] += np.sum(
+                    np.abs(srcmod[slc]).flat[nz] / np.abs(sourcecounts)
+                )
                 # scale to nanomaggies, weight by profile
-                fs.proflux[si] += np.sum((np.abs((mod[slc] - srcmod[slc]
-                                                  * sourcecounts) / scale) * np.abs(srcmod[slc])).flat[nz])
+                fs.proflux[si] += np.sum(
+                    (
+                        np.abs((mod[slc] - srcmod[slc] * sourcecounts) / scale)
+                        * np.abs(srcmod[slc])
+                    ).flat[nz]
+                )
                 fs.npix[si] += len(nz)
 
                 fracin_num[si] += np.sum(np.abs(srcmod[slc]))
-                fracin_den[si] += 1.
+                fracin_den[si] += 1.0
 
                 for key, extraims in extras:
                     x = getattr(fs, key)
-                    x[si] += np.sum(np.abs(srcmod[slc].flat[nz])
-                                    * extraims[imi][slc].flat[nz])
+                    x[si] += np.sum(
+                        np.abs(srcmod[slc].flat[nz]) * extraims[imi][slc].flat[nz]
+                    )
 
-                srcmod[slc] = 0.
+                srcmod[slc] = 0.0
 
         fs.profracflux = fracflux_num / np.maximum(1, fracflux_den)
         fs.fracin = fracin_num / np.maximum(1, fracin_den)
@@ -384,8 +474,9 @@ class Optimizer(object):
 
         return fs
 
-    def _get_iv(self, sky, skyvariance, Nsky, skyderivs, Nsourceparams,
-                imlist, umodels, scales):
+    def _get_iv(
+        self, sky, skyvariance, Nsky, skyderivs, Nsourceparams, imlist, umodels, scales
+    ):
         if sky and skyvariance:
             pass
         else:
@@ -397,11 +488,11 @@ class Optimizer(object):
             for di, (dsky, tim) in enumerate(skyderivs):
                 ie = tim.getInvError()
                 if dsky.shape == tim.shape:
-                    dchi2 = np.sum((dsky.patch * ie)**2)
+                    dchi2 = np.sum((dsky.patch * ie) ** 2)
                 else:
                     mm = np.zeros(tim.shape)
                     dsky.addTo(mm)
-                    dchi2 = np.sum((mm * ie)**2)
+                    dchi2 = np.sum((mm * ie) ** 2)
                 IV[di] = dchi2
 
         # source params next
@@ -428,35 +519,35 @@ class Optimizer(object):
                 slc = slice(y0, y0 + uh), slice(x0, x0 + uw)
                 dchi2 = np.sum((mm[slc] * scale * ie[slc]) ** 2)
                 IV[Nsky + ui] += dchi2
-                mm[slc] = 0.
+                mm[slc] = 0.0
         return IV
 
     def tryUpdates(self, tractor, X, alphas=None):
-        #print ("ORIG UPDATES")
+        # print ("ORIG UPDATES")
         if alphas is None:
             # 1/1024 to 1 in factors of 2, + sqrt(2.) + 2.
-            alphas = np.append(2.**np.arange(-10, 1), [np.sqrt(2.), 2.])
+            alphas = np.append(2.0 ** np.arange(-10, 1), [np.sqrt(2.0), 2.0])
 
         pBefore = tractor.getLogProb()
-        logverb('  log-prob before:', pBefore)
+        logverb("  log-prob before:", pBefore)
         pBest = pBefore
         alphaBest = None
         p0 = tractor.getParams()
         for alpha in alphas:
-            logverb('  Stepping with alpha =', alpha)
+            logverb("  Stepping with alpha =", alpha)
             pa = [p + alpha * d for p, d in zip(p0, X)]
             tractor.setParams(pa)
             pAfter = tractor.getLogProb()
-            logverb('  Log-prob after:', pAfter)
-            logverb('  delta log-prob:', pAfter - pBefore)
+            logverb("  Log-prob after:", pAfter)
+            logverb("  delta log-prob:", pAfter - pBefore)
 
-            #print('Step', alpha, 'p', pAfter, 'dlnp', pAfter-pBefore)
-            
+            # print('Step', alpha, 'p', pAfter, 'dlnp', pAfter-pBefore)
+
             if not np.isfinite(pAfter):
-                logmsg('  Got bad log-prob', pAfter)
+                logmsg("  Got bad log-prob", pAfter)
                 break
 
-            if pAfter < (pBest - 1.):
+            if pAfter < (pBest - 1.0):
                 break
 
             if pAfter > pBest:
@@ -471,26 +562,24 @@ class Optimizer(object):
         #         print n, '=', p, '  step', s, 'update', x
         if alphaBest is None:
             tractor.setParams(p0)
-            return 0, 0.
+            return 0, 0.0
 
-        logverb('  Stepping by', alphaBest,
-                'for delta-logprob', pBest - pBefore)
+        logverb("  Stepping by", alphaBest, "for delta-logprob", pBest - pBefore)
         pa = [p + alphaBest * d for p, d in zip(p0, X)]
         tractor.setParams(pa)
         return pBest - pBefore, alphaBest
 
     def _getims(self, fluxes, imgs, umodels, mod0, scales, sky, minFlux, rois):
         ims = []
-        for i, (img, umods, m0, scale
-                ) in enumerate(zip(imgs, umodels, mod0, scales)):
+        for i, (img, umods, m0, scale) in enumerate(zip(imgs, umodels, mod0, scales)):
             roi = None
             if rois:
                 roi = rois[i]
             mod = m0.copy()
-            assert(np.all(np.isfinite(mod)))
+            assert np.all(np.isfinite(mod))
             if sky:
                 img.getSky().addTo(mod)
-                assert(np.all(np.isfinite(mod)))
+                assert np.all(np.isfinite(mod))
             for f, um in zip(fluxes, umods):
                 if um is None:
                     continue
@@ -499,12 +588,12 @@ class Optimizer(object):
                 if minFlux is not None:
                     f = max(f, minFlux)
                 counts = f * scale
-                if counts == 0.:
+                if counts == 0.0:
                     continue
                 if not np.isfinite(counts):
-                    print('Warning: counts', counts, 'f', f, 'scale', scale)
-                assert(np.isfinite(counts))
-                assert(np.all(np.isfinite(um.patch)))
+                    print("Warning: counts", counts, "f", f, "scale", scale)
+                assert np.isfinite(counts)
+                assert np.all(np.isfinite(um.patch))
                 # print 'Adding umod', um, 'with counts', counts, 'to mod', mod.shape
                 (um * counts).addTo(mod)
 
@@ -517,14 +606,14 @@ class Optimizer(object):
 
             # DEBUG
             if not np.all(np.isfinite(chi)):
-                print('Chi has non-finite pixels:')
+                print("Chi has non-finite pixels:")
                 print(np.unique(chi[np.logical_not(np.isfinite(chi))]))
-                print('Inv error range:', ie.min(), ie.max())
-                print('All finite:', np.all(np.isfinite(ie)))
-                print('Mod range:', mod.min(), mod.max())
-                print('All finite:', np.all(np.isfinite(mod)))
-                print('Img range:', im.min(), im.max())
-                print('All finite:', np.all(np.isfinite(im)))
-            assert(np.all(np.isfinite(chi)))
+                print("Inv error range:", ie.min(), ie.max())
+                print("All finite:", np.all(np.isfinite(ie)))
+                print("Mod range:", mod.min(), mod.max())
+                print("All finite:", np.all(np.isfinite(mod)))
+                print("Img range:", im.min(), im.max())
+                print("All finite:", np.all(np.isfinite(im)))
+            assert np.all(np.isfinite(chi))
             ims.append((im, mod, ie, chi, roi))
         return ims

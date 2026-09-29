@@ -54,3 +54,7 @@ version = { attr = "tractor_jax.version.__version__" }
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["tractor_jax*"]
+
+[tool.black]
+# the oldest supported Python, so formatting never uses newer syntax
+target-version = ["py311"]

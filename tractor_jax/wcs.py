@@ -7,17 +7,19 @@ from tractor_jax import ducks
 try:
     from astropy.wcs import WCS as AstropyWCSObject
     from astropy import wcs as astropy_wcs
+
     _have_astropy = True
 except ImportError:
     _have_astropy = False
 
-class NullWCS(BaseParams, ducks.WCS):
-    '''The "identity" WCS -- useful when you are using raw pixel
-    positions rather than RA,Decs.
-    '''
 
-    def __init__(self, pixscale=1., dx=0., dy=0.):
-        '''Create a NullWCS.
+class NullWCS(BaseParams, ducks.WCS):
+    """The "identity" WCS -- useful when you are using raw pixel
+    positions rather than RA,Decs.
+    """
+
+    def __init__(self, pixscale=1.0, dx=0.0, dy=0.0):
+        """Create a NullWCS.
 
         Parameters
         ----------
@@ -27,18 +29,18 @@ class NullWCS(BaseParams, ducks.WCS):
             X pixel offset added in ``positionToPixel``.
         dy : float, optional
             Y pixel offset added in ``positionToPixel``.
-        '''
+        """
         self.dx = dx
         self.dy = dy
         self.setPixscale(pixscale)
 
     def hashkey(self):
-        return ('NullWCS', self.dx, self.dy)
+        return ("NullWCS", self.dx, self.dy)
 
     def setPixscale(self, pixscale):
         self.pixscale = pixscale
-        self.cd = np.array([[1., 0.], [0., 1.]]) *  self.pixscale / 3600.
-        self.cd_inverse = np.array([[1., 0.], [0., 1.]]) / (self.pixscale / 3600.)
+        self.cd = np.array([[1.0, 0.0], [0.0, 1.0]]) * self.pixscale / 3600.0
+        self.cd_inverse = np.array([[1.0, 0.0], [0.0, 1.0]]) / (self.pixscale / 3600.0)
 
     def positionToPixel(self, pos, src=None):
         return pos.x + self.dx, pos.y + self.dy
@@ -60,14 +62,14 @@ class NullWCS(BaseParams, ducks.WCS):
 
     def shifted(self, x, y):
         # New pixel (0, 0) corresponds to old pixel (x, y).
-        return NullWCS(pixscale=self.pixscale,
-                       dx=self.dx - x, dy=self.dy - y)
+        return NullWCS(pixscale=self.pixscale, dx=self.dx - x, dy=self.dy - y)
 
 
 class AstropyWCS(BaseParams, ducks.WCS):
-    '''A Tractor WCS implementation that wraps an astropy.wcs.WCS object.'''
+    """A Tractor WCS implementation that wraps an astropy.wcs.WCS object."""
+
     def __init__(self, wcs, origin=0):
-        '''Create an AstropyWCS wrapper.
+        """Create an AstropyWCS wrapper.
 
         Parameters
         ----------
@@ -80,7 +82,7 @@ class AstropyWCS(BaseParams, ducks.WCS):
             is 0, input (x,y) to
             ``positionToPixel``/``pixelToPosition`` are treated as
             0-based (numpy-like) coordinates.
-        '''
+        """
         if not _have_astropy:
             raise ImportError("Astropy is required to use AstropyWCS")
         self.wcs = wcs
@@ -88,16 +90,16 @@ class AstropyWCS(BaseParams, ducks.WCS):
 
     def hashkey(self):
         # WCS objects are mutable and don't hash nicely; use the header string representation.
-        return ('AstropyWCS', self.wcs.to_header_string(), self.origin)
+        return ("AstropyWCS", self.wcs.to_header_string(), self.origin)
 
     def positionToPixel(self, pos, src=None):
-        if hasattr(pos, 'ra') and hasattr(pos, 'dec'):
+        if hasattr(pos, "ra") and hasattr(pos, "dec"):
             ra, dec = pos.ra, pos.dec
-        elif hasattr(pos, 'x') and hasattr(pos, 'y'):
-             # Already pixel? This shouldn't happen for a celestial WCS usually.
-             return pos.x, pos.y
+        elif hasattr(pos, "x") and hasattr(pos, "y"):
+            # Already pixel? This shouldn't happen for a celestial WCS usually.
+            return pos.x, pos.y
         else:
-             raise ValueError("Unknown position type: %s" % type(pos))
+            raise ValueError("Unknown position type: %s" % type(pos))
 
         # astropy.wcs.all_world2pix handles scalar inputs
         x, y = self.wcs.all_world2pix(ra, dec, self.origin)
@@ -108,7 +110,7 @@ class AstropyWCS(BaseParams, ducks.WCS):
         return RaDecPos(ra, dec)
 
     def cdAtPixel(self, x, y):
-        '''Return the CD matrix at pixel ``x, y``.
+        """Return the CD matrix at pixel ``x, y``.
 
         Parameters
         ----------
@@ -124,7 +126,7 @@ class AstropyWCS(BaseParams, ducks.WCS):
 
                 [ [ dRA/dx * cos(Dec), dRA/dy * cos(Dec) ],
                   [ dDec/dx          , dDec/dy           ] ]
-        '''
+        """
         # We compute derivatives numerically to handle distortions correctly.
         delta = 1e-4
         r0, d0 = self.wcs.all_pix2world(x, y, self.origin)
@@ -139,17 +141,14 @@ class AstropyWCS(BaseParams, ducks.WCS):
 
         cosdec = np.cos(np.deg2rad(d0))
 
-        cd = np.array([
-            [dRa_dx * cosdec, dRa_dy * cosdec],
-            [dDec_dx        , dDec_dy        ]
-        ])
+        cd = np.array([[dRa_dx * cosdec, dRa_dy * cosdec], [dDec_dx, dDec_dy]])
         return cd
 
     def pixscale_at(self, x, y):
         # Return sqrt(det(CD matrix)) * 3600
         cd = self.cdAtPixel(x, y)
         det = np.abs(np.linalg.det(cd))
-        return 3600. * np.sqrt(det)
+        return 3600.0 * np.sqrt(det)
 
     def shifted(self, dx, dy):
         # Create a copy and shift the CRPIX.
@@ -181,7 +180,8 @@ class AstropyWCS(BaseParams, ducks.WCS):
 
 
 class PixPos(ParamList):
-    '''A Position implementation using pixel positions.'''
+    """A Position implementation using pixel positions."""
+
     @staticmethod
     def getNamedParams():
         return dict(x=0, y=1)
@@ -189,16 +189,17 @@ class PixPos(ParamList):
     def __init__(self, *args):
         super(PixPos, self).__init__(*args)
         self.stepsizes = [0.1, 0.1]
-        self.maxstep = [1., 1.]
+        self.maxstep = [1.0, 1.0]
 
     def __str__(self):
-        return 'pixel (%.2f, %.2f)' % (self.x, self.y)
+        return "pixel (%.2f, %.2f)" % (self.x, self.y)
 
     def getDimension(self):
         return 2
 
+
 class RaDecPos(ArithmeticParams, ParamList):
-    '''A Position implementation using RA,Dec positions, in degrees.
+    """A Position implementation using RA,Dec positions, in degrees.
 
     Attributes
     ----------
@@ -206,7 +207,8 @@ class RaDecPos(ArithmeticParams, ParamList):
         Right ascension, in degrees.
     dec : float
         Declination, in degrees.
-    '''
+    """
+
     @staticmethod
     def getName():
         return "RaDecPos"
@@ -216,7 +218,7 @@ class RaDecPos(ArithmeticParams, ParamList):
         return dict(ra=0, dec=1)
 
     def __str__(self):
-        return '%s: RA, Dec = (%.5f, %.5f)' % (self.getName(), self.ra, self.dec)
+        return "%s: RA, Dec = (%.5f, %.5f)" % (self.getName(), self.ra, self.dec)
 
     def __init__(self, *args, **kwargs):
         super(RaDecPos, self).__init__(*args, **kwargs)
@@ -226,6 +228,7 @@ class RaDecPos(ArithmeticParams, ParamList):
 
     def getDimension(self):
         return 2
+
     # def setStepSizes(self, delta):
     #    self.stepsizes = [delta / np.cos(np.deg2rad(self.dec)),delta]
 
@@ -236,16 +239,20 @@ class RaDecPos(ArithmeticParams, ParamList):
         # Let's implement a simple great circle distance
         ra1, dec1 = np.deg2rad(self.ra), np.deg2rad(self.dec)
         ra2, dec2 = np.deg2rad(pos.ra), np.deg2rad(pos.dec)
-        d = np.sin(dec1)*np.sin(dec2) + np.cos(dec1)*np.cos(dec2)*np.cos(ra1-ra2)
+        d = np.sin(dec1) * np.sin(dec2) + np.cos(dec1) * np.cos(dec2) * np.cos(
+            ra1 - ra2
+        )
         # clip to avoid domain errors
         d = np.clip(d, -1.0, 1.0)
         return np.rad2deg(np.arccos(d))
 
+
 class AffineWCS(BaseParams, ducks.WCS):
-    '''A WCS implementation using a simple affine transformation (CD matrix).
+    """A WCS implementation using a simple affine transformation (CD matrix).
 
     Supports JAX-traceable operations if attributes are arrays.
-    '''
+    """
+
     def __init__(self, crpix, crval, cd):
         self.crpix = crpix
         self.crval = crval
@@ -255,14 +262,20 @@ class AffineWCS(BaseParams, ducks.WCS):
         except Exception:
             # Handle JAX Tracers
             import jax.numpy as jnp
+
             self.cd_inv = jnp.linalg.inv(self.cd)
 
     def hashkey(self):
-        return ('AffineWCS', tuple(self.crpix), tuple(self.crval), tuple(self.cd.ravel()))
+        return (
+            "AffineWCS",
+            tuple(self.crpix),
+            tuple(self.crval),
+            tuple(self.cd.ravel()),
+        )
 
     def positionToPixel(self, pos, src=None):
-        if hasattr(pos, 'x') and hasattr(pos, 'y'):
-             return pos.x, pos.y
+        if hasattr(pos, "x") and hasattr(pos, "y"):
+            return pos.x, pos.y
 
         # Tangent plane projection for RaDecPos
         ra, dec = pos.ra, pos.dec
@@ -273,7 +286,9 @@ class AffineWCS(BaseParams, ducks.WCS):
         ra0_r, dec0_r = ra0 * d2r, dec0 * d2r
 
         xi = np.cos(dec_r) * np.sin(ra_r - ra0_r)
-        eta = np.sin(dec_r) * np.cos(dec0_r) - np.cos(dec_r) * np.sin(dec0_r) * np.cos(ra_r - ra0_r)
+        eta = np.sin(dec_r) * np.cos(dec0_r) - np.cos(dec_r) * np.sin(dec0_r) * np.cos(
+            ra_r - ra0_r
+        )
 
         r2d = 180.0 / np.pi
         xi_deg = xi * r2d
@@ -323,7 +338,7 @@ class AffineWCS(BaseParams, ducks.WCS):
 
     def pixscale_at(self, x, y):
         det = np.abs(np.linalg.det(self.cd))
-        return 3600. * np.sqrt(det)
+        return 3600.0 * np.sqrt(det)
 
     def shifted(self, dx, dy):
         return AffineWCS(self.crpix - np.array([dx, dy]), self.crval, self.cd)

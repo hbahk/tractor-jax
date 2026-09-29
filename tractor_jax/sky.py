@@ -4,34 +4,36 @@ from tractor_jax import ducks
 
 
 class NullSky(BaseParams, ducks.Sky):
-    '''A Sky implementation that does nothing; the background level is
+    """A Sky implementation that does nothing; the background level is
     zero.
-    '''
+    """
+
     pass
 
 
 class ConstantSky(ScalarParam, ducks.ImageCalibration):
-    '''A simple constant sky level across the whole image.
+    """A simple constant sky level across the whole image.
 
     This sky object has one parameter, the constant level.
 
     The sky level is specified in the same units as the image
     ("counts").
-    '''
+    """
 
     def getParamDerivatives(self, tractor, img, srcs):
         import numpy as np
+
         p = Patch(0, 0, np.ones_like(img.getImage()))
-        p.setName('dsky')
+        p.setName("dsky")
         return [p]
 
-    def addTo(self, img, scale=1.):
+    def addTo(self, img, scale=1.0):
         if self.val == 0:
             return
-        img += (self.val * scale)
+        img += self.val * scale
 
     def getParamNames(self):
-        return ['sky']
+        return ["sky"]
 
     def getConstant(self):
         return self.val
@@ -40,13 +42,13 @@ class ConstantSky(ScalarParam, ducks.ImageCalibration):
         self.val -= con
 
     def scale(self, s):
-        '''Scale this sky model by a factor of `s`.
+        """Scale this sky model by a factor of `s`.
 
         Parameters
         ----------
         s : float
             The scale factor.
-        '''
+        """
         self.val *= s
 
     def shift(self, x0, y0):
@@ -58,19 +60,19 @@ class ConstantSky(ScalarParam, ducks.ImageCalibration):
         return s
 
     def toStandardFitsHeader(self, hdr):
-        hdr.add_record(dict(name='SKY', comment='Sky value in Tractor model',
-                            value=self.val))
+        hdr.add_record(
+            dict(name="SKY", comment="Sky value in Tractor model", value=self.val)
+        )
 
     def write_fits(self, filename, hdr=None):
         import fitsio
 
         tt = type(self)
-        sky_type = '%s.%s' % (tt.__module__, tt.__name__)
+        sky_type = "%s.%s" % (tt.__module__, tt.__name__)
         if hdr is None:
             hdr = fitsio.FITSHDR()
-        hdr.add_record(dict(name='SKY', value=sky_type,
-                            comment='Sky class'))
-        self.toFitsHeader(hdr, prefix='SKY_')
+        hdr.add_record(dict(name="SKY", value=sky_type, comment="Sky class"))
+        self.toFitsHeader(hdr, prefix="SKY_")
 
         fitsio.write(filename, None, header=hdr, clobber=True)
 
@@ -78,12 +80,13 @@ class ConstantSky(ScalarParam, ducks.ImageCalibration):
         # Returns a single-row FITS table
         from astrometry.util.fits import fits_table
         import numpy as np
+
         T = fits_table()
         tt = type(self)
-        sky_type = '%s.%s' % (tt.__module__, tt.__name__)
+        sky_type = "%s.%s" % (tt.__module__, tt.__name__)
         T.skyclass = np.array([sky_type])
         T.value = np.array([self.val])
-        assert(len(T) == 1)
+        assert len(T) == 1
         return T
 
     @classmethod

@@ -11,10 +11,12 @@ eigfloor/x64 (Jacobi dead-slot pinning), and overflowing a cap must raise.
 
 Run in the `spherex` conda env:  pytest tests/test_batching.py -q
 """
+
 import numpy as np
 import pytest
 
 import jax
+
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from astropy.table import Table
@@ -29,16 +31,15 @@ from tractor_jax.jax.batching import (
     slice_fluxes,
 )
 
-
 # --------------------------------------------------------------------------- #
 # synthetic parent scene: raw arrays + catalog table (engine batch-path style)
 # --------------------------------------------------------------------------- #
-PSF_SAMPLING = 0.2      # 5x oversampled PSF
+PSF_SAMPLING = 0.2  # 5x oversampled PSF
 
 
 def gaussian_psf(n=25, sigma=4.0):
     y, x = np.mgrid[:n, :n] - n // 2
-    p = np.exp(-0.5 * (x * x + y * y) / sigma ** 2)
+    p = np.exp(-0.5 * (x * x + y * y) / sigma**2)
     return p / p.sum()
 
 
@@ -48,46 +49,68 @@ def parent_scene(seed=7, H=40, W=40, n_ps=5, n_gal=3):
     sy = rng.uniform(3, H - 3, n_ps + n_gal)
     shape_r = np.zeros(n_ps + n_gal)
     shape_r[n_ps:] = rng.uniform(1.0, 4.0, n_gal)
-    tab = Table({
-        "shape_r": shape_r,
-        "shape_ab": np.where(shape_r > 0, rng.uniform(0.4, 1.0,
-                                                      n_ps + n_gal), 0.0),
-        "shape_phi": rng.uniform(0.0, 180.0, n_ps + n_gal),
-        "sersic": np.where(shape_r > 0, rng.choice([1.0, 2.5, 4.0],
-                                                   n_ps + n_gal), 0.0),
-    })
+    tab = Table(
+        {
+            "shape_r": shape_r,
+            "shape_ab": np.where(shape_r > 0, rng.uniform(0.4, 1.0, n_ps + n_gal), 0.0),
+            "shape_phi": rng.uniform(0.0, 180.0, n_ps + n_gal),
+            "sersic": np.where(
+                shape_r > 0, rng.choice([1.0, 2.5, 4.0], n_ps + n_gal), 0.0
+            ),
+        }
+    )
     data = rng.normal(10.0, 2.0, (H, W))
     invvar = np.full((H, W), 4.0)
     psf = gaussian_psf()
     cd_inv = np.linalg.inv(np.eye(2) * (6.15 / 3600.0))
-    return dict(data=data, invvar=invvar, psf=psf, tab=tab,
-                sx=sx, sy=sy, cd_inv=cd_inv, H=H, W=W)
+    return dict(
+        data=data,
+        invvar=invvar,
+        psf=psf,
+        tab=tab,
+        sx=sx,
+        sy=sy,
+        cd_inv=cd_inv,
+        H=H,
+        W=W,
+    )
 
 
-def carve_views(scene, size=20, origins=((0, 0), (20, 0), (10, 15)),
-                psf_per_view=None):
+def carve_views(scene, size=20, origins=((0, 0), (20, 0), (10, 15)), psf_per_view=None):
     views = []
     sx, sy = scene["sx"], scene["sy"]
     for i, (x0, y0) in enumerate(origins):
-        ids = [ci for ci in range(len(sx))
-               if x0 <= sx[ci] < x0 + size and y0 <= sy[ci] < y0 + size]
-        views.append({
-            "data": np.ascontiguousarray(
-                scene["data"][y0:y0 + size, x0:x0 + size]),
-            "invvar": np.ascontiguousarray(
-                scene["invvar"][y0:y0 + size, x0:x0 + size]),
-            "psf": (psf_per_view[i] if psf_per_view is not None
-                    else scene["psf"]),
-            "src_indices": ids,
-            "origin": (x0, y0),
-        })
+        ids = [
+            ci
+            for ci in range(len(sx))
+            if x0 <= sx[ci] < x0 + size and y0 <= sy[ci] < y0 + size
+        ]
+        views.append(
+            {
+                "data": np.ascontiguousarray(
+                    scene["data"][y0 : y0 + size, x0 : x0 + size]
+                ),
+                "invvar": np.ascontiguousarray(
+                    scene["invvar"][y0 : y0 + size, x0 : x0 + size]
+                ),
+                "psf": (psf_per_view[i] if psf_per_view is not None else scene["psf"]),
+                "src_indices": ids,
+                "origin": (x0, y0),
+            }
+        )
     return views
 
 
 def build(scene, views, **kw):
-    return build_padded_batches(views, scene["tab"], scene["sx"], scene["sy"],
-                                psf_sampling=PSF_SAMPLING,
-                                cd_inv=scene["cd_inv"], **kw)
+    return build_padded_batches(
+        views,
+        scene["tab"],
+        scene["sx"],
+        scene["sy"],
+        psf_sampling=PSF_SAMPLING,
+        cd_inv=scene["cd_inv"],
+        **kw,
+    )
 
 
 def solve(bundle, solver="linear", **kw):
@@ -130,8 +153,7 @@ def test_bundle_structure_and_meta():
     assert len(meta["src_slot"]) == n_views == len(meta["counts"])
     assert meta["n_flux"] == meta["max_ps"] + meta["max_gal"] + 1
     assert meta["bg_idx"] == meta["max_ps"] + meta["max_gal"]
-    for (n_ps, n_gal), slots, view in zip(meta["counts"], meta["src_slot"],
-                                          views):
+    for (n_ps, n_gal), slots, view in zip(meta["counts"], meta["src_slot"], views):
         assert n_ps + n_gal == len(view["src_indices"])
         assert set(slots) == set(view["src_indices"])
     # init fluxes seeded from the data pixel under each source
@@ -149,9 +171,8 @@ def test_bundle_structure_and_meta():
 # --------------------------------------------------------------------------- #
 def test_shared_psf_broadcast_equals_stack():
     scene = parent_scene()
-    shared = carve_views(scene)                                # same object
-    copies = carve_views(scene, psf_per_view=[scene["psf"].copy()
-                                              for _ in range(3)])
+    shared = carve_views(scene)  # same object
+    copies = carve_views(scene, psf_per_view=[scene["psf"].copy() for _ in range(3)])
     b_shared = build(scene, shared)
     b_copies = build(scene, copies)
     fft_s = np.asarray(b_shared.images_data["psf"]["fft"])
@@ -172,22 +193,27 @@ def test_psf_fft_cache_reuse():
     b2 = build(scene, views, psf_fft_cache=cache)
     assert len(cache) == 1
     (fft2,) = cache.values()
-    assert fft2 is fft1                     # reused, not recomputed
-    assert np.array_equal(np.asarray(b1.images_data["psf"]["fft"]),
-                          np.asarray(b2.images_data["psf"]["fft"]))
+    assert fft2 is fft1  # reused, not recomputed
+    assert np.array_equal(
+        np.asarray(b1.images_data["psf"]["fft"]),
+        np.asarray(b2.images_data["psf"]["fft"]),
+    )
     # and equal to an uncached build
     b3 = build(scene, views)
-    assert np.array_equal(np.asarray(b3.images_data["psf"]["fft"]),
-                          np.asarray(b1.images_data["psf"]["fft"]))
+    assert np.array_equal(
+        np.asarray(b3.images_data["psf"]["fft"]),
+        np.asarray(b1.images_data["psf"]["fft"]),
+    )
 
 
 def test_psf_to_fft_no_resample_when_matched():
     psf = gaussian_psf()
-    fft = psf_to_fft(psf, psf_sampling=PSF_SAMPLING, target_shape=(125, 125),
-                     target_sampling=5.0)
+    fft = psf_to_fft(
+        psf, psf_sampling=PSF_SAMPLING, target_shape=(125, 125), target_sampling=5.0
+    )
     pad = np.zeros((125, 125))
     cy = cx = 125 // 2
-    pad[cy - 12:cy + 13, cx - 12:cx + 13] = psf
+    pad[cy - 12 : cy + 13, cx - 12 : cx + 13] = psf
     ref = np.fft.rfft2(np.fft.ifftshift(pad))
     np.testing.assert_allclose(np.asarray(fft), ref, rtol=1e-12, atol=1e-12)
 
@@ -248,8 +274,7 @@ def test_cap_overflow_raises():
 def test_capped_shapes_are_fixed():
     scene = parent_scene()
     views = carve_views(scene)
-    capped = build(scene, views, max_ps_cap=9, max_gal_cap=7,
-                   max_mog_k_cap=12)
+    capped = build(scene, views, max_ps_cap=9, max_gal_cap=7, max_mog_k_cap=12)
     assert capped.batches["PointSource"]["mask"].shape == (3, 9)
     assert capped.batches["Galaxy"]["mask"].shape == (3, 7)
     assert capped.batches["Galaxy"]["profile"]["amp"].shape == (3, 7, 12)
@@ -271,7 +296,6 @@ def test_mismatched_view_shapes_raise():
     views[1]["data"] = views[1]["data"][:-1]
     with pytest.raises(ValueError, match="same data shape"):
         build(scene, views)
-
 
 
 def test_psf_basis_matches_explicit_blend():

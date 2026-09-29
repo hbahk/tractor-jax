@@ -3,6 +3,7 @@ import math
 from tractor_jax.image import Image
 from tractor_jax.sky import ConstantSky
 
+
 def tile_image(image, tile_size, halo):
     """Split an image into tiles with halo padding.
 
@@ -43,7 +44,7 @@ def tile_image(image, tile_size, halo):
     ny = int(math.ceil(H / tile_size))
 
     data = image.getImage()
-    invvar = image.getInvError()**2
+    invvar = image.getInvError() ** 2
 
     wcs = image.getWcs()
     psf = image.getPsf()
@@ -93,19 +94,26 @@ def tile_image(image, tile_size, halo):
 
             tile_inverr = np.sqrt(tile_invvar)
 
-            tile_img = Image(data=tile_data, inverr=tile_inverr, wcs=tile_wcs, psf=psf, sky=sky)
+            tile_img = Image(
+                data=tile_data, inverr=tile_inverr, wcs=tile_wcs, psf=psf, sky=sky
+            )
             tile_img.name = f"{getattr(image, 'name', 'img')}_tile_{ix}_{iy}"
 
             meta = {
-                'x0': x0, 'y0': y0,
-                'core_w': core_w, 'core_h': core_h,
-                'halo': halo,
-                'x_start': x_start, 'y_start': y_start,
-                'x_end': x_end, 'y_end': y_end
+                "x0": x0,
+                "y0": y0,
+                "core_w": core_w,
+                "core_h": core_h,
+                "halo": halo,
+                "x_start": x_start,
+                "y_start": y_start,
+                "x_end": x_end,
+                "y_end": y_end,
             }
             tiles.append((tile_img, meta))
 
     return tiles
+
 
 def project_catalog(catalog, wcs):
     """Project all catalog sources to pixel coordinates with a given WCS.
@@ -134,6 +142,7 @@ def project_catalog(catalog, wcs):
             positions.append([np.nan, np.nan])
 
     return np.array(positions)
+
 
 def filter_sources_by_box(positions, x_min, x_max, y_min, y_max, margin=0):
     """Select positions falling within a (margin-padded) bounding box.
@@ -167,8 +176,12 @@ def filter_sources_by_box(positions, x_min, x_max, y_min, y_max, margin=0):
     y = positions[:, 1]
 
     # NaN positions (failed projections) compare False and are excluded
-    mask = (x >= x_min - margin) & (x < x_max + margin) & \
-           (y >= y_min - margin) & (y < y_max + margin)
+    mask = (
+        (x >= x_min - margin)
+        & (x < x_max + margin)
+        & (y >= y_min - margin)
+        & (y < y_max + margin)
+    )
 
     indices = np.where(mask)[0]
     return indices

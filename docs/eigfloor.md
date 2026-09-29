@@ -249,7 +249,7 @@ sandwich says they should.
 
 ## 7. Two caveats worth stating
 
-**$\lambda_\max$ is global, so the floor couples to neighbourhood crowding.**
+**$\lambda_\max$ is global, so the floor couples to neighborhood crowding.**
 For an isolated pair $\lambda_\max = 1+\rho \le 2$ and the engagement threshold
 is $\rho > 0.980$. Drop one tight triple into the same image and
 $\lambda_\max \approx 3$, which loosens the threshold for *every* pair in that
@@ -261,18 +261,18 @@ fields of different crowding.
 **Blend shrinkage can be chromatic.** Across a multi-band or spectral data set,
 if $\rho_{ij}$ is the same in every channel then $\varphi_-$ is the same in every
 channel: the shrinkage is achromatic, the individual fluxes of a blend are wrong
-but its *colours* survive, and photo-$z$ tolerates it. When the PSF varies with
+but its *colors* survive, and photo-$z$ tolerates it. When the PSF varies with
 wavelength $\rho_{ij}(\lambda)$ varies too, the shrinkage becomes
-wavelength-dependent, and a blended pair can carry a residual colour term. The
+wavelength-dependent, and a blended pair can carry a residual color term. The
 diagnostic is the residual slope $d\langle r\rangle/d\ln\lambda$ of blended
 versus isolated targets. On SPHEREx production photometry this differential came
 out **null** — $-0.2 \pm 1.5\,\%/\ln\lambda$, i.e. achromatic to
 $<3.2\,\%/\ln\lambda$ (95%) even for sub-pixel pairs — because the PSF's
 chromaticity is weak (FWHM $\propto \lambda^{0.13}$), so the expected effect sits
 below the measurement floor. The same test convicted the alternative: *cutting*
-faint neighbours instead of modelling them absorbs their light into the targets
+faint neighbors instead of modeling them absorbs their light into the targets
 with a strongly one-signed chromatic slope ($+1.3$ to $+13\,\%/\ln\lambda$,
-brighter to fainter). Selection destroys colours; shrinkage does not. For an
+brighter to fainter). Selection destroys colors; shrinkage does not. For an
 instrument with a strongly chromatic PSF the null must be re-derived, not
 assumed.
 
